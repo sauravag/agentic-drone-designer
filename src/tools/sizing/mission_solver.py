@@ -1,0 +1,292 @@
+"""Converged MTOW sizing for electric and series-hybrid Group 1-3 ISR UAVs (SRS §4.1).
+
+  outer loop  - Reynolds-matched airfoil (NeuralFoil polar via AeroSandbox)
+  inner loop  - damped fixed-point iteration on MTOW
+  evaluation  - geometry -> drag polar -> time-stepped mission -> energy storage -> empty mass
+Every number is deterministic physics; no LLM estimates (SRS rule 2).
+"""
+
+import logging
+import math
+from dataclasses import dataclass, replace
+from typing import Final, Optional
+
+from src.schemas.components import ComponentNeeds
+from src.schemas.requirements import OperationalRequirements
+from src.schemas.state import SizingOutput
+from src.tools.sizing.aero_model import (
+    AirfoilPolar,
+    air_properties,
+    airfoil_polar,
+    induced_drag_factor,
+    lift_to_drag,
+    oswald_efficiency,
+    parasite_drag_coefficient,
+    reynolds_number,
+    select_airfoil,
+)
+from src.tools.sizing.mass_model import (
+    DEFAULT_ASPECT_RATIO,
+    DEFAULT_FUSELAGE_LENGTH_FACTOR,
+    DEFAULT_TAIL_VOLUME_H,
+    DEFAULT_TAIL_VOLUME_V,
+    PropulsionLoads,
+    empty_mass_breakdown,
+    required_wing_area_m2,
+    size_geometry,
+)
+from src.tools.sizing.mission_profile import (
+    FUEL_RESERVE,
+    GENERATOR_MARGIN,
+    MIN_SOC_RESERVE,
+    SPEED_MARGIN_OVER_STALL,
+    VTOL_THRUST_TO_WEIGHT,
+    AeroState,
+    EnergyStorage,
+    MissionTrace,
+    disk_loading_n_m2,
+    electric_storage,
+    forward_power_w,
+    hotel_power_w,
+    hybrid_storage,
+    loiter_speed,
+    phase_plan,
+    simulate,
+)
+from src.tools.sizing.topology import Airframe, Propulsion, classify_group, select_airframe, select_propulsion
+from src.units import G0
+
+logger = logging.getLogger(__name__)
+
+MU_SEA_LEVEL: Final[float] = air_properties(0.0)[1]
+MTOW_REL_TOL: Final[float] = 1e-9
+MAX_ITERATIONS: Final[int] = 1_000
+DAMPING: Final[float] = 0.5
+DIVERGENCE_MTOW_KG: Final[float] = 3 * 599.0
+MAX_AIRFOIL_PASSES: Final[int] = 5
+RE_REFRESH_TOL: Final[float] = 0.10
+INITIAL_AIRFOIL: Final[tuple[str, float]] = ("sd7037", 2e5)
+VTOL_ROTOR_COUNT: Final[int] = 4
+
+OVERRIDE_BOUNDS: Final[dict[str, tuple[float, float]]] = {
+    "aspect_ratio": (4.0, 25.0),
+    "tail_volume_h": (0.3, 1.2),
+    "tail_volume_v": (0.02, 0.10),
+    "fuselage_length_factor": (0.6, 2.5),
+}
+OVERRIDE_DEFAULTS: Final[dict[str, float]] = {
+    "aspect_ratio": DEFAULT_ASPECT_RATIO,
+    "tail_volume_h": DEFAULT_TAIL_VOLUME_H,
+    "tail_volume_v": DEFAULT_TAIL_VOLUME_V,
+    "fuselage_length_factor": DEFAULT_FUSELAGE_LENGTH_FACTOR,
+}
+
+
+class SizingDivergenceError(RuntimeError):
+    """The mission cannot close with this powertrain/airframe (mass spiral or beyond Group 3)."""
+
+
+@dataclass(frozen=True)
+class _Design:
+    req: OperationalRequirements
+    airframe: Airframe
+    propulsion: Propulsion
+    params: dict[str, float]  # validated overrides merged over defaults
+    cruise_polar: AirfoilPolar  # profile drag + high-altitude CLmax, at cruise Re
+    stall_polar: AirfoilPolar  # sea-level CLmax for the stall constraint, at stall Re (same airfoil)
+
+
+@dataclass(frozen=True)
+class _Evaluation:
+    mtow_in: float
+    mtow_out: float
+    design: _Design
+    aero: AeroState
+    trace: MissionTrace
+    storage: EnergyStorage
+    generator_power_w: float
+    cruise_total_w: float
+    wing_reynolds: float
+    stall_reynolds: float
+
+
+def _validate_overrides(overrides: dict[str, float]) -> dict[str, float]:
+    for key, value in overrides.items():
+        if key not in OVERRIDE_BOUNDS:
+            raise ValueError(f"Unknown sizing override {key!r}; allowed: {sorted(OVERRIDE_BOUNDS)}")
+        low, high = OVERRIDE_BOUNDS[key]
+        if not (isinstance(value, (int, float)) and math.isfinite(value) and low <= value <= high):
+            raise ValueError(f"Sizing override {key}={value!r} outside physical bounds [{low}, {high}]")
+    return {**OVERRIDE_DEFAULTS, **{k: float(v) for k, v in overrides.items()}}
+
+
+def _wing_area_m2(mtow: float, design: _Design, rho_sl: float, rho_c: float) -> float:
+    """Binding of two constraints: sea-level stall at max_stall_speed, and cruise at altitude flown
+    no slower than SPEED_MARGIN_OVER_STALL x local stall (CL <= CLmax / margin^2)."""
+    req = design.req
+    by_stall: float = required_wing_area_m2(mtow, rho_sl, req.max_stall_speed_ms, design.stall_polar.cl_max_3d)
+    cruise_cl_limit: float = design.cruise_polar.cl_max_3d / SPEED_MARGIN_OVER_STALL**2
+    by_cruise: float = required_wing_area_m2(mtow, rho_c, req.cruise_speed_ms, cruise_cl_limit)
+    return max(by_stall, by_cruise)
+
+
+def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
+    """Geometry + drag polar at this MTOW. Returns (aero, mu at cruise altitude)."""
+    req, p = design.req, design.params
+    rho_sl, _ = air_properties(0.0)
+    rho_c, mu_c = air_properties(req.service_ceiling_m)
+    geom = size_geometry(mtow, _wing_area_m2(mtow, design, rho_sl, rho_c), p["aspect_ratio"],
+                         p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"])
+    is_quad: bool = design.airframe == "quadplane_vtol"
+    cd0: float = parasite_drag_coefficient(
+        geom.wing_area_m2, geom.tail_area_m2, design.cruise_polar.cd_min, geom.fuselage_length_m,
+        geom.fuselage_diameter_m,
+        reynolds_number(rho_c, req.cruise_speed_ms, geom.fuselage_length_m, mu_c), is_quad,
+    )
+    disk: float = mtow * G0 / disk_loading_n_m2(mtow) if is_quad else 0.0
+    return AeroState(geom, cd0, induced_drag_factor(p["aspect_ratio"]), rho_sl, rho_c, disk), mu_c
+
+
+def _evaluate(mtow: float, design: _Design) -> _Evaluation:
+    req = design.req
+    aero, mu_c = _aero_state(mtow, design)
+    hotel: float = hotel_power_w(req, mtow)
+    cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero) + hotel
+    is_hybrid: bool = design.propulsion == "series_hybrid"
+    gen_w: float = GENERATOR_MARGIN * cruise_total if is_hybrid else 0.0
+    trace = simulate(phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w)
+    storage = hybrid_storage(trace, gen_w) if is_hybrid else electric_storage(trace)
+    vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
+    loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
+    empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads).values())
+    return _Evaluation(
+        mtow_in=mtow, mtow_out=empty + req.payload_mass_kg + storage.battery_mass_kg + storage.fuel_mass_kg,
+        design=design, aero=aero, trace=trace, storage=storage, generator_power_w=gen_w,
+        cruise_total_w=cruise_total,
+        wing_reynolds=reynolds_number(aero.rho_cruise, req.cruise_speed_ms, aero.geom.mean_chord_m, mu_c),
+        stall_reynolds=reynolds_number(aero.rho_sl, req.max_stall_speed_ms, aero.geom.mean_chord_m, MU_SEA_LEVEL),
+    )
+
+
+def _converge(design: _Design) -> _Evaluation:
+    """Damped fixed point MTOW_{k+1} = MTOW_k + DAMPING * (f(MTOW_k) - MTOW_k)."""
+    mtow: float = 4.0 * design.req.payload_mass_kg + 1.0
+    for _ in range(MAX_ITERATIONS):
+        ev = _evaluate(mtow, design)
+        if not math.isfinite(ev.mtow_out) or ev.mtow_out > DIVERGENCE_MTOW_KG:
+            raise SizingDivergenceError(
+                f"{design.propulsion} {design.airframe} mass spiral: MTOW exceeded {DIVERGENCE_MTOW_KG:.0f} kg"
+            )
+        if abs(ev.mtow_out - mtow) <= MTOW_REL_TOL * mtow:
+            return ev
+        mtow += DAMPING * (ev.mtow_out - mtow)
+    raise SizingDivergenceError(f"MTOW did not converge in {MAX_ITERATIONS} iterations")
+
+
+def _polar_at(name: str, reynolds: float) -> AirfoilPolar:
+    # Rounding Re to 2 significant figures keeps results deterministic and lets the cache hit.
+    return airfoil_polar(name, float(f"{reynolds:.2g}"))
+
+
+def _is_self_consistent(ev: _Evaluation, name: str) -> bool:
+    d = ev.design
+    shifts = (abs(ev.wing_reynolds - d.cruise_polar.reynolds) / d.cruise_polar.reynolds,
+              abs(ev.stall_reynolds - d.stall_polar.reynolds) / d.stall_polar.reynolds)
+    return name == d.cruise_polar.name and max(shifts) <= RE_REFRESH_TOL
+
+
+def _size_powertrain(req: OperationalRequirements, airframe: Airframe, propulsion: Propulsion,
+                     params: dict[str, float]) -> _Evaluation:
+    """Outer loop: re-pick the Reynolds-matched airfoil and re-evaluate its cruise/stall polars until
+    airfoil and Re are self-consistent. If it never settles (e.g. flip-flopping across the Re = 3e5
+    boundary), fall back to the visited design with the lowest stall CLmax - the conservative wing."""
+    initial: AirfoilPolar = airfoil_polar(*INITIAL_AIRFOIL)
+    design = _Design(req, airframe, propulsion, params, initial, initial)
+    visited: list[_Design] = []
+    for _ in range(MAX_AIRFOIL_PASSES):
+        visited.append(design)
+        ev = _converge(design)
+        name: str = select_airfoil(ev.wing_reynolds)
+        if _is_self_consistent(ev, name):
+            return ev
+        design = replace(design, cruise_polar=_polar_at(name, ev.wing_reynolds),
+                         stall_polar=_polar_at(name, ev.stall_reynolds))
+    conservative = min(visited, key=lambda d: d.stall_polar.cl_max_3d)
+    logger.warning("Airfoil selection did not settle in %d passes; using conservative %s (CLmax %.3f)",
+                   MAX_AIRFOIL_PASSES, conservative.stall_polar.name, conservative.stall_polar.cl_max_3d)
+    return _converge(conservative)
+
+
+def _to_output(ev: _Evaluation) -> SizingOutput:
+    req, design, aero, storage = ev.design.req, ev.design, ev.aero, ev.storage
+    geom = aero.geom
+    mtow: float = ev.mtow_out
+    try:
+        group = classify_group(mtow)
+    except ValueError as exc:
+        raise SizingDivergenceError(str(exc)) from exc
+    weight: float = mtow * G0
+    cl_max: float = design.stall_polar.cl_max_3d
+    q_cruise: float = 0.5 * aero.rho_cruise * req.cruise_speed_ms**2
+    is_quad: bool = design.airframe == "quadplane_vtol"
+    return SizingOutput(
+        mtow_kg=mtow,
+        empty_mass_kg=mtow - req.payload_mass_kg - storage.battery_mass_kg - storage.fuel_mass_kg,
+        payload_mass_kg=req.payload_mass_kg, fuel_mass_kg=storage.fuel_mass_kg,
+        battery_mass_kg=storage.battery_mass_kg,
+        wing_area_m2=geom.wing_area_m2, wingspan_m=geom.wingspan_m, mean_chord_m=geom.mean_chord_m,
+        aspect_ratio=geom.aspect_ratio, fuselage_length_m=geom.fuselage_length_m,
+        fuselage_diameter_m=geom.fuselage_diameter_m, horizontal_tail_area_m2=geom.horizontal_tail_area_m2,
+        vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
+        cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
+        v_stall_ms=math.sqrt(2.0 * weight / (aero.rho_sl * geom.wing_area_m2 * cl_max)),
+        v_loiter_ms=loiter_speed(weight, aero, design.cruise_polar.cl_max_3d),
+        assumed_ld_cruise=lift_to_drag(weight / (q_cruise * geom.wing_area_m2), aero.cd0, aero.k),
+        dod_group=group, propulsion_type=design.propulsion, airframe_topology=design.airframe,
+        airfoil=design.cruise_polar.name, cl_max=cl_max, cd0=aero.cd0, oswald_e=oswald_efficiency(geom.aspect_ratio),
+        battery_energy_j=storage.battery_energy_j, battery_peak_power_w=storage.battery_peak_w,
+        generator_power_w=ev.generator_power_w, cruise_motor_power_w=ev.trace.max_forward_propulsive_w,
+        vtol_thrust_per_motor_n=VTOL_THRUST_TO_WEIGHT * weight / VTOL_ROTOR_COUNT if is_quad else 0.0,
+        rotor_diameter_m=math.sqrt(4.0 * aero.disk_area_m2 / VTOL_ROTOR_COUNT / math.pi) if is_quad else 0.0,
+        energy_reserve_fraction=FUEL_RESERVE if design.propulsion == "series_hybrid" else MIN_SOC_RESERVE,
+        phases=ev.trace.phases,
+    )
+
+
+def size_aircraft(req: OperationalRequirements, overrides: Optional[dict[str, float]] = None) -> SizingOutput:
+    """Converge a design for `req`. With propulsion "auto", size battery-electric first and fall back
+    to series-hybrid when electric diverges or breaks the SRS electric envelope (MTOW/endurance)."""
+    params: dict[str, float] = _validate_overrides(overrides or {})
+    airframe: Airframe = select_airframe(req)
+    if req.propulsion_type != "auto":
+        return _to_output(_size_powertrain(req, airframe, req.propulsion_type, params))
+    electric_failure: Optional[SizingDivergenceError] = None
+    try:
+        electric = _to_output(_size_powertrain(req, airframe, "electric", params))
+        if select_propulsion(req, electric.mtow_kg) == "electric":
+            return electric
+        logger.info("Electric design (%.1f kg) is outside the electric envelope; sizing series-hybrid",
+                    electric.mtow_kg)
+    except SizingDivergenceError as exc:
+        electric_failure = exc
+        logger.info("electric sizing failed (%s); falling back to series-hybrid", exc)
+    try:
+        return _to_output(_size_powertrain(req, airframe, "series_hybrid", params))
+    except SizingDivergenceError as exc:
+        raise SizingDivergenceError(f"Neither powertrain closes the mission: {exc}") from (electric_failure or exc)
+
+
+def component_needs(sizing: SizingOutput, req: OperationalRequirements) -> ComponentNeeds:
+    """Translate a converged design into SI hardware requirements for the COTS matcher."""
+    is_quad: bool = sizing.airframe_topology == "quadplane_vtol"
+    is_hybrid: bool = sizing.propulsion_type == "series_hybrid"
+    return ComponentNeeds(
+        cruise_power_w=sizing.cruise_motor_power_w,
+        battery_energy_j=sizing.battery_energy_j,
+        battery_peak_power_w=sizing.battery_peak_power_w,
+        battery_chemistry="lipo" if is_hybrid else None,  # hybrid buffer needs 25C discharge
+        payload_mass_kg=req.payload_mass_kg,
+        vtol_thrust_per_motor_n=sizing.vtol_thrust_per_motor_n if is_quad else None,
+        vtol_motor_count=VTOL_ROTOR_COUNT,
+        generator_power_w=sizing.generator_power_w if is_hybrid else None,
+    )

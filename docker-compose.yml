@@ -1,0 +1,15 @@
+services:
+  isr-forge:
+    build:
+      context: .
+      target: runtime
+    image: isr-forge:latest
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./outputs:/app/outputs
+      - ./data:/app/data
+    # Default: run the full test suite headlessly (OpenVSP needs no X server). Override e.g.
+    #   docker compose run --rm isr-forge pytest -q tests/test_aero_cad.py
+    command: ["pytest", "-q", "-p", "no:cacheprovider"]

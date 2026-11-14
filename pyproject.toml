@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isr-forge"
+version = "0.1.0"
+description = "Neuro-symbolic agent that designs DoD Group 1-3 ISR UAVs from operational requirements"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+# Heavy physics/CAD stack: installed in Docker, needed from Milestone 2 onwards.
+physics = [
+    "aerosandbox>=4.2.10",
+    "neuralfoil",
+    "casadi",
+    "build123d",
+    "jsbsim",
+    "pymavlink",
+]
+agent = [
+    "langgraph",
+    "langchain-anthropic",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+isr-forge = "src.main:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "docker: requires the OpenVSP/ArduPilot/JSBSim binaries from the Docker image",
+]
+
+[tool.coverage.run]
+source = ["src"]
