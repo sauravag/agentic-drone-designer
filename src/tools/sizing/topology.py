@@ -16,6 +16,10 @@ ELECTRIC_MAX_MTOW_KG: Final[float] = 15.0
 ELECTRIC_MAX_ENDURANCE_H: Final[float] = 3.0
 
 
+
+class GroupClassificationError(ValueError):
+    """The converged design falls outside DoD Groups 1-3 (a mission-level infeasibility)."""
+
 def classify_group(mtow_kg: float) -> Literal[1, 2, 3]:
     """Map MTOW to DoD UAS group. Raises ValueError outside Group 1-3 or for non-physical mass."""
     if not math.isfinite(mtow_kg) or mtow_kg <= 0:
@@ -26,7 +30,7 @@ def classify_group(mtow_kg: float) -> Literal[1, 2, 3]:
         return 2
     if mtow_kg < GROUP3_UPPER_KG:
         return 3
-    raise ValueError(f"MTOW {mtow_kg:.1f} kg exceeds the Group 3 limit of {GROUP3_UPPER_KG} kg")
+    raise GroupClassificationError(f"MTOW {mtow_kg:.1f} kg exceeds the Group 3 limit of {GROUP3_UPPER_KG} kg")
 
 
 def select_airframe(req: OperationalRequirements) -> Airframe:

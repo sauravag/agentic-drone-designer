@@ -104,8 +104,14 @@ RUN cd /opt/openvsp/python \
 
 WORKDIR /app
 COPY pyproject.toml ./
+# Dependencies first, from pyproject.toml alone, with a persistent pip cache: editing src/ no longer
+# invalidates this layer, and changing pyproject reuses already-downloaded wheels.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p src && touch src/__init__.py \
+ && pip install ".[physics,agent,dev,ui]" \
+ && pip uninstall -y isr-forge && rm -rf src build ./*.egg-info
 COPY src ./src
-RUN pip install --no-cache-dir ".[physics,agent,dev]"
+RUN pip install --no-cache-dir --no-deps . && rm -rf build ./*.egg-info
 COPY tests ./tests
 COPY data/airfoils ./data/airfoils
 # Regenerate the catalog from source so the image never ships a stale or missing DB.

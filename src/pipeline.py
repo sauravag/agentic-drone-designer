@@ -1,0 +1,186 @@
+"""End-to-end design run used by the web form (and the M5 CLI): sizing -> COTS BOM -> aero/CAD -> files.
+
+Every engineering number comes from the deterministic tools; this module only sequences them, writes
+the artifacts to `outputs/<run_id>/`, and turns cross-checks into human-readable warnings.
+"""
+
+import importlib.util
+import json
+import logging
+import re
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Final, Optional
+
+from pydantic import BaseModel
+
+from src.schemas.components import SelectedBOM
+from src.schemas.requirements import OperationalRequirements
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN, CADPackingError
+from src.tools.aero_cad.stability import AeroAnalysisError
+from src.tools.database.matcher import ComponentNotFoundError, select_bom
+from src.tools.database.seed_data import DEFAULT_DB_PATH, seed_database
+from src.tools.sizing.mission_solver import SizingDivergenceError, component_needs, size_aircraft
+from src.tools.sizing.topology import GroupClassificationError
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_OUTPUTS_ROOT: Final[Path] = Path(__file__).resolve().parents[1] / "outputs"
+MAX_SLUG_LENGTH: Final[int] = 30  # leaves room for a de-duplication suffix within 40 chars
+MASS_CONVERGENCE_TOLERANCE: Final[float] = 0.03  # SRS 4.2: as-built vs sized MTOW within +/- 3 %
+LD_DEVIATION_TOLERANCE: Final[float] = 0.15
+
+# OpenVSP is a process-wide singleton: serialise runs from concurrent web sessions. The catalog is
+# seeded at most once per process even if several sessions start their first run together.
+_OPENVSP_LOCK: Final = threading.Lock()
+_SEED_LOCK: Final = threading.Lock()
+
+Progress = Callable[[str], None]
+
+
+class PipelineError(RuntimeError):
+    """The run cannot proceed as requested (e.g. aero/CAD asked for without OpenVSP)."""
+
+
+# Errors that mean "this mission/design is infeasible" - shown to the user verbatim. Anything else is a
+# bug and propagates with its traceback.
+DESIGN_ERRORS: Final[tuple[type[Exception], ...]] = (
+    PipelineError, SizingDivergenceError, GroupClassificationError, ComponentNotFoundError,
+    CADPackingError, AeroAnalysisError,
+)
+
+
+@dataclass(frozen=True)
+class DesignRun:
+    run_id: str
+    out_dir: Path
+    requirements: OperationalRequirements
+    sizing: SizingOutput
+    bom: SelectedBOM
+    aero: Optional[AeroStabilityOutput]
+    cad: Optional[CADArtifacts]
+    warnings: tuple[str, ...]
+
+
+def aero_cad_available() -> bool:
+    """OpenVSP's compiled Python API exists only in the Docker image."""
+    return importlib.util.find_spec("openvsp") is not None
+
+
+def new_run_id(mission_name: str) -> str:
+    """`<UTC timestamp>-<slug>`: safe as a single path component whatever the user typed."""
+    stamp: str = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    slug: str = re.sub(r"[^a-z0-9]+", "-", mission_name.lower()).strip("-")[:MAX_SLUG_LENGTH].strip("-")
+    return f"{stamp}-{slug or 'design'}"
+
+
+def _create_run_dir(outputs_root: Path, run_id: str) -> tuple[str, Path]:
+    """Atomically claim a fresh folder (mkdir fails if another session took the name first)."""
+    outputs_root.mkdir(parents=True, exist_ok=True)
+    candidate, n = run_id, 1
+    while True:
+        try:
+            (outputs_root / candidate).mkdir()
+            return candidate, outputs_root / candidate
+        except FileExistsError:
+            n += 1
+            candidate = f"{run_id}-{n}"
+
+
+def _write_json(path: Path, payload: BaseModel | dict) -> None:
+    data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+    path.write_text(json.dumps(data, indent=2))
+
+
+def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
+                    cad: Optional[CADArtifacts]) -> tuple[str, ...]:
+    """Cross-checks between sizing, VSPAERO and the as-built CAD that the critic (M5) will act on."""
+    notes: list[str] = []
+    if aero is not None:
+        dev: float = aero.ld_cruise / sizing.assumed_ld_cruise - 1
+        if abs(dev) > LD_DEVIATION_TOLERANCE:
+            notes.append(f"VSPAERO cruise L/D {aero.ld_cruise:.1f} vs sizing assumption {sizing.assumed_ld_cruise:.1f} "
+                         f"({dev:+.0%}); the VLM drag build-up omits lift-rotor and nacelle drag.")
+    if cad is not None:
+        growth: float = cad.as_built_mass_kg / sizing.mtow_kg - 1
+        if abs(growth) > MASS_CONVERGENCE_TOLERANCE:
+            notes.append(f"As-built mass {cad.as_built_mass_kg:.2f} kg is {growth:+.0%} vs sized MTOW "
+                         f"{sizing.mtow_kg:.2f} kg (outside the ±3% convergence band; catalog parts or the "
+                         f"enlarged pod differ from the sizing estimate).")
+        if not SM_MIN <= cad.static_margin <= SM_MAX:
+            notes.append(f"Final static margin {cad.static_margin:.3f} is outside {SM_MIN}-{SM_MAX}.")
+        if cad.collision_count:
+            notes.append(f"{cad.collision_count} interference(s) between parts, booms or the skin.")
+    return tuple(notes)
+
+
+def _noop(_: str) -> None:
+    return None
+
+
+def _ensure_catalog(db_path: Path) -> None:
+    with _SEED_LOCK:
+        if not db_path.is_file():
+            seed_database(db_path)
+
+
+def _aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequirements, out_dir: Path,
+              progress: Progress) -> tuple[AeroStabilityOutput, CADArtifacts]:
+    from src.tools.aero_cad.build import build_aero_cad  # imports OpenVSP
+
+    if not _OPENVSP_LOCK.acquire(blocking=False):
+        progress("Waiting for another design run to release OpenVSP")
+        _OPENVSP_LOCK.acquire()
+    try:
+        progress("Building the OpenVSP OML, running VSPAERO and packing the CAD (this can take a few minutes)")
+        return build_aero_cad(sizing, bom, req.service_ceiling_m, out_dir)
+    finally:
+        _OPENVSP_LOCK.release()
+
+
+def _summary(run_id: str, do_aero: bool, status: str, **extra: object) -> dict:
+    return {"run_id": run_id, "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "aero_cad": do_aero, "status": status, **extra}
+
+
+def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: Path, do_aero: bool,
+             progress: Progress) -> DesignRun:
+    _write_json(out_dir / "requirements.json", req)
+    progress("Sizing the aircraft (time-stepped mission simulation + MTOW convergence)")
+    sizing: SizingOutput = size_aircraft(req)
+    _write_json(out_dir / "sizing.json", sizing)
+    progress("Selecting COTS components from the catalog")
+    _ensure_catalog(db_path)
+    bom: SelectedBOM = select_bom(db_path, component_needs(sizing, req))
+    _write_json(out_dir / "bom.json", bom)
+    aero, cad = _aero_cad(sizing, bom, req, out_dir, progress) if do_aero else (None, None)
+    if aero is not None and cad is not None:
+        _write_json(out_dir / "aero.json", aero)
+        _write_json(out_dir / "cad.json", cad)
+    warnings = design_warnings(sizing, aero, cad)
+    _write_json(out_dir / "run_summary.json", _summary(run_id, do_aero, "ok", warnings=list(warnings)))
+    progress("Done")
+    return DesignRun(run_id, out_dir, req, sizing, bom, aero, cad, warnings)
+
+
+def run_design(req: OperationalRequirements, outputs_root: Path = DEFAULT_OUTPUTS_ROOT,
+               db_path: Path = DEFAULT_DB_PATH, with_aero_cad: Optional[bool] = None,
+               progress: Progress = _noop) -> DesignRun:
+    """Run the design pipeline for `req`. `with_aero_cad=None` runs OpenVSP/CAD when available.
+    Raises one of DESIGN_ERRORS when the mission cannot be designed; a failed run's folder keeps a
+    `run_summary.json` with status "failed"."""
+    available: bool = aero_cad_available()
+    do_aero: bool = available if with_aero_cad is None else with_aero_cad
+    if do_aero and not available:
+        raise PipelineError("Aero/CAD needs OpenVSP, which is only installed in the Docker image "
+                            "(run the form with `docker compose up ui`).")
+    run_id, out_dir = _create_run_dir(outputs_root, new_run_id(req.mission_name))
+    logger.info("[Tool] run_design %s -> %s", run_id, out_dir)
+    try:
+        return _execute(req, run_id, out_dir, db_path, do_aero, progress)
+    except Exception as exc:
+        _write_json(out_dir / "run_summary.json", _summary(run_id, do_aero, "failed", error=f"{type(exc).__name__}: {exc}"))
+        raise

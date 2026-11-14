@@ -13,3 +13,27 @@ services:
     # Default: run the full test suite headlessly (OpenVSP needs no X server). Override e.g.
     #   docker compose run --rm isr-forge pytest -q tests/test_aero_cad.py
     command: ["pytest", "-q", "-p", "no:cacheprovider"]
+
+  # Local web form with the full pipeline (OpenVSP aero + CAD): docker compose up ui
+  # then open http://localhost:8501. Bound to 127.0.0.1 so it is not reachable from the network.
+  ui:
+    build:
+      context: .
+      target: runtime
+    image: isr-forge:latest
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./outputs:/app/outputs
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8501:8501"
+    command:
+      - streamlit
+      - run
+      - src/ui/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
