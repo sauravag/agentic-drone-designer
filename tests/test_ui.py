@@ -80,6 +80,17 @@ def test_bom_rows_list_parts_and_total(run: pipeline.DesignRun) -> None:
     assert rows[-1]["Part"] == "Total" and rows[-1]["Mass (kg)"] == pytest.approx(run.bom.total_hardware_mass_kg)
 
 
+def test_fcs_rows_compare_against_srs_limits() -> None:
+    from src.schemas.state import FCSArtifacts
+
+    fcs = FCSArtifacts(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.05, pitch_overshoot=0.25,
+                       roll_settling_s=1.5, pitch_settling_s=1.0, max_transition_altitude_loss_m=0.3)
+    rows = {r["Check"]: r for r in presenters.fcs_rows(fcs)}
+    assert rows["Roll overshoot (+15° step)"]["Pass"] == "yes" and rows["Roll overshoot (+15° step)"]["Result"] == "5%"
+    assert rows["Pitch overshoot (+10° step)"]["Pass"] == "no"
+    assert rows["Transition altitude loss"]["Result"] == "0.30 m"
+
+
 def test_downloadable_files_stay_inside_the_run_folder(run: pipeline.DesignRun) -> None:
     files = presenters.downloadable_files(run.out_dir)
     assert {f.name for f in files} >= {"requirements.json", "sizing.json", "bom.json"}
@@ -94,6 +105,7 @@ def test_app_runs_a_sizing_only_design_headlessly(tmp_path: Path, monkeypatch: p
     at = AppTest.from_file(str(APP_PATH), default_timeout=120)
     at.run()
     assert not at.exception
+    assert at.checkbox(key="with_sitl").disabled == (not (pipeline.aero_cad_available() and pipeline.sitl_available()))
     aero_box = at.checkbox(key="with_aero_cad")
     if not aero_box.disabled:  # enabled only where OpenVSP exists; keep this smoke test fast
         aero_box.uncheck()

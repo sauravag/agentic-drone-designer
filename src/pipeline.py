@@ -1,4 +1,4 @@
-"""End-to-end design run used by the web form (and the M5 CLI): sizing -> COTS BOM -> aero/CAD -> files.
+"""End-to-end design run used by the web form (and the M5 CLI): sizing -> COTS BOM -> aero/CAD -> SITL -> files.
 
 Every engineering number comes from the deterministic tools; this module only sequences them, writes
 the artifacts to `outputs/<run_id>/`, and turns cross-checks into human-readable warnings.
@@ -18,11 +18,15 @@ from pydantic import BaseModel
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN, CADPackingError
 from src.tools.aero_cad.stability import AeroAnalysisError
 from src.tools.database.matcher import ComponentNotFoundError, select_bom
 from src.tools.database.seed_data import DEFAULT_DB_PATH, seed_database
+from src.tools.flight_control.flight_model import FlightModelError
+from src.tools.flight_control.param_generator import ParamGenerationError
+from src.tools.flight_control.runtime import (MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M,
+                                              SitlValidationError, sitl_available)
 from src.tools.sizing.mission_solver import SizingDivergenceError, component_needs, size_aircraft
 from src.tools.sizing.topology import GroupClassificationError
 
@@ -49,7 +53,7 @@ class PipelineError(RuntimeError):
 # bug and propagates with its traceback.
 DESIGN_ERRORS: Final[tuple[type[Exception], ...]] = (
     PipelineError, SizingDivergenceError, GroupClassificationError, ComponentNotFoundError,
-    CADPackingError, AeroAnalysisError,
+    CADPackingError, AeroAnalysisError, FlightModelError, ParamGenerationError, SitlValidationError,
 )
 
 
@@ -63,6 +67,7 @@ class DesignRun:
     aero: Optional[AeroStabilityOutput]
     cad: Optional[CADArtifacts]
     warnings: tuple[str, ...]
+    fcs: Optional[FCSArtifacts] = None
 
 
 def aero_cad_available() -> bool:
@@ -96,9 +101,15 @@ def _write_json(path: Path, payload: BaseModel | dict) -> None:
 
 
 def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
-                    cad: Optional[CADArtifacts]) -> tuple[str, ...]:
-    """Cross-checks between sizing, VSPAERO and the as-built CAD that the critic (M5) will act on."""
+                    cad: Optional[CADArtifacts], fcs: Optional[FCSArtifacts] = None) -> tuple[str, ...]:
+    """Cross-checks between sizing, VSPAERO, the as-built CAD and SITL that the critic (M5) will act on."""
     notes: list[str] = []
+    if fcs is not None and not fcs.passed:
+        notes.append(f"SITL doublet test failed after {fcs.attempts} attempt(s): roll overshoot "
+                     f"{fcs.roll_overshoot:.0%} / settling {fcs.roll_settling_s:.1f} s, pitch overshoot "
+                     f"{fcs.pitch_overshoot:.0%} / settling {fcs.pitch_settling_s:.1f} s, transition altitude loss "
+                     f"{fcs.max_transition_altitude_loss_m:.1f} m (limits {MAX_OVERSHOOT:.0%}, {MAX_SETTLING_S:g} s, "
+                     f"{MAX_TRANSITION_ALT_LOSS_M:g} m).")
     if aero is not None:
         dev: float = aero.ld_cruise / sizing.assumed_ld_cruise - 1
         if abs(dev) > LD_DEVIATION_TOLERANCE:
@@ -141,12 +152,20 @@ def _aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequiremen
         _OPENVSP_LOCK.release()
 
 
-def _summary(run_id: str, do_aero: bool, status: str, **extra: object) -> dict:
+def _sitl(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
+          cad: CADArtifacts, out_dir: Path, progress: Progress) -> FCSArtifacts:
+    from src.tools.flight_control.sitl_validator import generate_and_verify_fcs  # pymavlink + JSBSim
+
+    progress("Generating ArduPilot parameters and flying the SITL take-off and doublet test")
+    return generate_and_verify_fcs(req, sizing, bom, aero, cad, out_dir)
+
+
+def _summary(run_id: str, stages: dict[str, bool], status: str, **extra: object) -> dict[str, object]:
     return {"run_id": run_id, "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "aero_cad": do_aero, "status": status, **extra}
+            **stages, "status": status, **extra}
 
 
-def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: Path, do_aero: bool,
+def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: Path, stages: dict[str, bool],
              progress: Progress) -> DesignRun:
     _write_json(out_dir / "requirements.json", req)
     progress("Sizing the aircraft (time-stepped mission simulation + MTOW convergence)")
@@ -156,31 +175,48 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
     _ensure_catalog(db_path)
     bom: SelectedBOM = select_bom(db_path, component_needs(sizing, req))
     _write_json(out_dir / "bom.json", bom)
-    aero, cad = _aero_cad(sizing, bom, req, out_dir, progress) if do_aero else (None, None)
+    aero, cad = _aero_cad(sizing, bom, req, out_dir, progress) if stages["aero_cad"] else (None, None)
+    fcs: Optional[FCSArtifacts] = None
     if aero is not None and cad is not None:
         _write_json(out_dir / "aero.json", aero)
         _write_json(out_dir / "cad.json", cad)
-    warnings = design_warnings(sizing, aero, cad)
-    _write_json(out_dir / "run_summary.json", _summary(run_id, do_aero, "ok", warnings=list(warnings)))
+        if stages["sitl"]:
+            fcs = _sitl(req, sizing, bom, aero, cad, out_dir, progress)
+            _write_json(out_dir / "fcs.json", fcs)
+    warnings = design_warnings(sizing, aero, cad, fcs)
+    _write_json(out_dir / "run_summary.json", _summary(run_id, stages, "ok", warnings=list(warnings)))
     progress("Done")
-    return DesignRun(run_id, out_dir, req, sizing, bom, aero, cad, warnings)
+    return DesignRun(run_id, out_dir, req, sizing, bom, aero, cad, warnings, fcs)
+
+
+def _resolve_stages(with_aero_cad: Optional[bool], with_sitl: Optional[bool]) -> dict[str, bool]:
+    """None means "run it when the toolchain is installed". SITL flies the aero/CAD model, so it needs both."""
+    aero_ok: bool = aero_cad_available()
+    do_aero: bool = aero_ok if with_aero_cad is None else with_aero_cad
+    if do_aero and not aero_ok:
+        raise PipelineError("Aero/CAD needs OpenVSP, which is only installed in the Docker image "
+                            "(run the form with `docker compose up ui`).")
+    do_sitl: bool = (do_aero and sitl_available()) if with_sitl is None else with_sitl
+    if do_sitl and not do_aero:
+        raise PipelineError("The SITL flight test flies the aero/CAD model: enable aero/CAD too.")
+    if do_sitl and not sitl_available():
+        raise PipelineError("The SITL flight test needs ArduPilot's arduplane, which is only installed in the "
+                            "Docker image (run the form with `docker compose up ui`).")
+    return {"aero_cad": do_aero, "sitl": do_sitl}
 
 
 def run_design(req: OperationalRequirements, outputs_root: Path = DEFAULT_OUTPUTS_ROOT,
                db_path: Path = DEFAULT_DB_PATH, with_aero_cad: Optional[bool] = None,
-               progress: Progress = _noop) -> DesignRun:
-    """Run the design pipeline for `req`. `with_aero_cad=None` runs OpenVSP/CAD when available.
-    Raises one of DESIGN_ERRORS when the mission cannot be designed; a failed run's folder keeps a
-    `run_summary.json` with status "failed"."""
-    available: bool = aero_cad_available()
-    do_aero: bool = available if with_aero_cad is None else with_aero_cad
-    if do_aero and not available:
-        raise PipelineError("Aero/CAD needs OpenVSP, which is only installed in the Docker image "
-                            "(run the form with `docker compose up ui`).")
+               progress: Progress = _noop, with_sitl: Optional[bool] = None) -> DesignRun:
+    """Run the design pipeline for `req`. `with_aero_cad` / `with_sitl` = None run OpenVSP/CAD and the
+    ArduPilot SITL flight test when installed. Raises one of DESIGN_ERRORS when the mission cannot be
+    designed; a failed run's folder keeps a `run_summary.json` with status "failed"."""
+    stages: dict[str, bool] = _resolve_stages(with_aero_cad, with_sitl)
     run_id, out_dir = _create_run_dir(outputs_root, new_run_id(req.mission_name))
-    logger.info("[Tool] run_design %s -> %s", run_id, out_dir)
+    logger.info("[Tool] run_design %s -> %s (%s)", run_id, out_dir, stages)
     try:
-        return _execute(req, run_id, out_dir, db_path, do_aero, progress)
+        return _execute(req, run_id, out_dir, db_path, stages, progress)
     except Exception as exc:
-        _write_json(out_dir / "run_summary.json", _summary(run_id, do_aero, "failed", error=f"{type(exc).__name__}: {exc}"))
+        _write_json(out_dir / "run_summary.json",
+                    _summary(run_id, stages, "failed", error=f"{type(exc).__name__}: {exc}"))
         raise

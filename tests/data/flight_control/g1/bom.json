@@ -1,0 +1,48 @@
+{
+ "battery": {
+  "capacity_wh": 432.0,
+  "chemistry": "li_ion",
+  "height_m": 0.0727,
+  "id": 4,
+  "length_m": 0.2181,
+  "mass_kg": 2.16,
+  "max_c_rate": 3.0,
+  "name": "Li-Ion 21700 6S4P",
+  "voltage_v": 21.6,
+  "width_m": 0.109
+ },
+ "cruise_motor": {
+  "continuous_power_w": 400.0,
+  "diameter_m": 0.035,
+  "id": 3,
+  "kv": 900.0,
+  "length_m": 0.03,
+  "mass_kg": 0.105,
+  "max_power_w": 550.0,
+  "name": "Outrunner 2814-900KV",
+  "voltage_v": 14.8
+ },
+ "cruise_propeller": {
+  "application": "cruise",
+  "diameter_m": 0.2794,
+  "id": 3,
+  "mass_kg": 0.025,
+  "max_power_w": 600.0,
+  "name": "Carbon cruise prop 11x7in",
+  "pitch_m": 0.1778
+ },
+ "ice_generator": null,
+ "payload": {
+  "height_m": 0.1,
+  "id": 5,
+  "length_m": 0.15,
+  "mass_kg": 1.2,
+  "name": "LiDAR mapping unit",
+  "power_w": 25.0,
+  "sensor_type": "lidar",
+  "width_m": 0.1
+ },
+ "vtol_motor": null,
+ "vtol_motor_count": 0,
+ "vtol_propeller": null
+}

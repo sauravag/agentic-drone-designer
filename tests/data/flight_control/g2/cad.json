@@ -1,0 +1,13 @@
+{
+ "as_built_mass_kg": 22.390726171080654,
+ "assembly_step_path": "fixture/assembly.step",
+ "collision_count": 0,
+ "ixx_kgm2": 3.0881605742876963,
+ "ixz_kgm2": 0.14874994413511525,
+ "iyy_kgm2": 3.003734116166479,
+ "izz_kgm2": 5.869097883250402,
+ "oml_step_path": "fixture/oml.step",
+ "oml_vsp3_path": "fixture/oml.vsp3",
+ "static_margin": 0.1100000000000002,
+ "x_cg_m": 0.6073511694335172
+}

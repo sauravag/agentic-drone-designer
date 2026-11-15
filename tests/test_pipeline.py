@@ -8,7 +8,7 @@ import pytest
 
 from src import pipeline
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import CADArtifacts
+from src.schemas.state import CADArtifacts, FCSArtifacts
 from tests.reference_designs import G1_ELECTRIC_FW
 
 RUN_ID_PATTERN = re.compile(r"^\d{8}T\d{6}Z-[a-z0-9-]{1,40}$")
@@ -90,9 +90,44 @@ def test_warnings_flag_mass_growth_margin_and_collisions(sizing_only_run: pipeli
     assert "27%" in text and "static margin" in text and "2 interference" in text
 
 
-def test_full_run_with_openvsp_writes_cad(tmp_path: Path) -> None:
+def test_full_run_with_openvsp_writes_cad_and_flies_sitl(tmp_path: Path) -> None:
     pytest.importorskip("openvsp")
     run = pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db", with_aero_cad=True)
     assert run.aero is not None and run.cad is not None
     for name in ("aero.json", "cad.json", "oml.step", "oml.vsp3", "assembly.step"):
         assert (run.out_dir / name).is_file()
+    if pipeline.sitl_available():
+        assert run.fcs is not None and run.fcs.passed
+        for name in ("ardupilot.param", "sitl_report.json", "fcs.json"):
+            assert (run.out_dir / name).is_file()
+
+
+def test_sitl_requires_aero_cad(tmp_path: Path) -> None:
+    with pytest.raises(pipeline.PipelineError, match="aero/CAD"):
+        pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db",
+                            with_aero_cad=False, with_sitl=True)
+
+
+def test_sitl_without_arduplane_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline, "aero_cad_available", lambda: True)
+    monkeypatch.setattr(pipeline, "sitl_available", lambda: False)
+    with pytest.raises(pipeline.PipelineError, match="arduplane"):
+        pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db",
+                            with_aero_cad=True, with_sitl=True)
+    assert not (tmp_path / "o").exists()  # rejected before a run folder is created
+
+
+def test_stage_defaults_follow_the_installed_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pipeline, "aero_cad_available", lambda: True)
+    monkeypatch.setattr(pipeline, "sitl_available", lambda: True)
+    assert pipeline._resolve_stages(None, None) == {"aero_cad": True, "sitl": True}
+    assert pipeline._resolve_stages(False, None) == {"aero_cad": False, "sitl": False}
+    monkeypatch.setattr(pipeline, "sitl_available", lambda: False)
+    assert pipeline._resolve_stages(None, None) == {"aero_cad": True, "sitl": False}
+
+
+def test_warnings_flag_a_failed_sitl_test(sizing_only_run: pipeline.DesignRun) -> None:
+    fcs = FCSArtifacts(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.31, pitch_overshoot=0.05,
+                       roll_settling_s=4.2, pitch_settling_s=1.0, max_transition_altitude_loss_m=2.0, attempts=4)
+    text = " ".join(pipeline.design_warnings(sizing_only_run.sizing, None, None, fcs))
+    assert "SITL doublet test failed after 4 attempt(s)" in text and "31%" in text

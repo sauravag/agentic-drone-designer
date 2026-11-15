@@ -1,0 +1,69 @@
+{
+ "airfoil": "sd7037",
+ "airframe_topology": "fixed_wing",
+ "aspect_ratio": 12.0,
+ "assumed_ld_cruise": 18.69051934502226,
+ "battery_energy_j": 953070.6287415264,
+ "battery_mass_kg": 1.3237092065854534,
+ "battery_peak_power_w": 223.39559578832677,
+ "cd0": 0.018887138829177252,
+ "cl_max": 1.1809181987295612,
+ "cruise_motor_power_w": 196.7662201056783,
+ "cruise_power_w": 83.20432036502123,
+ "dod_group": 1,
+ "empty_mass_kg": 1.74972999627222,
+ "energy_reserve_fraction": 0.2,
+ "fuel_mass_kg": 0.0,
+ "fuselage_diameter_m": 0.12548304895381557,
+ "fuselage_length_m": 0.878381342676709,
+ "generator_power_w": 0.0,
+ "horizontal_tail_area_m2": 0.05116222575925396,
+ "hover_power_w": 0.0,
+ "mean_chord_m": 0.1650228857839179,
+ "mtow_kg": 4.073439202857673,
+ "oswald_e": 0.7060139564214812,
+ "payload_mass_kg": 1.0,
+ "phases": [
+  {
+   "duration_s": 200.0,
+   "energy_j": 44679.11915766536,
+   "fuel_burned_kg": 0.0,
+   "name": "Climb",
+   "propulsive_power_w": 196.7662201056783,
+   "total_power_w": 223.39559578832677
+  },
+  {
+   "duration_s": 833.3333333333334,
+   "energy_j": 69336.9336375177,
+   "fuel_burned_kg": 0.0,
+   "name": "Ingress",
+   "propulsive_power_w": 56.57494468237277,
+   "total_power_w": 83.20432036502122
+  },
+  {
+   "duration_s": 7200.0,
+   "energy_j": 579103.5165605204,
+   "fuel_burned_kg": 0.0,
+   "name": "Loiter",
+   "propulsive_power_w": 53.80166828409049,
+   "total_power_w": 80.43104396673895
+  },
+  {
+   "duration_s": 833.3333333333334,
+   "energy_j": 69336.9336375177,
+   "fuel_burned_kg": 0.0,
+   "name": "Egress",
+   "propulsive_power_w": 56.57494468237277,
+   "total_power_w": 83.20432036502122
+  }
+ ],
+ "propulsion_type": "electric",
+ "rotor_diameter_m": 0.0,
+ "tail_arm_m": 0.5270288056060254,
+ "v_loiter_ms": 17.190236861808902,
+ "v_stall_ms": 12.999999993994507,
+ "vertical_tail_area_m2": 0.0491157367288838,
+ "vtol_thrust_per_motor_n": 0.0,
+ "wing_area_m2": 0.3267906339894242,
+ "wingspan_m": 1.980274629407015
+}

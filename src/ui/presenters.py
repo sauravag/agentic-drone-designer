@@ -10,7 +10,8 @@ from pydantic import ValidationError
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
+from src.tools.flight_control.runtime import MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M
 from src.units import WH_TO_J
 
 FIELD_LABELS: Final[dict[str, str]] = {
@@ -139,6 +140,26 @@ def cad_rows(cad: CADArtifacts) -> list[tuple[str, str]]:
         ("Ixx / Iyy / Izz", f"{cad.ixx_kgm2:.3g} / {cad.iyy_kgm2:.3g} / {cad.izz_kgm2:.3g} kg·m²"),
         ("Ixz", f"{cad.ixz_kgm2:.3g} kg·m²"),
     ]
+
+
+def fcs_rows(fcs: FCSArtifacts) -> list[dict[str, str]]:
+    """SITL doublet-test results against the SRS limits."""
+    entries: list[tuple[str, float, float, str]] = [
+        ("Roll overshoot (+15° step)", fcs.roll_overshoot, MAX_OVERSHOOT, "%"),
+        ("Roll settling time", fcs.roll_settling_s, MAX_SETTLING_S, "s"),
+        ("Pitch overshoot (+10° step)", fcs.pitch_overshoot, MAX_OVERSHOOT, "%"),
+        ("Pitch settling time", fcs.pitch_settling_s, MAX_SETTLING_S, "s"),
+        ("Transition altitude loss", fcs.max_transition_altitude_loss_m, MAX_TRANSITION_ALT_LOSS_M, "m"),
+    ]
+    rows = [{"Check": name, "Result": _fmt(value, unit), "Limit": f"< {_fmt(limit, unit)}",
+             "Pass": "yes" if value < limit else "no"} for name, value, limit, unit in entries]
+    rows.append({"Check": "Rate-gain scale / attempts", "Result": f"{fcs.gain_scale:.3f} / {fcs.attempts}",
+                 "Limit": "", "Pass": "yes" if fcs.passed else "no"})
+    return rows
+
+
+def _fmt(value: float, unit: str) -> str:
+    return f"{value:.0%}" if unit == "%" else f"{value:.2f} {unit}"
 
 
 def downloadable_files(out_dir: Path) -> list[Path]:

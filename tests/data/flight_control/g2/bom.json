@@ -1,0 +1,65 @@
+{
+ "battery": {
+  "capacity_wh": 2160.0,
+  "chemistry": "li_ion",
+  "height_m": 0.1243,
+  "id": 8,
+  "length_m": 0.3729,
+  "mass_kg": 10.8,
+  "max_c_rate": 3.0,
+  "name": "Li-Ion 21700 12S10P",
+  "voltage_v": 43.2,
+  "width_m": 0.1864
+ },
+ "cruise_motor": {
+  "continuous_power_w": 1600.0,
+  "diameter_m": 0.053,
+  "id": 6,
+  "kv": 400.0,
+  "length_m": 0.045,
+  "mass_kg": 0.42,
+  "max_power_w": 2200.0,
+  "name": "Outrunner 4325-400KV",
+  "voltage_v": 22.2
+ },
+ "cruise_propeller": {
+  "application": "cruise",
+  "diameter_m": 0.4064,
+  "id": 6,
+  "mass_kg": 0.065,
+  "max_power_w": 2400.0,
+  "name": "Carbon cruise prop 16x10in",
+  "pitch_m": 0.254
+ },
+ "ice_generator": null,
+ "payload": {
+  "height_m": 0.15,
+  "id": 10,
+  "length_m": 0.25,
+  "mass_kg": 3.0,
+  "name": "Hyperspectral imager",
+  "power_w": 45.0,
+  "sensor_type": "hyperspectral",
+  "width_m": 0.15
+ },
+ "vtol_motor": {
+  "diameter_m": 0.068,
+  "id": 7,
+  "length_m": 0.036,
+  "mass_kg": 0.38,
+  "max_power_w": 1800.0,
+  "max_thrust_n": 120.0,
+  "name": "Lift 6215-180KV",
+  "voltage_v": 44.4
+ },
+ "vtol_motor_count": 4,
+ "vtol_propeller": {
+  "application": "vtol",
+  "diameter_m": 0.5588,
+  "id": 22,
+  "mass_kg": 0.08,
+  "max_power_w": 1900.0,
+  "name": "Carbon vtol prop 22x7in",
+  "pitch_m": 0.1778
+ }
+}
