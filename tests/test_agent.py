@@ -200,10 +200,16 @@ def test_cli_with_a_spec_file_runs_without_an_llm(tmp_path: Path, db: Path) -> N
 
 
 def test_cli_reports_clarification_and_errors(tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("src.main.ClaudeLLM",
-                        lambda model=None: ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
+    monkeypatch.setattr("src.main.make_llm",
+                        lambda provider=None, model=None: ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
     assert main(["a drone", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_CLARIFY
     assert main([]) == EXIT_ERROR
+    from src.agent import providers
+
+    monkeypatch.setattr("src.main.make_llm", providers.make_llm)  # real factory, no key -> fail fast, not mid-run
+    assert main(["a drone", "--provider=openrouter", f"--outputs={tmp_path / 'o2'}", "--no-aero", "--quiet"]) \
+        == EXIT_ERROR
+    assert not (tmp_path / "o2").exists()
     assert main([f"--spec={tmp_path / 'missing.json'}", "--no-aero", "--quiet"]) == EXIT_ERROR
 
 

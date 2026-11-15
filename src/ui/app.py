@@ -5,7 +5,8 @@ critic loop, then inspect the design, the critic's decisions and the report, and
     Sizing + parts list only (host):     streamlit run src/ui/app.py
 
 Environment: ISR_FORGE_OUTPUTS (run folders, default ./outputs), ISR_FORGE_DB (COTS catalog path),
-ANTHROPIC_API_KEY (optional: enables designing from a description, the LLM critic and the report narrative).
+OPENROUTER_API_KEY or ANTHROPIC_API_KEY (optional: enables designing from a description, the LLM critic and the
+report narrative), ISR_FORGE_LLM_PROVIDER and ISR_FORGE_MODEL (see src/agent/providers.py).
 """
 
 import logging
@@ -21,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:  # `streamlit run` only puts src/ui on sys.pa
 import streamlit as st  # noqa: E402
 
 from src import pipeline  # noqa: E402
+from src.agent.providers import LLMConfigError  # noqa: E402
 from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
@@ -36,6 +38,7 @@ AIRFRAMES: Final[tuple[str, ...]] = ("auto", "fixed_wing", "quadplane_vtol")
 PROPULSION: Final[tuple[str, ...]] = ("auto", "electric", "series_hybrid")
 GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
+MAX_MODEL_CHARS: Final[int] = 200
 EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
                               "6-hour endurance, and 80 km datalink radius")
 DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "Flight test")
@@ -60,6 +63,7 @@ def _init_state() -> None:
         st.session_state["preset"] = next(iter(EXAMPLE_MISSIONS))
         _load_preset()
     st.session_state.setdefault("prompt", EXAMPLE_PROMPT)
+    st.session_state.setdefault("llm_model", "")
     st.session_state.setdefault("with_aero_cad", pipeline.aero_cad_available())
     st.session_state.setdefault("with_sitl", pipeline.aero_cad_available() and pipeline.sitl_available())
 
@@ -75,15 +79,28 @@ def _stage_options() -> None:
                 help=None if sitl else "Needs the Docker image: docker compose up ui")
 
 
+def _llm_options() -> None:
+    """Model override for this session (used by the parser, the critic and the report writer)."""
+    if agent_service.llm_problem() is not None:
+        return
+    st.text_input("LLM model (optional)", key="llm_model", max_chars=MAX_MODEL_CHARS,
+                  placeholder="provider default, e.g. openai/gpt-5.6-sol or google/gemini-3.8-flash on OpenRouter",
+                  help="Any model id your provider accepts; blank uses ISR_FORGE_MODEL or the provider default.")
+    try:
+        st.caption(f"LLM: {defang(agent_service.llm_label(st.session_state['llm_model']))}")
+    except LLMConfigError as exc:
+        st.error(defang(str(exc)))
+
+
 def _description_form() -> bool:
-    has_llm: bool = agent_service.llm_configured()
+    problem: Optional[str] = agent_service.llm_problem()
     with st.form("describe"):
         st.subheader("Describe the mission")
-        st.text_area("Design request", key="prompt", max_chars=MAX_PROMPT_CHARS, disabled=not has_llm,
-                     help="Claude extracts the requirements; every number is then computed by the physics tools.")
-        if not has_llm:
-            st.caption(agent_service.NO_LLM_MESSAGE)
-        return st.form_submit_button("Design from description", key="submit_prompt", disabled=not has_llm)
+        st.text_area("Design request", key="prompt", max_chars=MAX_PROMPT_CHARS, disabled=problem is not None,
+                     help="The LLM extracts the requirements; every number is then computed by the physics tools.")
+        if problem:
+            st.caption(defang(problem))
+        return st.form_submit_button("Design from description", key="submit_prompt", disabled=problem is not None)
 
 
 def _number_inputs() -> None:
@@ -136,10 +153,11 @@ def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] =
             do_aero: bool = st.session_state["with_aero_cad"]
             view = agent_service.run(OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero,
                                      with_sitl=do_aero and st.session_state["with_sitl"], progress=status.write,
-                                     prompt=prompt, requirements=requirements)
-        except pipeline.PipelineError as exc:
+                                     prompt=prompt, requirements=requirements,
+                                     model=st.session_state["llm_model"])
+        except (pipeline.PipelineError, LLMConfigError) as exc:
             logger.warning("design run rejected: %s", exc)
-            _fail(status, "Design not started", str(exc))
+            _fail(status, "Design not started", defang(str(exc)))
             return
         except Exception:  # a bug or I/O failure: log the traceback, never leave a stale result on screen
             logger.exception("design run failed")
@@ -219,7 +237,7 @@ def _agent_tabs(view: AgentRunView, critic_tab: Any, report_tab: Any, files_tab:
         st.dataframe([{"Iteration": c.get("iteration"), "Failed gates": ", ".join(c.get("failed", [])) or "-",
                        "Changes": "; ".join(c.get("changes", [])) or "-", "Summary": c.get("summary", "")}
                       for c in view.critic_log], hide_index=True, use_container_width=True)
-        st.caption("Critic: " + ("Claude proposes knob changes; " if view.used_llm else "")
+        st.caption("Critic: " + ("the LLM proposes knob changes; " if view.used_llm else "")
                    + "bounded rule-table steps are applied and always win on failed gates.")
     with report_tab:
         text: Optional[str] = presenters.read_report(view.out_dir, view.report_path)
@@ -265,6 +283,7 @@ def main() -> None:
                "packaging, group mass and energy reserve; all engineering numbers come from deterministic tools.")
     _init_state()
     _stage_options()
+    _llm_options()
     if _description_form():
         _run_description(st.session_state["prompt"])
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)

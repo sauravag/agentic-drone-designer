@@ -26,6 +26,7 @@ physics = [
 agent = [
     "langgraph",
     "anthropic>=2.8",  # structured outputs + server-side refusal fallback (beta.messages.parse)
+    "openai>=1.99",  # OpenRouter's OpenAI-compatible API (chat.completions.parse with strict JSON schema)
 ]
 dev = [
     "pytest>=8.0",

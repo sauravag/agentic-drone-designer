@@ -4,8 +4,9 @@
                         6-hour endurance, and 80 km datalink radius"
     python -m src.main --spec requirements.json --no-sitl
 
-Needs ANTHROPIC_API_KEY (or an `ant auth login` profile) for natural-language input; --spec runs without
-an LLM (rule-based critic, template narrative). Aero/CAD and SITL run when their toolchains are installed
+Natural-language input needs an LLM: OPENROUTER_API_KEY (any OpenRouter model) or ANTHROPIC_API_KEY, chosen
+with --provider/--model or ISR_FORGE_LLM_PROVIDER/ISR_FORGE_MODEL; --spec runs without an LLM (rule-based
+critic, template narrative). Aero/CAD and SITL run when their toolchains are installed
 (the Docker image). Exit codes: 0 converged (and SITL passed if run), 1 not converged or SITL failed,
 2 clarification needed, 3 error.
 """
@@ -20,8 +21,9 @@ from pydantic import ValidationError
 
 from src import pipeline
 from src.agent.graph import run_agent
-from src.agent.llm import ClaudeLLM, StructuredLLM
+from src.agent.llm import StructuredLLM
 from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status
+from src.agent.providers import PROVIDERS, LLMConfigError, make_llm
 from src.schemas.requirements import OperationalRequirements
 from src.tools.database.seed_data import DEFAULT_DB_PATH
 
@@ -42,7 +44,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-sitl", action="store_true", help="skip the ArduPilot SITL flight test")
     p.add_argument("--max-iterations", type=_iterations, default=MAX_ITERATIONS,
                    help=f"critic loop cap, 0-{ITERATION_CEILING} (SRS: {MAX_ITERATIONS})")
-    p.add_argument("--model", help="Claude model id (default: ISR_FORGE_MODEL or claude-opus-5-5)")
+    p.add_argument("--provider", choices=list(PROVIDERS),
+                   help="LLM provider (default: ISR_FORGE_LLM_PROVIDER, else whichever API key is set)")
+    p.add_argument("--model", help="model id in the provider's naming, e.g. openai/gpt-5.6-sol on OpenRouter "
+                                    "(default: ISR_FORGE_MODEL, else the provider's default)")
     p.add_argument("--quiet", action="store_true")
     return p
 
@@ -60,7 +65,7 @@ def _load_spec(path: Path) -> OperationalRequirements:
 
 def _context(args: argparse.Namespace) -> AgentContext:
     stages = pipeline.resolve_stages(False if args.no_aero else None, False if args.no_sitl or args.no_aero else None)
-    llm: Optional[StructuredLLM] = None if args.spec else ClaudeLLM(args.model)
+    llm: Optional[StructuredLLM] = None if args.spec else make_llm(args.provider, args.model)
     return AgentContext(llm=llm, outputs_root=args.outputs, db_path=args.db, with_aero_cad=stages["aero_cad"],
                         with_sitl=stages["sitl"], max_iterations=args.max_iterations,
                         progress=lambda message: None if args.quiet else print(f"[Tool] {message}", flush=True))
@@ -75,7 +80,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         requirements = _load_spec(args.spec) if args.spec else None
         state = run_agent(_context(args), args.prompt, requirements)
-    except (OSError, ValidationError, pipeline.PipelineError) as exc:
+    except (OSError, ValidationError, LLMConfigError, pipeline.PipelineError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     if state.get("fatal_error"):

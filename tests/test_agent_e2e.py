@@ -8,8 +8,8 @@ so the first critique must fail and the critic must raise `reserve_fraction` bef
 
 Needs the Docker image (OpenVSP + arduplane):
     docker compose run --rm isr-forge pytest -q tests/test_agent_e2e.py
-The LLM is a deterministic scripted stand-in unless ISR_FORGE_LIVE_LLM=1 and Claude credentials are
-available, in which case Claude parses the prompt, critiques and writes the narrative.
+The LLM is a deterministic scripted stand-in unless ISR_FORGE_LIVE_LLM=1 and an LLM key is set, in which
+case the configured provider/model (src/agent/providers.py) parses, critiques and writes the narrative.
 """
 
 import os
@@ -27,20 +27,22 @@ REQUIRED_ARTIFACTS: tuple[str, ...] = ("oml.step", "assembly.step", "bom.json", 
                                        "sitl_report.json", "design_report.md")
 
 
-def _llm() -> tuple[Any, str]:
+def _llm(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, str]:
     if os.environ.get("ISR_FORGE_LIVE_LLM") == "1":
-        from src.agent.llm import ClaudeLLM
+        from src.agent import providers
+        from tests.conftest import LIVE_LLM_ENV
 
-        llm = ClaudeLLM()
-        return llm, f"live {llm.model}"
+        for name, value in LIVE_LLM_ENV.items():  # conftest hides the keys from every other test
+            monkeypatch.setenv(name, value)
+        return providers.make_llm(), f"live {providers.describe()}"
     return ScriptedLLM(), "scripted"
 
 
 @pytest.mark.docker
-def test_agent_designs_the_srs_example_end_to_end(tmp_path: Path) -> None:
+def test_agent_designs_the_srs_example_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     if not (pipeline.aero_cad_available() and pipeline.sitl_available()):
         pytest.skip("needs OpenVSP and arduplane (run in the Docker image)")
-    llm, kind = _llm()
+    llm, kind = _llm(monkeypatch)
     ctx = AgentContext(llm=llm, outputs_root=tmp_path / "outputs", db_path=tmp_path / "catalog.db",
                        with_aero_cad=True, with_sitl=True)
     state = run_agent(ctx, SRS_PROMPT)

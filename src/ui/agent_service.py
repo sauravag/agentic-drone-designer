@@ -1,29 +1,29 @@
 """Web form <-> design agent (M6). Builds the AgentContext, runs the LangGraph critic loop, and flattens the
 final DesignState into an immutable view for app.py. Kept free of Streamlit so it is unit-testable.
 
-Claude is optional: a natural-language request needs it (parser), while structured form input runs the
-same loop with the rule-table critic and a template narrative when no API key is configured.
+An LLM is optional: a natural-language request needs one (parser), while structured form input runs the
+same loop with the rule-table critic and a template narrative when no API key is configured. The provider
+and model come from src/agent/providers.py (OpenRouter or Anthropic); the form can override the model.
 """
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Final, Optional
 
 from src import pipeline
 from src.agent.graph import run_agent
-from src.agent.llm import ClaudeLLM, StructuredLLM
+from src.agent import providers
+from src.agent.llm import StructuredLLM
 from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status, run_warnings
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, DesignState, FCSArtifacts, SizingOutput
 
-API_KEY_ENV: Final[str] = "ANTHROPIC_API_KEY"
 STATUS_CONVERGED: Final[str] = "converged"
 STATUS_CLARIFY: Final[str] = "clarification"
 STATUS_ERROR: Final[str] = "error"
-NO_LLM_MESSAGE: Final[str] = (f"Designing from a description needs Claude: set {API_KEY_ENV} (in .env for Docker "
-                              "Compose, or in your shell on the host), or use the structured form below.")
+NO_LLM_TEMPLATE: Final[str] = ("Designing from a description needs an LLM: {problem} (in .env for Docker Compose, "
+                               "or in your shell on the host), or use the structured form below.")
 
 
 @dataclass(frozen=True)
@@ -51,13 +51,26 @@ class AgentRunView:
         return self.status not in (STATUS_CLARIFY, STATUS_ERROR)
 
 
+def llm_problem() -> Optional[str]:
+    """Why designing from a description is unavailable, or None when an LLM is configured.
+    Only checks that a key is present; the key itself is read by the provider SDK, never shown."""
+    problem: Optional[str] = providers.config_problem()
+    return None if problem is None else NO_LLM_TEMPLATE.format(problem=problem)
+
+
 def llm_configured() -> bool:
-    """Only checks that a key is present; the key itself is read by the Anthropic SDK, never by us."""
-    return bool(os.environ.get(API_KEY_ENV, "").strip())
+    return llm_problem() is None
 
 
-def make_llm() -> Optional[StructuredLLM]:
-    return ClaudeLLM() if llm_configured() else None
+def llm_label(model: str = "") -> str:
+    """`provider · model` for the form; raises providers.LLMConfigError on a bad setting."""
+    return providers.describe(model=model or None)
+
+
+def make_llm(model: str = "") -> Optional[StructuredLLM]:
+    """The configured LLM (with `model` overriding ISR_FORGE_MODEL), or None when no key is set.
+    Raises providers.LLMConfigError for an invalid provider or model id."""
+    return providers.make_llm(model=model or None) if llm_configured() else None
 
 
 def _optional_path(value: Optional[str]) -> Optional[Path]:
@@ -82,15 +95,16 @@ def to_view(state: DesignState, used_llm: bool) -> AgentRunView:
 
 def run(outputs_root: Path, db_path: Path, with_aero_cad: Optional[bool], with_sitl: Optional[bool],
         progress: Callable[[str], None], prompt: str = "", requirements: Optional[OperationalRequirements] = None,
-        max_iterations: int = MAX_ITERATIONS) -> AgentRunView:
-    """Run the agent on a description (`prompt`) or on validated form input (`requirements`).
-    Raises pipeline.PipelineError when a requested stage's toolchain is missing."""
+        max_iterations: int = MAX_ITERATIONS, model: str = "") -> AgentRunView:
+    """Run the agent on a description (`prompt`) or on validated form input (`requirements`), with `model`
+    overriding the configured model. Raises pipeline.PipelineError when a requested stage's toolchain is
+    missing and providers.LLMConfigError for an invalid model id."""
     if bool(prompt.strip()) == (requirements is not None):
         raise ValueError("give either a description or structured requirements")
     stages: dict[str, bool] = pipeline.resolve_stages(with_aero_cad, with_sitl)
-    llm: Optional[StructuredLLM] = make_llm()
+    llm: Optional[StructuredLLM] = make_llm(model)
     if requirements is None and llm is None:
-        return AgentRunView(STATUS_ERROR, NO_LLM_MESSAGE)
+        return AgentRunView(STATUS_ERROR, llm_problem())
     ctx = AgentContext(llm=llm, outputs_root=outputs_root, db_path=db_path, with_aero_cad=stages["aero_cad"],
                        with_sitl=stages["sitl"], max_iterations=max_iterations, progress=progress)
     return to_view(run_agent(ctx, prompt.strip(), requirements), used_llm=llm is not None)

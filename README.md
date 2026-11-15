@@ -5,7 +5,7 @@ or series-hybrid, fixed-wing or quadplane VTOL), a COTS bill of materials, OpenV
 Build123d internal CAD solved for static margin, ArduPilot parameters validated in a headless SITL flight
 test, and a design report. The full specification is in [REQUIREMENTS.md](REQUIREMENTS.md).
 
-**Zero LLM math.** Claude only reads the request, suggests which design knob to turn, and writes report
+**Zero LLM math.** The LLM only reads the request, suggests which design knob to turn, and writes report
 prose. Every engineering number comes from deterministic tools; the critic's knob steps are bounded and
 rule-table fixes always win on failed gates; any figure in the LLM narrative that is not in the computed
 results is flagged in the report.
@@ -13,14 +13,31 @@ results is flagged in the report.
 ## Quick start
 
 ```bash
-cp .env.example .env            # optional: add ANTHROPIC_API_KEY for natural-language input
+cp .env.example .env            # optional: add OPENROUTER_API_KEY (or ANTHROPIC_API_KEY) for natural-language input
 docker compose build            # OpenVSP, VSPAERO, ArduPilot arduplane, JSBSim (first build is slow)
 docker compose up ui            # web form at http://localhost:8501 (bound to 127.0.0.1)
 ```
 
-The web form accepts either a description (needs `ANTHROPIC_API_KEY`) or structured requirements (works
-without a key: rule-table critic, template report narrative). Both run the same agent and critic loop.
-Docker Compose reads `.env`; when running on the host, `export ANTHROPIC_API_KEY=...` in your shell instead.
+The web form accepts either a description (needs an LLM key) or structured requirements (works without a
+key: rule-table critic, template report narrative). Both run the same agent and critic loop. Docker Compose
+reads `.env`; when running on the host, `export OPENROUTER_API_KEY=...` in your shell instead.
+
+### Choosing the LLM
+
+The provider and model are configuration. Every adapter returns schema-validated objects, so any model that
+supports structured outputs works.
+
+| Setting | Meaning |
+|---|---|
+| `OPENROUTER_API_KEY` | use [OpenRouter](https://openrouter.ai/models): any model it lists with structured outputs |
+| `ANTHROPIC_API_KEY` | use Claude directly through the Anthropic SDK |
+| `ISR_FORGE_LLM_PROVIDER` | `openrouter` or `anthropic`; unset picks whichever key is set (OpenRouter first) |
+| `ISR_FORGE_MODEL` | model id in the provider's naming, e.g. `openai/gpt-5.6-sol`, `google/gemini-3.8-flash` |
+
+Defaults: `anthropic/claude-opus-5.5` on OpenRouter, `claude-opus-5-5` on Anthropic. The CLI's `--provider` and
+`--model` and the web form's model field override the environment for one run. OpenRouter requests set
+`provider.require_parameters`, so they only reach hosts that enforce the JSON schema; a model with no such host
+fails with a clear error rather than returning free text.
 
 ### Command line
 
@@ -36,7 +53,8 @@ docker compose run --rm isr-forge python -m src.main --spec requirements.json --
 | `--spec FILE` | `OperationalRequirements` JSON instead of a description (no LLM needed) |
 | `--no-aero` / `--no-sitl` | skip OpenVSP/CAD (and therefore SITL) / skip the SITL flight test |
 | `--max-iterations N` | critic loop cap, 0–50 (default 8, per the SRS) |
-| `--model ID` | Claude model (default `ISR_FORGE_MODEL` or `claude-opus-5-5`) |
+| `--provider NAME` | `openrouter` or `anthropic` (default `ISR_FORGE_LLM_PROVIDER`, else whichever key is set) |
+| `--model ID` | model id for that provider (default `ISR_FORGE_MODEL`, else the provider default) |
 
 Exit codes: `0` converged, `1` not converged or SITL failed, `2` clarification needed, `3` error.
 
@@ -81,5 +99,6 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[physics,agent,ui,dev]'  
 docker run --rm -v "$PWD":/app -w /app isr-forge:latest python -m pytest -q -p no:cacheprovider   # full suite
 ```
 
-The agent tests use a scripted LLM (no network, no cost). `ISR_FORGE_LIVE_LLM=1` plus `ANTHROPIC_API_KEY`
-runs the end-to-end test against Claude (three calls per run).
+The agent tests use a scripted LLM (no network, no cost); the OpenRouter adapter is tested through the real
+`openai` SDK against a mock HTTP transport. `ISR_FORGE_LIVE_LLM=1` plus an API key runs the end-to-end test
+against the configured provider and model (three or more calls per run).

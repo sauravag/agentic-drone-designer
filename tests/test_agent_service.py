@@ -6,6 +6,7 @@ import pytest
 
 from src import pipeline
 from src.agent.graph import initial_state
+from src.agent.providers import LLMConfigError
 from src.schemas.state import DesignState
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui import agent_service
@@ -19,8 +20,8 @@ def _run(tmp_path: Path, **kwargs: object) -> agent_service.AgentRunView:
 
 
 @pytest.fixture
-def no_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(agent_service.API_KEY_ENV, raising=False)
+def no_key() -> None:
+    """tests/conftest.py already clears every provider key; named for readability."""
 
 
 def test_form_input_runs_the_critic_loop_and_writes_a_report_without_an_llm(tmp_path: Path, no_key: None) -> None:
@@ -35,15 +36,18 @@ def test_form_input_runs_the_critic_loop_and_writes_a_report_without_an_llm(tmp_
 
 def test_description_without_an_api_key_is_refused_before_any_run(tmp_path: Path, no_key: None) -> None:
     view = _run(tmp_path, prompt=SRS_PROMPT)
-    assert view.status == agent_service.STATUS_ERROR and view.message == agent_service.NO_LLM_MESSAGE
+    assert view.status == agent_service.STATUS_ERROR and view.message == agent_service.llm_problem()
+    assert "OPENROUTER_API_KEY" in view.message and "ANTHROPIC_API_KEY" in view.message
     assert not view.has_design
     assert not (tmp_path / "o").exists()
 
 
 def test_description_with_an_llm_parses_iterates_and_reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     llm = ScriptedLLM()
-    monkeypatch.setattr(agent_service, "make_llm", lambda: llm)
-    view = _run(tmp_path, prompt=f"  {SRS_PROMPT}  ")
+    models: list[str] = []
+    monkeypatch.setattr(agent_service, "make_llm", lambda model="": models.append(model) or llm)
+    view = _run(tmp_path, prompt=f"  {SRS_PROMPT}  ", model="openai/gpt-5.6-sol")
+    assert models == ["openai/gpt-5.6-sol"]  # the form's model override reaches the factory
     assert view.used_llm and view.has_design
     assert view.requirements is not None and view.requirements.payload_mass_kg == pytest.approx(3.5)
     assert view.assumptions[0].startswith("Read from the request")
@@ -55,7 +59,7 @@ def test_description_with_an_llm_parses_iterates_and_reports(tmp_path: Path, mon
 
 def test_a_missing_required_fact_returns_the_clarification_question(tmp_path: Path,
                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM(draft=SRS_DRAFT.model_copy(
+    monkeypatch.setattr(agent_service, "make_llm", lambda model="": ScriptedLLM(draft=SRS_DRAFT.model_copy(
         update={"endurance": None})))
     view = _run(tmp_path, prompt="Design a drone with a 3.5 kg gimbal")
     assert view.status == agent_service.STATUS_CLARIFY and "endurance" in (view.message or "")
@@ -75,11 +79,26 @@ def test_missing_toolchain_is_rejected_before_a_run_folder_exists(tmp_path: Path
     assert not (tmp_path / "o").exists()
 
 
-@pytest.mark.parametrize(("value", "expected"), [("sk-ant-test", True), ("   ", False), ("", False)])
-def test_llm_configured_only_checks_for_a_non_blank_key(monkeypatch: pytest.MonkeyPatch, value: str,
+@pytest.mark.parametrize("env", ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"])
+@pytest.mark.parametrize(("value", "expected"), [("sk-test", True), ("   ", False), ("", False)])
+def test_llm_configured_only_checks_for_a_non_blank_key(monkeypatch: pytest.MonkeyPatch, env: str, value: str,
                                                         expected: bool) -> None:
-    monkeypatch.setenv(agent_service.API_KEY_ENV, value)
+    monkeypatch.setenv(env, value)
     assert agent_service.llm_configured() is expected
+
+
+def test_an_invalid_model_override_is_rejected_before_a_run_folder_exists(tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    with pytest.raises(LLMConfigError, match="invalid model id"):
+        _run(tmp_path, requirements=G1_ELECTRIC_FW, model="gpt; rm -rf /")
+    assert not (tmp_path / "o").exists()
+
+
+def test_the_form_label_names_the_provider_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    assert agent_service.llm_label() == "openrouter · anthropic/claude-opus-5.5"
+    assert agent_service.llm_label("google/gemini-3.8-flash") == "openrouter · google/gemini-3.8-flash"
 
 
 def test_no_key_means_no_llm(no_key: None) -> None:

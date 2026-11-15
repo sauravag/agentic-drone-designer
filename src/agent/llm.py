@@ -1,8 +1,8 @@
-"""The only place ISR-Forge talks to an LLM: schema-constrained calls via the Anthropic SDK.
+"""The `StructuredLLM` protocol every provider adapter implements, and the Claude (Anthropic SDK) adapter.
 
-Nodes depend on the `StructuredLLM` protocol, so tests and offline runs can inject a scripted model.
-Credentials come from the environment (ANTHROPIC_API_KEY, or an `ant auth login` profile); nothing is
-hard-coded. The model is configurable with ISR_FORGE_MODEL.
+Nodes depend only on the protocol, so tests and offline runs can inject a scripted model and the provider is
+configuration (src/agent/providers.py; OpenRouter lives in src/agent/openrouter.py). Credentials come from
+the environment (ANTHROPIC_API_KEY, or an `ant auth login` profile); nothing is hard-coded.
 """
 
 import logging

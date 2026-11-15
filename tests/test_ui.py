@@ -100,7 +100,6 @@ def test_downloadable_files_stay_inside_the_run_folder(run: pipeline.DesignRun) 
 def test_app_runs_a_sizing_only_design_headlessly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from streamlit.testing.v1 import AppTest
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=120)
@@ -128,8 +127,8 @@ def test_app_designs_from_a_description_when_claude_is_configured(tmp_path: Path
     from src.ui import agent_service
     from tests.agent_fakes import SRS_PROMPT, ScriptedLLM
 
-    monkeypatch.setattr(agent_service, "llm_configured", lambda: True)
-    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
+    monkeypatch.setattr(agent_service, "llm_problem", lambda: None)
+    monkeypatch.setattr(agent_service, "make_llm", lambda model="": ScriptedLLM())
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=180)
@@ -149,7 +148,7 @@ def _llm_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
 
     from src.ui import agent_service
 
-    monkeypatch.setattr(agent_service, "llm_configured", lambda: True)
+    monkeypatch.setattr(agent_service, "llm_problem", lambda: None)
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
@@ -213,9 +212,9 @@ def test_app_shows_the_clarification_question(tmp_path: Path, monkeypatch: pytes
     from src.ui import agent_service
     from tests.agent_fakes import SRS_DRAFT, ScriptedLLM
 
-    monkeypatch.setattr(agent_service, "llm_configured", lambda: True)
+    monkeypatch.setattr(agent_service, "llm_problem", lambda: None)
     monkeypatch.setattr(agent_service, "make_llm",
-                        lambda: ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
+                        lambda model="": ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
