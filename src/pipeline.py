@@ -36,6 +36,7 @@ DEFAULT_OUTPUTS_ROOT: Final[Path] = Path(__file__).resolve().parents[1] / "outpu
 MAX_SLUG_LENGTH: Final[int] = 30  # leaves room for a de-duplication suffix within 40 chars
 MASS_CONVERGENCE_TOLERANCE: Final[float] = 0.03  # SRS 4.2: as-built vs sized MTOW within +/- 3 %
 LD_DEVIATION_TOLERANCE: Final[float] = 0.15
+PAYLOAD_TOLERANCE: Final[float] = 0.05  # catalog sensor vs the mass/power the sizing budgeted
 
 # OpenVSP is a process-wide singleton: serialise runs from concurrent web sessions. The catalog is
 # seeded at most once per process even if several sessions start their first run together.
@@ -128,6 +129,22 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
     return tuple(notes)
 
 
+def payload_warnings(req: OperationalRequirements, bom: Optional[SelectedBOM]) -> tuple[str, ...]:
+    """The sizing budgets the requested payload mass/power; the catalog snaps to the next sensor up, which
+    can be heavier or hungrier. Flag the gap so an optimistic energy budget is never silent."""
+    if bom is None:
+        return ()
+    part, notes = bom.payload, []
+    if part.power_w > req.payload_power_w * (1 + PAYLOAD_TOLERANCE):
+        notes.append(f"Catalog payload '{part.name}' draws {part.power_w:.0f} W but the sizing budgeted "
+                     f"{req.payload_power_w:.0f} W: endurance is optimistic. Set the payload power to "
+                     f"{part.power_w:.0f} W and re-run for a closed energy budget.")
+    if part.mass_kg > req.payload_mass_kg * (1 + PAYLOAD_TOLERANCE):
+        notes.append(f"Catalog payload '{part.name}' weighs {part.mass_kg:.2f} kg vs the {req.payload_mass_kg:.2f} kg "
+                     "requested; the sizing used the requested mass, so the as-built aircraft is heavier.")
+    return tuple(notes)
+
+
 def _noop(_: str) -> None:
     return None
 
@@ -183,7 +200,7 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
         if stages["sitl"]:
             fcs = run_sitl(req, sizing, bom, aero, cad, out_dir, progress)
             _write_json(out_dir / "fcs.json", fcs)
-    warnings = design_warnings(sizing, aero, cad, fcs)
+    warnings = design_warnings(sizing, aero, cad, fcs) + payload_warnings(req, bom)
     _write_json(out_dir / "run_summary.json", _summary(run_id, stages, "ok", warnings=list(warnings)))
     progress("Done")
     return DesignRun(run_id, out_dir, req, sizing, bom, aero, cad, warnings, fcs)

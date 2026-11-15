@@ -47,9 +47,15 @@ def cell(value: Any) -> str:
     return " ".join(text.split()).replace("|", "\\|").replace("`", "'")
 
 
+def defang(text: str) -> str:
+    """Neutralise markdown link/image syntax in LLM- or user-authored text: a rendered `![](https://...)`
+    would make the viewer's browser fetch an attacker-chosen URL (data exfiltration via prompt injection)."""
+    return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]").replace("<", "&lt;")
+
+
 def inline(text: str) -> str:
-    """A single line of user/LLM text for headings and bullets (no newlines or heading markers)."""
-    return " ".join(text.split()).lstrip("#").strip()
+    """A single line of user/LLM text for headings and bullets (no newlines, heading markers or links)."""
+    return defang(" ".join(text.split()).lstrip("#").strip())
 
 
 def table(rows: Sequence[dict[str, Any]]) -> str:
@@ -150,9 +156,9 @@ def render(inputs: ReportInputs, narrative: ReportNarrative) -> str:
                        f"Run `{inputs.run_id}` · {stamp} · status **{status}** after {inputs.iterations} critic "
                        f"iteration(s)\n", "## Executive summary\n",
                        "_Narrative written by the LLM from the computed results; the tables are authoritative._\n",
-                       narrative.executive_summary + "\n"]
-    tail: list[str] = ["## Trade-offs\n", narrative.trade_offs + "\n",
-                       "## Risks and next steps\n", narrative.risks_and_next_steps + "\n",
+                       defang(narrative.executive_summary) + "\n"]
+    tail: list[str] = ["## Trade-offs\n", defang(narrative.trade_offs) + "\n",
+                       "## Risks and next steps\n", defang(narrative.risks_and_next_steps) + "\n",
                        "## Warnings\n", "\n".join(f"- {inline(w)}" for w in inputs.warnings) or "_none_", "\n"]
     return "\n".join(head + _sections(inputs) + tail)
 

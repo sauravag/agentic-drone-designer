@@ -1,16 +1,18 @@
-"""ISR-Forge local web form: enter mission requirements, run the design pipeline, inspect and download.
+"""ISR-Forge local web form: describe a mission (or fill in its requirements), run the design agent with its
+critic loop, then inspect the design, the critic's decisions and the report, and download every file.
 
     Full pipeline (OpenVSP aero + CAD + ArduPilot SITL):  docker compose up ui  ->  http://localhost:8501
     Sizing + parts list only (host):     streamlit run src/ui/app.py
 
-Environment: ISR_FORGE_OUTPUTS (run folders, default ./outputs), ISR_FORGE_DB (COTS catalog path).
+Environment: ISR_FORGE_OUTPUTS (run folders, default ./outputs), ISR_FORGE_DB (COTS catalog path),
+ANTHROPIC_API_KEY (optional: enables designing from a description, the LLM critic and the report narrative).
 """
 
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Optional
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:  # `streamlit run` only puts src/ui on sys.path
@@ -19,8 +21,11 @@ if str(REPO_ROOT) not in sys.path:  # `streamlit run` only puts src/ui on sys.pa
 import streamlit as st  # noqa: E402
 
 from src import pipeline  # noqa: E402
+from src.agent.report import defang, inline  # noqa: E402
+from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
-from src.ui import presenters  # noqa: E402
+from src.ui import agent_service, presenters  # noqa: E402
+from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -30,6 +35,19 @@ DB_PATH: Final[Path] = Path(os.environ.get("ISR_FORGE_DB", str(DEFAULT_DB_PATH))
 AIRFRAMES: Final[tuple[str, ...]] = ("auto", "fixed_wing", "quadplane_vtol")
 PROPULSION: Final[tuple[str, ...]] = ("auto", "electric", "series_hybrid")
 GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
+MAX_PROMPT_CHARS: Final[int] = 2000
+EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
+                              "6-hour endurance, and 80 km datalink radius")
+DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "Flight test")
+AGENT_TABS: Final[tuple[str, ...]] = ("Critic", "Report", "Files")
+HEADLINE_COLUMNS: Final[int] = 6
+GENERIC_FAILURE: Final[str] = ("The design run failed unexpectedly; details are in the server log and the run "
+                               "folder's run_summary.json.")
+STATUS_TEXT: Final[dict[str, str]] = {
+    agent_service.STATUS_CONVERGED: "Converged: every critic gate passed",
+    "converged_sitl_failed": "Converged on the critic gates, but the SITL flight test FAILED",
+    "not_converged": "NOT converged: the critic could not satisfy every gate (see the Critic tab)",
+}
 
 
 def _load_preset() -> None:
@@ -41,8 +59,31 @@ def _init_state() -> None:
     if "mission_name" not in st.session_state:
         st.session_state["preset"] = next(iter(EXAMPLE_MISSIONS))
         _load_preset()
+    st.session_state.setdefault("prompt", EXAMPLE_PROMPT)
     st.session_state.setdefault("with_aero_cad", pipeline.aero_cad_available())
     st.session_state.setdefault("with_sitl", pipeline.aero_cad_available() and pipeline.sitl_available())
+
+
+# ------------------------------------------------------------------ inputs ---
+def _stage_options() -> None:
+    available: bool = pipeline.aero_cad_available()
+    st.checkbox("Run OpenVSP aerodynamics + 3D CAD (minutes)", key="with_aero_cad", disabled=not available,
+                help=None if available else "Needs the Docker image: docker compose up ui")
+    sitl: bool = available and pipeline.sitl_available()
+    st.checkbox("Fly the ArduPilot SITL take-off and doublet test (needs aero + CAD)", key="with_sitl",
+                disabled=not (sitl and st.session_state["with_aero_cad"]),
+                help=None if sitl else "Needs the Docker image: docker compose up ui")
+
+
+def _description_form() -> bool:
+    has_llm: bool = agent_service.llm_configured()
+    with st.form("describe"):
+        st.subheader("Describe the mission")
+        st.text_area("Design request", key="prompt", max_chars=MAX_PROMPT_CHARS, disabled=not has_llm,
+                     help="Claude extracts the requirements; every number is then computed by the physics tools.")
+        if not has_llm:
+            st.caption(agent_service.NO_LLM_MESSAGE)
+        return st.form_submit_button("Design from description", key="submit_prompt", disabled=not has_llm)
 
 
 def _number_inputs() -> None:
@@ -67,98 +108,168 @@ def _configuration_inputs() -> None:
 
 def _requirements_form() -> bool:
     with st.form("requirements"):
+        st.subheader("…or enter the requirements")
         st.text_input(presenters.FIELD_LABELS["mission_name"], key="mission_name", max_chars=200)
         _number_inputs()
         _configuration_inputs()
-        available: bool = pipeline.aero_cad_available()
-        st.checkbox("Run OpenVSP aerodynamics + 3D CAD (minutes)", key="with_aero_cad", disabled=not available,
-                    help=None if available else "Needs the Docker image: docker compose up ui")
-        sitl: bool = available and pipeline.sitl_available()
-        st.checkbox("Fly the ArduPilot SITL take-off and doublet test (needs aero + CAD)", key="with_sitl",
-                    disabled=not sitl, help=None if sitl else "Needs the Docker image: docker compose up ui")
         return st.form_submit_button("Design aircraft", type="primary", key="submit")
 
 
-def _run(values: dict[str, Any]) -> None:
+# --------------------------------------------------------------------- run ---
+def _fail(status: Any, label: str, message: str) -> None:
+    status.update(label=label, state="error")
+    st.error(message)
+    st.session_state.pop("last_run", None)
+
+
+def _status_label(view: AgentRunView) -> str:
+    if view.status == agent_service.STATUS_CLARIFY:
+        return "Needs more information"
+    if view.status == agent_service.STATUS_ERROR:
+        return "Design failed"
+    return f"Run {view.run_id} finished: {view.status.replace('_', ' ')}"
+
+
+def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] = None) -> None:
+    with st.status("Designing…", expanded=True) as status:
+        try:
+            do_aero: bool = st.session_state["with_aero_cad"]
+            view = agent_service.run(OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero,
+                                     with_sitl=do_aero and st.session_state["with_sitl"], progress=status.write,
+                                     prompt=prompt, requirements=requirements)
+        except pipeline.PipelineError as exc:
+            logger.warning("design run rejected: %s", exc)
+            _fail(status, "Design not started", str(exc))
+            return
+        except Exception:  # a bug or I/O failure: log the traceback, never leave a stale result on screen
+            logger.exception("design run failed")
+            _fail(status, "Design failed", GENERIC_FAILURE)
+            return
+        failed: bool = view.status == agent_service.STATUS_ERROR
+        status.update(label=_status_label(view), state="error" if failed else "complete", expanded=False)
+    st.session_state["last_run"] = view
+
+
+def _run_description(prompt: str) -> None:
+    if not prompt.strip():
+        st.error("Describe the mission first.")
+        st.session_state.pop("last_run", None)
+        return
+    _execute(prompt=prompt)
+
+
+def _run_form(values: dict[str, Any]) -> None:
     req, errors = presenters.parse_form(values)
     if req is None:
         for message in errors:
             st.error(message)
         st.session_state.pop("last_run", None)
         return
-    with st.status("Designing…", expanded=True) as status:
-        try:
-            do_aero: bool = st.session_state["with_aero_cad"]
-            run = pipeline.run_design(req, OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero, progress=status.write,
-                                      with_sitl=do_aero and st.session_state["with_sitl"])
-        except pipeline.DESIGN_ERRORS as exc:
-            logger.warning("design run failed: %s", exc)
-            status.update(label="Design failed", state="error")
-            st.error(f"The mission could not be designed: {exc}")
-            st.session_state.pop("last_run", None)
-            return
-        status.update(label=f"Design complete: {run.run_id}", state="complete", expanded=False)
-    st.session_state["last_run"] = run
+    _execute(requirements=req)
 
 
-def _headline(run: pipeline.DesignRun) -> None:
-    s = run.sizing
-    cols = st.columns(6)
+# ------------------------------------------------------------------ output ---
+def _headline(view: AgentRunView) -> None:
+    s = view.sizing
+    cols = st.columns(HEADLINE_COLUMNS)
     cols[0].metric("MTOW", f"{s.mtow_kg:.2f} kg")
     cols[1].metric("DoD group", f"Group {s.dod_group}")
-    cols[2].metric("Wingspan", f"{s.wingspan_m:.2f} m")
-    ld = run.aero.ld_cruise if run.aero else s.assumed_ld_cruise
-    cols[3].metric("Cruise L/D", f"{ld:.1f}", help="VSPAERO" if run.aero else "sizing estimate")
-    cols[4].metric("Static margin", f"{run.cad.static_margin:.1%}" if run.cad else "not run")
-    cols[5].metric("SITL flight test", ("passed" if run.fcs.passed else "FAILED") if run.fcs else "not run")
+    cols[2].metric("Critic iterations", str(view.iterations))
+    ld = view.aero.ld_cruise if view.aero else s.assumed_ld_cruise
+    cols[3].metric("Cruise L/D", f"{ld:.1f}", help="VSPAERO" if view.aero else "sizing estimate")
+    cols[4].metric("Static margin", f"{view.cad.static_margin:.1%}" if view.cad else "not run")
+    cols[5].metric("SITL flight test", ("passed" if view.fcs.passed else "FAILED") if view.fcs else "not run")
 
 
 def _table(rows: list[tuple[str, str]]) -> None:
     st.dataframe([{"Quantity": k, "Value": v} for k, v in rows], hide_index=True, use_container_width=True)
 
 
-def _render(run: pipeline.DesignRun) -> None:
-    st.header(run.requirements.mission_name)
-    st.caption(f"Run `{run.run_id}` · files in `{run.out_dir}`")
-    for note in run.warnings:
-        st.warning(note)
-    _headline(run)
-    sizing_tab, parts_tab, aero_tab, fcs_tab, files_tab = st.tabs(
-        ["Sizing", "Components", "Aero & CAD", "Flight test", "Files"])
+def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: Any, fcs_tab: Any) -> None:
     with sizing_tab:
-        _table(presenters.sizing_summary(run.sizing))
+        _table(presenters.sizing_summary(view.sizing))
         st.subheader("Mission phases")
-        st.dataframe(presenters.phase_rows(run.sizing), hide_index=True, use_container_width=True)
+        st.dataframe(presenters.phase_rows(view.sizing), hide_index=True, use_container_width=True)
     with parts_tab:
-        st.dataframe(presenters.bom_rows(run.bom), hide_index=True, use_container_width=True)
-        st.caption("Catalog parts are representative; verify against manufacturer datasheets.")
+        if view.bom is None:
+            st.info("No parts list: the catalog step did not complete for the final iteration.")
+        else:
+            st.dataframe(presenters.bom_rows(view.bom), hide_index=True, use_container_width=True)
+            st.caption("Catalog parts are representative; verify against manufacturer datasheets.")
     with aero_tab:
-        if run.aero is None or run.cad is None:
+        if view.aero is None or view.cad is None:
             st.info("OpenVSP aerodynamics and CAD were not run for this design.")
         else:
-            st.dataframe(presenters.aero_rows(run.aero), hide_index=True, use_container_width=True)
-            _table(presenters.cad_rows(run.cad))
+            st.dataframe(presenters.aero_rows(view.aero), hide_index=True, use_container_width=True)
+            _table(presenters.cad_rows(view.cad))
     with fcs_tab:
-        if run.fcs is None:
+        if view.fcs is None:
             st.info("The ArduPilot SITL flight test was not run for this design.")
         else:
-            st.dataframe(presenters.fcs_rows(run.fcs), hide_index=True, use_container_width=True)
+            st.dataframe(presenters.fcs_rows(view.fcs), hide_index=True, use_container_width=True)
             st.caption("ardupilot.param was flown in arduplane + JSBSim: take-off (VTOL climb and transition for a "
                        "quadplane), then +15° roll and +10° pitch steps in FBWA. Details in sitl_report.json.")
+
+
+def _agent_tabs(view: AgentRunView, critic_tab: Any, report_tab: Any, files_tab: Any) -> None:
+    with critic_tab:
+        st.subheader("Final critic gates")
+        st.dataframe(list(view.gates), hide_index=True, use_container_width=True)
+        st.subheader("Critic iterations")
+        st.dataframe([{"Iteration": c.get("iteration"), "Failed gates": ", ".join(c.get("failed", [])) or "-",
+                       "Changes": "; ".join(c.get("changes", [])) or "-", "Summary": c.get("summary", "")}
+                      for c in view.critic_log], hide_index=True, use_container_width=True)
+        st.caption("Critic: " + ("Claude proposes knob changes; " if view.used_llm else "")
+                   + "bounded rule-table steps are applied and always win on failed gates.")
+    with report_tab:
+        text: Optional[str] = presenters.read_report(view.out_dir, view.report_path)
+        if text is None:
+            st.info("No report is available for this run.")
+        else:
+            st.markdown(text)  # LLM prose in it is defanged by report.render; raw HTML stays disabled
     with files_tab:
-        for path in presenters.downloadable_files(run.out_dir):
-            st.download_button(path.name, data=path.read_bytes(), file_name=path.name, key=f"dl-{run.run_id}-{path.name}")
+        for path in presenters.downloadable_files(view.out_dir) if view.out_dir else []:
+            st.download_button(path.name, data=path.read_bytes(), file_name=path.name, key=f"dl-{view.run_id}-{path.name}")
+
+
+def _render(view: AgentRunView) -> None:
+    if view.status == agent_service.STATUS_CLARIFY:
+        st.info(f"Clarification needed: {defang(view.message or '')}")
+        return
+    if view.status == agent_service.STATUS_ERROR or view.requirements is None:
+        st.error(defang(view.message or GENERIC_FAILURE))
+        return
+    st.header(defang(view.requirements.mission_name))
+    (st.success if view.status == agent_service.STATUS_CONVERGED else st.warning)(
+        STATUS_TEXT.get(view.status, view.status))
+    st.caption(f"Run `{view.run_id}` · files in `{view.out_dir}`")
+    for note in view.warnings:
+        st.warning(note)
+    if view.assumptions:
+        with st.expander("Assumptions made while reading the request"):
+            st.markdown("\n".join(f"- {inline(a)}" for a in view.assumptions))
+    if view.sizing is None:
+        st.error("Sizing did not converge for the final iteration; see the Critic and Report tabs.")
+    else:
+        _headline(view)
+    tabs = st.tabs([*DESIGN_TABS, *AGENT_TABS])
+    if view.sizing is not None:
+        _design_tabs(view, *tabs[:len(DESIGN_TABS)])
+    _agent_tabs(view, *tabs[len(DESIGN_TABS):])
 
 
 def main() -> None:
     st.set_page_config(page_title="ISR-Forge", layout="wide")
     st.title("ISR-Forge")
-    st.caption("Design a Group 1-3 ISR UAV from mission requirements. All engineering numbers come from "
-               "deterministic physics tools.")
+    st.caption("Design a Group 1-3 ISR UAV from mission requirements. A critic loop checks static margin, L/D, "
+               "packaging, group mass and energy reserve; all engineering numbers come from deterministic tools.")
     _init_state()
+    _stage_options()
+    if _description_form():
+        _run_description(st.session_state["prompt"])
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)
     if _requirements_form():
-        _run({key: st.session_state[key] for key in presenters.FIELD_LABELS})
+        _run_form({key: st.session_state[key] for key in presenters.FIELD_LABELS})
     if "last_run" in st.session_state:
         _render(st.session_state["last_run"])
 

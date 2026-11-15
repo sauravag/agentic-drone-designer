@@ -126,6 +126,27 @@ def test_stage_defaults_follow_the_installed_toolchain(monkeypatch: pytest.Monke
     assert pipeline.resolve_stages(None, None) == {"aero_cad": True, "sitl": False}
 
 
+def test_payload_warnings_flag_a_hungrier_or_heavier_catalog_sensor(sizing_only_run: pipeline.DesignRun) -> None:
+    req, bom = G1_ELECTRIC_FW, sizing_only_run.bom
+    assert pipeline.payload_warnings(req, None) == ()
+    text = " ".join(pipeline.payload_warnings(req, bom))
+    assert bom.payload.power_w > req.payload_power_w  # 1 kg request snaps to a 25 W unit vs 15 W budgeted
+    assert f"draws {bom.payload.power_w:.0f} W" in text and "15 W" in text
+    exact = req.model_copy(update={"payload_power_w": bom.payload.power_w, "payload_mass_kg": bom.payload.mass_kg})
+    assert pipeline.payload_warnings(exact, bom) == ()
+    assert any("payload" in w for w in sizing_only_run.warnings)  # surfaced by run_design too
+
+
+def test_payload_warnings_cover_the_power_and_mass_branches_separately(sizing_only_run: pipeline.DesignRun) -> None:
+    bom = sizing_only_run.bom
+    fits = G1_ELECTRIC_FW.model_copy(update={"payload_power_w": bom.payload.power_w,
+                                             "payload_mass_kg": bom.payload.mass_kg})
+    (power_only,) = pipeline.payload_warnings(fits.model_copy(update={"payload_power_w": 1.0}), bom)
+    assert "draws" in power_only and "weighs" not in power_only
+    (mass_only,) = pipeline.payload_warnings(fits.model_copy(update={"payload_mass_kg": bom.payload.mass_kg / 2}), bom)
+    assert "weighs" in mass_only and "heavier" in mass_only
+
+
 def test_warnings_flag_a_failed_sitl_test(sizing_only_run: pipeline.DesignRun) -> None:
     fcs = FCSArtifacts(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.31, pitch_overshoot=0.05,
                        roll_settling_s=4.2, pitch_settling_s=1.0, max_transition_altitude_loss_m=2.0, attempts=4)

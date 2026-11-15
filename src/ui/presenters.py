@@ -162,6 +162,19 @@ def _fmt(value: float, unit: str) -> str:
     return f"{value:.0%}" if unit == "%" else f"{value:.2f} {unit}"
 
 
+def read_report(out_dir: Optional[Path], report_path: Optional[Path]) -> Optional[str]:
+    """design_report.md text if it sits directly in the run folder and is still readable, else None."""
+    if out_dir is None or report_path is None:
+        return None
+    path: Path = report_path.resolve()
+    if path.parent != out_dir.resolve() or path.is_symlink():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:  # run folder deleted while the result is still on screen
+        return None
+
+
 def downloadable_files(out_dir: Path) -> list[Path]:
     """Regular artifact files directly inside the run folder (no symlinks, no sub-folders)."""
     root: Path = out_dir.resolve()

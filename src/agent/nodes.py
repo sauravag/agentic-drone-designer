@@ -227,16 +227,26 @@ def run_status(state: DesignState) -> str:
     return "converged_sitl_failed" if sitl_passed(state) is False else "converged"
 
 
-def _report_inputs(state: DesignState) -> report.ReportInputs:
-    req, run_id, out_dir = _require(state, "requirements", "run_id", "out_dir")
+def run_warnings(state: DesignState) -> list[str]:
+    """Everything the report (and the web form) must flag, most serious first."""
     sizing, aero, cad, fcs = (state.get("sizing_results"), state.get("aero_stability"),
                               state.get("cad_artifacts"), state.get("fcs_artifacts"))
     warnings: list[str] = list(pipeline.design_warnings(sizing, aero, cad, fcs)) if sizing else []
+    if state.get("requirements") is not None:
+        warnings += pipeline.payload_warnings(state["requirements"], state.get("selected_bom"))
     if not state.get("converged"):
         warnings.insert(0, "NON-CONVERGENCE: the design did not pass every critic gate: "
                            + "; ".join(state.get("validation_errors", [])))
     if state.get("sitl_error"):
         warnings.insert(0, state["sitl_error"])
+    return warnings
+
+
+def _report_inputs(state: DesignState) -> report.ReportInputs:
+    req, run_id, out_dir = _require(state, "requirements", "run_id", "out_dir")
+    sizing, aero, cad, fcs = (state.get("sizing_results"), state.get("aero_stability"),
+                              state.get("cad_artifacts"), state.get("fcs_artifacts"))
+    warnings: list[str] = run_warnings(state)
     return report.ReportInputs(
         run_id=run_id, out_dir=Path(out_dir), requirements=req, sizing=sizing, bom=state.get("selected_bom"),
         aero=aero, cad=cad, fcs=fcs, converged=bool(state.get("converged")),

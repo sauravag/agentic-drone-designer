@@ -100,6 +100,7 @@ def test_downloadable_files_stay_inside_the_run_folder(run: pipeline.DesignRun) 
 def test_app_runs_a_sizing_only_design_headlessly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from streamlit.testing.v1 import AppTest
 
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=120)
@@ -114,7 +115,115 @@ def test_app_runs_a_sizing_only_design_headlessly(tmp_path: Path, monkeypatch: p
     at.run()
     assert not at.exception
     assert any(m.label == "MTOW" for m in at.metric)
+    assert any(m.label == "Critic iterations" for m in at.metric)  # the form runs the agent's critic loop
     assert any((tmp_path / "outputs").glob("*/bom.json"))
+    assert any((tmp_path / "outputs").glob("*/design_report.md"))
+    assert at.text_area(key="prompt").disabled  # no API key: description input is off, the form still works
+
+
+def test_app_designs_from_a_description_when_claude_is_configured(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    from streamlit.testing.v1 import AppTest
+
+    from src.ui import agent_service
+    from tests.agent_fakes import SRS_PROMPT, ScriptedLLM
+
+    monkeypatch.setattr(agent_service, "llm_configured", lambda: True)
+    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
+    monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
+    monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
+    at = AppTest.from_file(str(APP_PATH), default_timeout=180)
+    at.run()
+    if not at.checkbox(key="with_aero_cad").disabled:
+        at.checkbox(key="with_aero_cad").uncheck()
+    at.text_area(key="prompt").set_value(SRS_PROMPT)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    assert any(m.label == "MTOW" for m in at.metric)
+    assert any(e.label.startswith("Assumptions") for e in at.expander)
+
+
+def _llm_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    from streamlit.testing.v1 import AppTest
+
+    from src.ui import agent_service
+
+    monkeypatch.setattr(agent_service, "llm_configured", lambda: True)
+    monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
+    monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    return at
+
+
+def test_a_blank_description_is_rejected_without_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    at.text_area(key="prompt").set_value("   ")
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    assert any("Describe the mission first" in e.value for e in at.error)
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_an_unexpected_failure_shows_a_generic_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import agent_service
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("read-only file system")
+
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", boom)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    assert any("failed unexpectedly" in e.value for e in at.error)
+
+
+def test_a_run_whose_final_sizing_failed_renders_without_design_tabs(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import agent_service
+
+    view = agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=G1_ELECTRIC_FW,
+                                      warnings=("NON-CONVERGENCE: sizing: mass spiral",))
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", lambda *a, **k: view)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    assert any("Sizing did not converge" in e.value for e in at.error)
+    assert not any(m.label == "MTOW" for m in at.metric)
+
+
+def test_read_report_is_confined_to_the_run_folder(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "design_report.md").write_text("# ok", encoding="utf-8")
+    (tmp_path / "outside.md").write_text("secret")
+    assert presenters.read_report(run_dir, run_dir / "design_report.md") == "# ok"
+    assert presenters.read_report(run_dir, tmp_path / "outside.md") is None
+    assert presenters.read_report(run_dir, run_dir / "missing.md") is None
+    assert presenters.read_report(None, run_dir / "design_report.md") is None
+
+
+def test_app_shows_the_clarification_question(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from streamlit.testing.v1 import AppTest
+
+    from src.ui import agent_service
+    from tests.agent_fakes import SRS_DRAFT, ScriptedLLM
+
+    monkeypatch.setattr(agent_service, "llm_configured", lambda: True)
+    monkeypatch.setattr(agent_service, "make_llm",
+                        lambda: ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
+    monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
+    monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    assert any("payload mass" in i.value for i in at.info)
 
 
 def test_app_shows_validation_errors_instead_of_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

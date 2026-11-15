@@ -49,7 +49,12 @@ class ClaudeLLM:
             )
         except anthropic.APIConnectionError as exc:
             raise LLMError(f"cannot reach the Claude API: {exc}") from exc
-        except anthropic.APIStatusError as exc:  # auth, bad request, rate limit after SDK retries, 5xx
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+            # the response body can echo key details: keep it in the server log, show a fixed message
+            logger.error("Claude API rejected the credentials (%s): %s", exc.status_code, exc.message)
+            raise LLMError(f"Claude API rejected the credentials (HTTP {exc.status_code}); check "
+                           "ANTHROPIC_API_KEY") from exc
+        except anthropic.APIStatusError as exc:  # bad request, rate limit after SDK retries, 5xx
             raise LLMError(f"Claude API error {exc.status_code}: {exc.message}") from exc
         except (anthropic.AnthropicError, TypeError, ValueError) as exc:
             # missing credentials surface as TypeError at request time; schema/JSON problems as ValueError
