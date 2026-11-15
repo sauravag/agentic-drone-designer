@@ -128,7 +128,7 @@ def test_app_designs_from_a_description_when_claude_is_configured(tmp_path: Path
     from tests.agent_fakes import SRS_PROMPT, ScriptedLLM
 
     monkeypatch.setattr(agent_service, "llm_problem", lambda: None)
-    monkeypatch.setattr(agent_service, "make_llm", lambda model="": ScriptedLLM())
+    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=180)
@@ -141,6 +141,7 @@ def test_app_designs_from_a_description_when_claude_is_configured(tmp_path: Path
     assert not at.exception
     assert any(m.label == "MTOW" for m in at.metric)
     assert any(e.label.startswith("Assumptions") for e in at.expander)
+    assert not any(t.key == "llm_model" for t in at.text_input)  # the model is set only in .env
 
 
 def _llm_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
@@ -214,7 +215,7 @@ def test_app_shows_the_clarification_question(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(agent_service, "llm_problem", lambda: None)
     monkeypatch.setattr(agent_service, "make_llm",
-                        lambda model="": ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
+                        lambda: ScriptedLLM(draft=SRS_DRAFT.model_copy(update={"payload_mass": None})))
     monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
     monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)

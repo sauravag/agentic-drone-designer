@@ -4,8 +4,8 @@
     ISR_FORGE_MODEL          the model id in that provider's naming, e.g. openai/gpt-5.6-sol on OpenRouter
     OPENROUTER_API_KEY / ANTHROPIC_API_KEY
 
-The CLI (--provider/--model) and the web form (model field) override the environment for one run.
-Every adapter implements `StructuredLLM`, so the agent nodes never know which vendor answered.
+These are set only in .env (Docker Compose) or the shell environment; the CLI and the web form cannot
+override them, so whoever uses the form cannot pick a model billed to the operator's key. Every adapter implements `StructuredLLM`, so the agent nodes never know which vendor answered.
 """
 
 import os

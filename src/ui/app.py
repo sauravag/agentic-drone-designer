@@ -38,7 +38,6 @@ AIRFRAMES: Final[tuple[str, ...]] = ("auto", "fixed_wing", "quadplane_vtol")
 PROPULSION: Final[tuple[str, ...]] = ("auto", "electric", "series_hybrid")
 GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
-MAX_MODEL_CHARS: Final[int] = 200
 EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
                               "6-hour endurance, and 80 km datalink radius")
 DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "Flight test")
@@ -63,7 +62,6 @@ def _init_state() -> None:
         st.session_state["preset"] = next(iter(EXAMPLE_MISSIONS))
         _load_preset()
     st.session_state.setdefault("prompt", EXAMPLE_PROMPT)
-    st.session_state.setdefault("llm_model", "")
     st.session_state.setdefault("with_aero_cad", pipeline.aero_cad_available())
     st.session_state.setdefault("with_sitl", pipeline.aero_cad_available() and pipeline.sitl_available())
 
@@ -79,15 +77,12 @@ def _stage_options() -> None:
                 help=None if sitl else "Needs the Docker image: docker compose up ui")
 
 
-def _llm_options() -> None:
-    """Model override for this session (used by the parser, the critic and the report writer)."""
+def _llm_info() -> None:
+    """Read-only: the provider and model are set only in .env (ISR_FORGE_LLM_PROVIDER, ISR_FORGE_MODEL)."""
     if agent_service.llm_problem() is not None:
         return
-    st.text_input("LLM model (optional)", key="llm_model", max_chars=MAX_MODEL_CHARS,
-                  placeholder="provider default, e.g. openai/gpt-5.6-sol or google/gemini-3.8-flash on OpenRouter",
-                  help="Any model id your provider accepts; blank uses ISR_FORGE_MODEL or the provider default.")
     try:
-        st.caption(f"LLM: {defang(agent_service.llm_label(st.session_state['llm_model']))}")
+        st.caption(f"LLM: {defang(agent_service.llm_label())} (set in .env)")
     except LLMConfigError as exc:
         st.error(defang(str(exc)))
 
@@ -153,8 +148,7 @@ def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] =
             do_aero: bool = st.session_state["with_aero_cad"]
             view = agent_service.run(OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero,
                                      with_sitl=do_aero and st.session_state["with_sitl"], progress=status.write,
-                                     prompt=prompt, requirements=requirements,
-                                     model=st.session_state["llm_model"])
+                                     prompt=prompt, requirements=requirements)
         except (pipeline.PipelineError, LLMConfigError) as exc:
             logger.warning("design run rejected: %s", exc)
             _fail(status, "Design not started", defang(str(exc)))
@@ -283,7 +277,7 @@ def main() -> None:
                "packaging, group mass and energy reserve; all engineering numbers come from deterministic tools.")
     _init_state()
     _stage_options()
-    _llm_options()
+    _llm_info()
     if _description_form():
         _run_description(st.session_state["prompt"])
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)

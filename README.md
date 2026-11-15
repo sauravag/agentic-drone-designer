@@ -34,8 +34,10 @@ supports structured outputs works.
 | `ISR_FORGE_LLM_PROVIDER` | `openrouter` or `anthropic`; unset picks whichever key is set (OpenRouter first) |
 | `ISR_FORGE_MODEL` | model id in the provider's naming, e.g. `openai/gpt-5.6-sol`, `google/gemini-3.8-flash` |
 
-Defaults: `anthropic/claude-opus-5.5` on OpenRouter, `claude-opus-5-5` on Anthropic. The CLI's `--provider` and
-`--model` and the web form's model field override the environment for one run. OpenRouter requests set
+Defaults: `anthropic/claude-opus-5.5` on OpenRouter, `claude-opus-5-5` on Anthropic. These are set **only** in
+`.env` (or the shell environment on the host); the CLI and the web form show the active provider and model but
+cannot change them, so a form user cannot pick a model billed to your key. Restart `docker compose up ui` after
+editing `.env`. OpenRouter requests set
 `provider.require_parameters`, so they only reach hosts that enforce the JSON schema; a model with no such host
 fails with a clear error rather than returning free text.
 
@@ -53,8 +55,6 @@ docker compose run --rm isr-forge python -m src.main --spec requirements.json --
 | `--spec FILE` | `OperationalRequirements` JSON instead of a description (no LLM needed) |
 | `--no-aero` / `--no-sitl` | skip OpenVSP/CAD (and therefore SITL) / skip the SITL flight test |
 | `--max-iterations N` | critic loop cap, 0–50 (default 8, per the SRS) |
-| `--provider NAME` | `openrouter` or `anthropic` (default `ISR_FORGE_LLM_PROVIDER`, else whichever key is set) |
-| `--model ID` | model id for that provider (default `ISR_FORGE_MODEL`, else the provider default) |
 
 Exit codes: `0` converged, `1` not converged or SITL failed, `2` clarification needed, `3` error.
 

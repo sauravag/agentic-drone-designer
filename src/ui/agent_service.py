@@ -3,7 +3,7 @@ final DesignState into an immutable view for app.py. Kept free of Streamlit so i
 
 An LLM is optional: a natural-language request needs one (parser), while structured form input runs the
 same loop with the rule-table critic and a template narrative when no API key is configured. The provider
-and model come from src/agent/providers.py (OpenRouter or Anthropic); the form can override the model.
+and model come only from the environment (.env) via src/agent/providers.py; the form cannot change them.
 """
 
 from dataclasses import dataclass
@@ -62,15 +62,15 @@ def llm_configured() -> bool:
     return llm_problem() is None
 
 
-def llm_label(model: str = "") -> str:
+def llm_label() -> str:
     """`provider · model` for the form; raises providers.LLMConfigError on a bad setting."""
-    return providers.describe(model=model or None)
+    return providers.describe()
 
 
-def make_llm(model: str = "") -> Optional[StructuredLLM]:
-    """The configured LLM (with `model` overriding ISR_FORGE_MODEL), or None when no key is set.
+def make_llm() -> Optional[StructuredLLM]:
+    """The LLM configured in the environment, or None when no key is set.
     Raises providers.LLMConfigError for an invalid provider or model id."""
-    return providers.make_llm(model=model or None) if llm_configured() else None
+    return providers.make_llm() if llm_configured() else None
 
 
 def _optional_path(value: Optional[str]) -> Optional[Path]:
@@ -95,14 +95,14 @@ def to_view(state: DesignState, used_llm: bool) -> AgentRunView:
 
 def run(outputs_root: Path, db_path: Path, with_aero_cad: Optional[bool], with_sitl: Optional[bool],
         progress: Callable[[str], None], prompt: str = "", requirements: Optional[OperationalRequirements] = None,
-        max_iterations: int = MAX_ITERATIONS, model: str = "") -> AgentRunView:
-    """Run the agent on a description (`prompt`) or on validated form input (`requirements`), with `model`
-    overriding the configured model. Raises pipeline.PipelineError when a requested stage's toolchain is
-    missing and providers.LLMConfigError for an invalid model id."""
+        max_iterations: int = MAX_ITERATIONS) -> AgentRunView:
+    """Run the agent on a description (`prompt`) or on validated form input (`requirements`).
+    Raises pipeline.PipelineError when a requested stage's toolchain is missing and
+    providers.LLMConfigError for an invalid provider or model setting."""
     if bool(prompt.strip()) == (requirements is not None):
         raise ValueError("give either a description or structured requirements")
     stages: dict[str, bool] = pipeline.resolve_stages(with_aero_cad, with_sitl)
-    llm: Optional[StructuredLLM] = make_llm(model)
+    llm: Optional[StructuredLLM] = make_llm()
     if requirements is None and llm is None:
         return AgentRunView(STATUS_ERROR, llm_problem())
     ctx = AgentContext(llm=llm, outputs_root=outputs_root, db_path=db_path, with_aero_cad=stages["aero_cad"],

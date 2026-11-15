@@ -44,10 +44,8 @@ def test_description_without_an_api_key_is_refused_before_any_run(tmp_path: Path
 
 def test_description_with_an_llm_parses_iterates_and_reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     llm = ScriptedLLM()
-    models: list[str] = []
-    monkeypatch.setattr(agent_service, "make_llm", lambda model="": models.append(model) or llm)
-    view = _run(tmp_path, prompt=f"  {SRS_PROMPT}  ", model="openai/gpt-5.6-sol")
-    assert models == ["openai/gpt-5.6-sol"]  # the form's model override reaches the factory
+    monkeypatch.setattr(agent_service, "make_llm", lambda: llm)
+    view = _run(tmp_path, prompt=f"  {SRS_PROMPT}  ")
     assert view.used_llm and view.has_design
     assert view.requirements is not None and view.requirements.payload_mass_kg == pytest.approx(3.5)
     assert view.assumptions[0].startswith("Read from the request")
@@ -59,7 +57,7 @@ def test_description_with_an_llm_parses_iterates_and_reports(tmp_path: Path, mon
 
 def test_a_missing_required_fact_returns_the_clarification_question(tmp_path: Path,
                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(agent_service, "make_llm", lambda model="": ScriptedLLM(draft=SRS_DRAFT.model_copy(
+    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM(draft=SRS_DRAFT.model_copy(
         update={"endurance": None})))
     view = _run(tmp_path, prompt="Design a drone with a 3.5 kg gimbal")
     assert view.status == agent_service.STATUS_CLARIFY and "endurance" in (view.message or "")
@@ -87,18 +85,26 @@ def test_llm_configured_only_checks_for_a_non_blank_key(monkeypatch: pytest.Monk
     assert agent_service.llm_configured() is expected
 
 
-def test_an_invalid_model_override_is_rejected_before_a_run_folder_exists(tmp_path: Path,
-                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_invalid_model_in_the_environment_is_rejected_before_a_run_folder_exists(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("ISR_FORGE_MODEL", "gpt; rm -rf /")
     with pytest.raises(LLMConfigError, match="invalid model id"):
-        _run(tmp_path, requirements=G1_ELECTRIC_FW, model="gpt; rm -rf /")
+        _run(tmp_path, requirements=G1_ELECTRIC_FW)
     assert not (tmp_path / "o").exists()
 
 
-def test_the_form_label_names_the_provider_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_form_label_shows_the_model_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     assert agent_service.llm_label() == "openrouter · anthropic/claude-opus-5.5"
-    assert agent_service.llm_label("google/gemini-3.8-flash") == "openrouter · google/gemini-3.8-flash"
+    monkeypatch.setenv("ISR_FORGE_MODEL", "google/gemini-3.8-flash")
+    assert agent_service.llm_label() == "openrouter · google/gemini-3.8-flash"
+
+
+def test_run_has_no_model_override() -> None:
+    import inspect
+
+    assert "model" not in inspect.signature(agent_service.run).parameters  # .env is the only switch
 
 
 def test_no_key_means_no_llm(no_key: None) -> None:
