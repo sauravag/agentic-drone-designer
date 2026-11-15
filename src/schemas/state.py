@@ -129,3 +129,14 @@ class DesignState(TypedDict):
     fcs_artifacts: Optional[FCSArtifacts]
     validation_errors: list[str]
     final_report_path: Optional[str]
+    # orchestration bookkeeping (beyond the SRS minimum)
+    run_id: Optional[str]
+    out_dir: Optional[str]
+    assumptions: list[str]  # defaults the parser applied, reported verbatim
+    gate_results: list[dict]  # latest critic gates: {name, passed, detail}
+    critic_log: list[dict]  # one entry per critic pass
+    stage_error: Optional[dict[str, str]]  # {stage, message} of a tool node that failed this iteration
+    converged: bool  # every critic gate passed
+    critic_exhausted: bool  # iteration cap reached, or no knob could move
+    fatal_error: Optional[str]  # the run cannot continue (e.g. the LLM parser is unavailable)
+    sitl_error: Optional[str]  # the SITL stage could not complete (distinct from completed-but-failed)

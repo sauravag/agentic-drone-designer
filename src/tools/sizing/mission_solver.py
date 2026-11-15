@@ -73,6 +73,8 @@ OVERRIDE_BOUNDS: Final[dict[str, tuple[float, float]]] = {
     "tail_volume_h": (0.3, 1.2),
     "tail_volume_v": (0.02, 0.10),
     "fuselage_length_factor": (0.6, 2.5),
+    # end-of-mission energy reserve: battery SoC (electric) or fuel fraction (series hybrid); default by powertrain
+    "reserve_fraction": (0.10, 0.40),
 }
 OVERRIDE_DEFAULTS: Final[dict[str, float]] = {
     "aspect_ratio": DEFAULT_ASPECT_RATIO,
@@ -108,6 +110,12 @@ class _Evaluation:
     cruise_total_w: float
     wing_reynolds: float
     stall_reynolds: float
+
+
+def reserve_fraction(params: dict[str, float], propulsion: Propulsion) -> float:
+    """Critic override if given, else the SRS default (20% SoC electric, 10% fuel series-hybrid)."""
+    default: float = FUEL_RESERVE if propulsion == "series_hybrid" else MIN_SOC_RESERVE
+    return params.get("reserve_fraction", default)
 
 
 def _validate_overrides(overrides: dict[str, float]) -> dict[str, float]:
@@ -155,7 +163,8 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     is_hybrid: bool = design.propulsion == "series_hybrid"
     gen_w: float = GENERATOR_MARGIN * cruise_total if is_hybrid else 0.0
     trace = simulate(phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w)
-    storage = hybrid_storage(trace, gen_w) if is_hybrid else electric_storage(trace)
+    reserve: float = reserve_fraction(design.params, design.propulsion)
+    storage = hybrid_storage(trace, gen_w, reserve) if is_hybrid else electric_storage(trace, reserve)
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
     loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
     empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads).values())
@@ -248,7 +257,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         generator_power_w=ev.generator_power_w, cruise_motor_power_w=ev.trace.max_forward_propulsive_w,
         vtol_thrust_per_motor_n=VTOL_THRUST_TO_WEIGHT * weight / VTOL_ROTOR_COUNT if is_quad else 0.0,
         rotor_diameter_m=math.sqrt(4.0 * aero.disk_area_m2 / VTOL_ROTOR_COUNT / math.pi) if is_quad else 0.0,
-        energy_reserve_fraction=FUEL_RESERVE if design.propulsion == "series_hybrid" else MIN_SOC_RESERVE,
+        energy_reserve_fraction=reserve_fraction(design.params, design.propulsion),
         phases=ev.trace.phases,
     )
 

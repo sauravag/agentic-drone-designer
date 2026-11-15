@@ -238,3 +238,16 @@ def test_catalog_can_supply_every_reference_design(case: str, request: pytest.Fi
     bom = select_bom(db, component_needs(s, CASES[case]))
     assert (bom.vtol_motor is not None) == (s.airframe_topology == "quadplane_vtol")
     assert (bom.ice_generator is not None) == (s.propulsion_type == "series_hybrid")
+
+
+def test_reserve_fraction_override_resizes_the_energy_store() -> None:
+    """Critic knob (M5): a larger reserve means more fuel (hybrid) or battery (electric), and is reported."""
+    from tests.reference_designs import G1_ELECTRIC_FW, G3_HYBRID_VTOL
+
+    for req in (G1_ELECTRIC_FW, G3_HYBRID_VTOL):
+        base, tight = size_aircraft(req), size_aircraft(req, {"reserve_fraction": 0.30})
+        assert tight.energy_reserve_fraction == 0.30 and tight.mtow_kg > base.mtow_kg
+        store = (lambda s: s.fuel_mass_kg) if base.propulsion_type == "series_hybrid" else (lambda s: s.battery_mass_kg)
+        assert store(tight) > store(base)
+    with pytest.raises(ValueError, match="reserve_fraction"):
+        size_aircraft(G1_ELECTRIC_FW, {"reserve_fraction": 0.9})

@@ -187,22 +187,23 @@ def simulate(plan: tuple[PhaseSpec, ...], mtow_kg: float, aero: AeroState, hotel
 # ------------------------------------------------------ energy storage ---
 
 
-def electric_storage(trace: MissionTrace) -> EnergyStorage:
-    """Li-Ion pack: capacity keeps >= 20% SoC at mission end; mass also satisfies the 3C limit."""
-    energy_j: float = sum(p.energy_j for p in trace.phases) / (1.0 - MIN_SOC_RESERVE)
+def electric_storage(trace: MissionTrace, reserve: float = MIN_SOC_RESERVE) -> EnergyStorage:
+    """Li-Ion pack: capacity keeps >= `reserve` SoC (default 20%) at mission end; mass also satisfies the
+    3C limit."""
+    energy_j: float = sum(p.energy_j for p in trace.phases) / (1.0 - reserve)
     by_energy: float = energy_j / WH_TO_J / LIION_WH_PER_KG
     by_power: float = trace.peak_total_w / (LIION_MAX_C * LIION_WH_PER_KG)
     return EnergyStorage(energy_j, max(by_energy, by_power), trace.peak_total_w, 0.0)
 
 
-def hybrid_storage(trace: MissionTrace, gen_w: float) -> EnergyStorage:
+def hybrid_storage(trace: MissionTrace, gen_w: float, fuel_reserve: float = FUEL_RESERVE) -> EnergyStorage:
     """Buffer LiPo: energy for the sustained-hover deficit (P_hover - P_gen) over 180 s + 60 s abort
     reserve plus any forward-flight deficit (e.g. climb); C-rate covers the installed-peak deficit.
-    Fuel = burned fuel + 10% reserve."""
+    Fuel = burned fuel + `fuel_reserve` (default 10%)."""
     hover_deficit_w: float = max(trace.sustained_hover_w - gen_w, 0.0)
     needed_j: float = hover_deficit_w * (HOVER_BUFFER_S + ABORT_RESERVE_S) + trace.non_hover_deficit_j
     energy_j: float = max(needed_j, WH_TO_J) / (1.0 - MIN_SOC_RESERVE)  # floor: 1 Wh avionics backup
     peak_w: float = max(trace.peak_deficit_w, 1.0)
     by_energy: float = energy_j / WH_TO_J / LIPO_WH_PER_KG
     by_power: float = peak_w / (LIPO_MAX_C * LIPO_WH_PER_KG)
-    return EnergyStorage(energy_j, max(by_energy, by_power), peak_w, trace.fuel_burned_kg * (1.0 + FUEL_RESERVE))
+    return EnergyStorage(energy_j, max(by_energy, by_power), peak_w, trace.fuel_burned_kg * (1.0 + fuel_reserve))

@@ -82,7 +82,7 @@ def new_run_id(mission_name: str) -> str:
     return f"{stamp}-{slug or 'design'}"
 
 
-def _create_run_dir(outputs_root: Path, run_id: str) -> tuple[str, Path]:
+def create_run_dir(outputs_root: Path, run_id: str) -> tuple[str, Path]:
     """Atomically claim a fresh folder (mkdir fails if another session took the name first)."""
     outputs_root.mkdir(parents=True, exist_ok=True)
     candidate, n = run_id, 1
@@ -132,13 +132,13 @@ def _noop(_: str) -> None:
     return None
 
 
-def _ensure_catalog(db_path: Path) -> None:
+def ensure_catalog(db_path: Path) -> None:
     with _SEED_LOCK:
         if not db_path.is_file():
             seed_database(db_path)
 
 
-def _aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequirements, out_dir: Path,
+def run_aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequirements, out_dir: Path,
               progress: Progress) -> tuple[AeroStabilityOutput, CADArtifacts]:
     from src.tools.aero_cad.build import build_aero_cad  # imports OpenVSP
 
@@ -152,7 +152,7 @@ def _aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequiremen
         _OPENVSP_LOCK.release()
 
 
-def _sitl(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
+def run_sitl(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
           cad: CADArtifacts, out_dir: Path, progress: Progress) -> FCSArtifacts:
     from src.tools.flight_control.sitl_validator import generate_and_verify_fcs  # pymavlink + JSBSim
 
@@ -172,16 +172,16 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
     sizing: SizingOutput = size_aircraft(req)
     _write_json(out_dir / "sizing.json", sizing)
     progress("Selecting COTS components from the catalog")
-    _ensure_catalog(db_path)
+    ensure_catalog(db_path)
     bom: SelectedBOM = select_bom(db_path, component_needs(sizing, req))
     _write_json(out_dir / "bom.json", bom)
-    aero, cad = _aero_cad(sizing, bom, req, out_dir, progress) if stages["aero_cad"] else (None, None)
+    aero, cad = run_aero_cad(sizing, bom, req, out_dir, progress) if stages["aero_cad"] else (None, None)
     fcs: Optional[FCSArtifacts] = None
     if aero is not None and cad is not None:
         _write_json(out_dir / "aero.json", aero)
         _write_json(out_dir / "cad.json", cad)
         if stages["sitl"]:
-            fcs = _sitl(req, sizing, bom, aero, cad, out_dir, progress)
+            fcs = run_sitl(req, sizing, bom, aero, cad, out_dir, progress)
             _write_json(out_dir / "fcs.json", fcs)
     warnings = design_warnings(sizing, aero, cad, fcs)
     _write_json(out_dir / "run_summary.json", _summary(run_id, stages, "ok", warnings=list(warnings)))
@@ -189,7 +189,7 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
     return DesignRun(run_id, out_dir, req, sizing, bom, aero, cad, warnings, fcs)
 
 
-def _resolve_stages(with_aero_cad: Optional[bool], with_sitl: Optional[bool]) -> dict[str, bool]:
+def resolve_stages(with_aero_cad: Optional[bool], with_sitl: Optional[bool]) -> dict[str, bool]:
     """None means "run it when the toolchain is installed". SITL flies the aero/CAD model, so it needs both."""
     aero_ok: bool = aero_cad_available()
     do_aero: bool = aero_ok if with_aero_cad is None else with_aero_cad
@@ -211,8 +211,8 @@ def run_design(req: OperationalRequirements, outputs_root: Path = DEFAULT_OUTPUT
     """Run the design pipeline for `req`. `with_aero_cad` / `with_sitl` = None run OpenVSP/CAD and the
     ArduPilot SITL flight test when installed. Raises one of DESIGN_ERRORS when the mission cannot be
     designed; a failed run's folder keeps a `run_summary.json` with status "failed"."""
-    stages: dict[str, bool] = _resolve_stages(with_aero_cad, with_sitl)
-    run_id, out_dir = _create_run_dir(outputs_root, new_run_id(req.mission_name))
+    stages: dict[str, bool] = resolve_stages(with_aero_cad, with_sitl)
+    run_id, out_dir = create_run_dir(outputs_root, new_run_id(req.mission_name))
     logger.info("[Tool] run_design %s -> %s (%s)", run_id, out_dir, stages)
     try:
         return _execute(req, run_id, out_dir, db_path, stages, progress)

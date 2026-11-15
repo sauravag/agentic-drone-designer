@@ -25,7 +25,7 @@ physics = [
 ]
 agent = [
     "langgraph",
-    "langchain-anthropic",
+    "anthropic>=2.8",  # structured outputs + server-side refusal fallback (beta.messages.parse)
 ]
 dev = [
     "pytest>=8.0",
