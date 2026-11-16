@@ -87,6 +87,27 @@ def _change_text(change: ChangeSet, view: AgentRunView) -> str:
     return "; ".join(f"{label} {old} → {new}" for label, old, new in rows) or inline(change.label)
 
 
+def _as_number(text: str) -> Optional[float]:
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _tried_row(label: str, old: str, new: str) -> str:
+    """'Endurance (h): tried down to 0.5' for a scanned number; 'Airframe quadplane_vtol → fixed_wing' otherwise."""
+    old_num, new_num = _as_number(old), _as_number(new)
+    if old_num is None or new_num is None:
+        return f"{label} {old} → {new}"
+    return f"{label}: tried {'down' if new_num < old_num else 'up'} to {new}"
+
+
+def _tried_text(change: ChangeSet, view: AgentRunView) -> str:
+    """What a non-closing option tried, worded so it does not read as a proposal."""
+    rows = change.describe(view.requirements, view.design_assumptions) if view.requirements else []
+    return "; ".join(_tried_row(*row) for row in rows) or inline(change.label)
+
+
 def _outcome_text(result: dict[str, Any]) -> str:
     parts: list[str] = [f"MTOW {result['mtow_kg']:.1f} kg", f"Group {result['dod_group']}"]
     if result.get("battery_mass_kg"):
@@ -121,9 +142,9 @@ def _option_cards(options: tuple[dict[str, Any], ...], view: AgentRunView, savin
         _closing_card(index, option, view, saving)
     others = [o for o in options if not o.get("closes")]
     if others:
-        st.caption("Does not close within range:")
+        st.caption("Checked, does not close:")
         st.markdown("\n".join(
-            f"- {_change_text(ChangeSet.model_validate(o['change']), view)}: {inline(str(o['result']['reason']))}"
+            f"- {_tried_text(ChangeSet.model_validate(o['change']), view)} — {inline(str(o['result']['reason']))}"
             for o in others))
 
 
@@ -229,7 +250,9 @@ def _rerun(view: AgentRunView, change: ChangeSet, source: Source, outputs_root: 
             return
         status.update(label=f"Run {new_view.run_id} finished", state="complete", expanded=False)
     record_run(new_view)
-    st.rerun()  # redraw the results area with the new run
+    # The results header, cards and this panel were already drawn for the parent run in this script pass;
+    # start a fresh pass so the page shows the new run (and the panel closes, pending_change is now None).
+    st.rerun()
 
 
 def render_review_panel(view: AgentRunView, outputs_root: Path, db_path: Path) -> None:
