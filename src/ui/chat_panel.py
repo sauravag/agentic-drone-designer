@@ -3,7 +3,9 @@ propose a change. A proposal never runs by itself: its button only fills the rev
 
 Session key: `chat_<run_id>` (tuple of ChatMessage, designer and agent turns, oldest first). Every reply is
 also saved to the run folder as `design_chat.json`. All LLM-written (and designer-typed) text is rendered
-through `report.defang` / `inline`; every number in the what-if table comes from the evaluator.
+through `report.defang` / `inline` (st.dataframe cells show text verbatim, so they get plain single-line text);
+every number in the what-if table comes from the evaluator. After an airframe failure the chat opens with a
+deterministic message (failed gates and the knobs that may change); it is not an LLM turn and is not saved.
 """
 
 import json
@@ -13,10 +15,13 @@ from typing import Any, Final, Optional
 
 import streamlit as st
 
-from src.agent.design_chat import ChatMessage
+from src.agent.design_chat import ChatMessage, WhatIfResult
+from src.agent.evaluator import fact_text
 from src.agent.llm import LLMError
 from src.agent.providers import LLMConfigError
 from src.agent.report import defang, inline
+from src.schemas.changes import FIELD_LABELS, KnobChanges
+from src.schemas.knobs import OVERRIDE_BOUNDS
 from src.ui import agent_service, design_loop
 from src.ui.agent_service import AgentRunView
 
@@ -26,7 +31,8 @@ CHAT_INPUT_KEY: Final[str] = "design_chat"
 HISTORY_PREFIX: Final[str] = "chat_"
 PROPOSAL_PREFIX: Final[str] = "use_proposal_"
 CHAT_FILE: Final[str] = "design_chat.json"
-AUTO_OPEN_MODES: Final[tuple[str, ...]] = ("closure", "airframe")  # non-convergence opens the chat (spec 7.1)
+AIRFRAME_MODE: Final[str] = "airframe"
+AUTO_OPEN_MODES: Final[tuple[str, ...]] = ("closure", AIRFRAME_MODE)  # non-convergence opens the chat (spec 7.1)
 MAX_MESSAGE_CHARS: Final[int] = 2000
 ROLE_AVATARS: Final[dict[str, str]] = {"designer": "user", "agent": "assistant"}
 PLACEHOLDER: Final[str] = "Ask about this design, e.g. what would close it while staying electric?"
@@ -35,6 +41,9 @@ LLM_FAILURE: Final[str] = "The design assistant could not answer: {error}"
 CHAT_FAILURE: Final[str] = "The design chat failed unexpectedly; details are in the server log."
 SAVE_FAILURE: Final[str] = "The chat could not be saved to the run folder; details are in the server log."
 CHECKED_NOTE: Final[str] = "what-ifs checked with sizing + catalog only"
+OPENING_GATES: Final[str] = "This design did not pass these checks:"
+OPENING_KNOBS: Final[str] = ("I can propose changes to the airframe knobs: {knobs}. Ask what to try; I check every "
+                             "what-if with sizing + catalog before I answer.")
 
 
 # ------------------------------------------------------------- history ---
@@ -90,8 +99,15 @@ def _ask(view: AgentRunView, message: str, db_path: Path) -> None:
 
 
 # --------------------------------------------------------------- render ---
-def _cell(value: Optional[float]) -> str:
-    return "-" if value is None else f"{value:.1f}"
+def _plain(text: str) -> str:
+    """One line of text for a st.dataframe cell (shown verbatim, never rendered as markdown)."""
+    return " ".join(text.split())
+
+
+def _note(what_if: WhatIfResult) -> str:
+    result = what_if.result
+    parts = [what_if.error or (result.reason if result else ""), result.floor_note if result else ""]
+    return _plain("; ".join(part for part in parts if part)) or "-"
 
 
 def _what_if_rows(message: ChatMessage, view: AgentRunView) -> list[dict[str, Any]]:
@@ -99,11 +115,12 @@ def _what_if_rows(message: ChatMessage, view: AgentRunView) -> list[dict[str, An
     for what_if in message.what_ifs:
         result = what_if.result
         rows.append({
-            "What-if": inline(what_if.change.label), "Change": design_loop.change_text(what_if.change, view),
+            "What-if": _plain(what_if.change.label),
+            "Change": design_loop.change_text(what_if.change, view, plain=True),
             "Closes": "-" if result is None else ("yes" if result.closes else "no"),
-            "MTOW (kg)": _cell(None if result is None else result.mtow_kg),
+            "MTOW (kg)": fact_text(None if result is None else result.mtow_kg),
             "Group": "-" if result is None or result.dod_group is None else str(result.dod_group),
-            "Note": inline(what_if.error or (result.reason if result else "")) or "-",
+            "Note": _note(what_if),
         })
     return rows
 
@@ -130,7 +147,19 @@ def _agent_extras(message: ChatMessage, ordinal: int, view: AgentRunView) -> Non
                   args=(message.proposal, "chat"), help="Fills the review panel; nothing runs until you press Re-run")
 
 
+def opening_message(view: AgentRunView) -> str:
+    """The airframe-mode opening (spec 6.1, 7.1): failed gates with their details, and the knobs with bounds."""
+    gates = [f"- **{inline(g['name'])}**: {inline(str(g.get('detail', '')))}" for g in view.gates
+             if g.get("passed") is False]
+    knobs = ", ".join(f"{FIELD_LABELS[name]} ({OVERRIDE_BOUNDS[name][0]:g}–{OVERRIDE_BOUNDS[name][1]:g})"
+                      for name in KnobChanges.model_fields)
+    return "\n".join([OPENING_GATES, *gates, "", OPENING_KNOBS.format(knobs=knobs)])
+
+
 def _render_history(view: AgentRunView) -> None:
+    if not _history(view) and view.explorer_mode == AIRFRAME_MODE:
+        with st.chat_message(ROLE_AVATARS["agent"]):
+            st.markdown(opening_message(view))
     agent_ordinal = 0
     for message in _history(view):
         with st.chat_message(ROLE_AVATARS[message.role]):

@@ -18,10 +18,10 @@ from typing import Any, Final, Literal, Optional, Sequence
 from pydantic import BaseModel, ValidationError
 
 from src.agent.agent_schemas import MAX_WHAT_IFS, DesignerTurn, ProposedChange
-from src.agent.evaluator import Evaluation, evaluate
+from src.agent.evaluator import Evaluation, evaluate, with_reserve_floor
 from src.agent.llm import StructuredLLM
 from src.agent.prompts import DESIGNER_SYSTEM
-from src.agent.report import stray_numbers
+from src.agent.report import citable, stray_numbers
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.changes import FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges, \
     RequirementChanges, apply_changes
@@ -37,7 +37,8 @@ SECTIONS: Final[dict[str, type[BaseModel]]] = {
 FALLBACK_LABEL: Final[str] = "Chat change"
 RULES: Final[tuple[str, ...]] = (
     "Do no arithmetic and never estimate a number.",
-    "Only mention numbers that appear in this briefing's data or in what_if_results, copied exactly.",
+    "Only mention numbers from this briefing's design data or what-if results, copied exactly; never numbers "
+    "from designer_message or the history text.",
     "Never claim that a re-run happened: a proposal only fills the designer's review panel.",
     f"At most {MAX_WHAT_IFS} what-ifs per round; change only the allowed fields, within their bounds.",
     "Results are checked with sizing and catalog only; aerodynamics, CAD and SITL may still find issues.",
@@ -45,6 +46,7 @@ RULES: Final[tuple[str, ...]] = (
 )
 TRUNCATED_NOTE: Final[str] = "(Only the first {limit} what-ifs of a round were checked.)"
 ROUND_LIMIT_NOTE: Final[str] = "(Round limit reached; the what-if results shown are from the solver.)"
+LATE_WHAT_IFS_NOTE: Final[str] = "(The what-ifs below were checked after this answer was written.)"
 DROPPED_NOTE: Final[str] = "(Proposal '{label}' was dropped: {error})"
 KNOBS_REFUSED: Final[str] = "knob changes ({names}) are only allowed after an airframe failure"
 DUPLICATE_FIELDS: Final[str] = "a field may change only once: {names}"
@@ -109,6 +111,7 @@ class _Rounds:
     results: tuple[WhatIfResult, ...]
     count: int
     truncated: bool
+    late: bool  # the final turn sent what-ifs together with its answer (done=True)
 
 
 def _concise(exc: ValidationError) -> str:
@@ -225,7 +228,7 @@ def _run_rounds(llm: StructuredLLM, ctx: ChatContext, history: tuple[ChatMessage
         results += tuple(_what_if(ctx, proposed) for proposed in checks)
         if turn.done or not checks:
             break
-    return _Rounds(turn, results, count, truncated)
+    return _Rounds(turn, results, count, truncated, late=turn.done and bool(checks))
 
 
 def _facts_text(ctx: ChatContext, history: tuple[ChatMessage, ...], results: tuple[WhatIfResult, ...],
@@ -235,12 +238,22 @@ def _facts_text(ctx: ChatContext, history: tuple[ChatMessage, ...], results: tup
     earlier = [w.facts() for m in history[-HISTORY_BUDGET:] for w in m.what_ifs]
     data = {**_design_data(ctx), "earlier_what_ifs": earlier, "what_ifs": [r.facts() for r in results],
             "proposal": None if proposal is None else proposal.model_dump(mode="json", exclude={"label"})}
-    return WHOLE_NUMBER.sub(r"\1.0 \1", json.dumps(data, sort_keys=True, default=str))
+    return WHOLE_NUMBER.sub(r"\1.0 \1", citable(json.dumps(data, sort_keys=True, default=str)))
 
 
-def _checked_proposal(ctx: ChatContext, proposed: Optional[ProposedChange]) -> tuple[Optional[ChangeSet],
-                                                                                    Optional[str]]:
-    """The proposal as a validated ChangeSet, else (None, why it was dropped)."""
+def _proposal_result(ctx: ChatContext, change: ChangeSet, results: tuple[WhatIfResult, ...]) -> Evaluation:
+    """The solver result for a validated proposal: a what-if of the same change if one was checked, else a new
+    evaluation."""
+    for what_if in results:
+        if what_if.result is not None and what_if.change.model_copy(update={"label": change.label}) == change:
+            return what_if.result
+    return evaluate(*_validate(ctx, change), ctx.db_path)
+
+
+def _checked_proposal(ctx: ChatContext, proposed: Optional[ProposedChange],
+                      results: tuple[WhatIfResult, ...]) -> tuple[Optional[ChangeSet], Optional[str]]:
+    """The proposal as a validated ChangeSet carrying the reserve floor it was checked with (spec 6.2), else
+    (None, why it was dropped)."""
     if proposed is None:
         return None, None
     try:
@@ -248,19 +261,20 @@ def _checked_proposal(ctx: ChatContext, proposed: Optional[ProposedChange]) -> t
         _validate(ctx, change)
     except ValueError as exc:
         return None, DROPPED_NOTE.format(label=_label(proposed.label), error=exc)
-    return change, None
+    return with_reserve_floor(change, _proposal_result(ctx, change, results), ctx.assumptions), None
 
 
 def _notes(rounds: _Rounds, dropped: Optional[str]) -> list[str]:
     notes = [TRUNCATED_NOTE.format(limit=MAX_WHAT_IFS)] if rounds.truncated else []
     notes += [ROUND_LIMIT_NOTE] if rounds.count == MAX_ROUNDS and not rounds.turn.done else []
+    notes += [LATE_WHAT_IFS_NOTE] if rounds.late else []
     return notes + ([dropped] if dropped else [])
 
 
 def answer(llm: StructuredLLM, ctx: ChatContext, history: tuple[ChatMessage, ...], message: str) -> ChatMessage:
     """Answer one designer message after checking the LLM's what-ifs with the solver (up to MAX_ROUNDS)."""
     rounds = _run_rounds(llm, ctx, history, message)
-    proposal, dropped = _checked_proposal(ctx, rounds.turn.proposal)
+    proposal, dropped = _checked_proposal(ctx, rounds.turn.proposal, rounds.results)
     proposed = rounds.turn.proposal
     shown = [rounds.turn.message, *(r.change.label for r in rounds.results), *([proposed.label] if proposed else [])]
     strays = stray_numbers("\n".join(shown), _facts_text(ctx, history, rounds.results, proposal))

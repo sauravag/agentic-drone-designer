@@ -13,6 +13,7 @@ import streamlit as st
 from pydantic import BaseModel
 
 from src import pipeline
+from src.agent.evaluator import fact_text, floor_note
 from src.agent.providers import LLMConfigError
 from src.agent.report import defang, inline
 from src.schemas.changes import (FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges,
@@ -28,6 +29,8 @@ PENDING_KEY: Final[str] = "pending_change"
 EXPLORED_KEY: Final[str] = "explored_options"
 REVIEW_PREFIX: Final[str] = "review_"
 CLOSURE_MODE: Final[str] = "closure"
+CLOSING_HEADING: Final[str] = "Options that would close the design"
+NONE_CLOSE_HEADING: Final[str] = "No single change closes the design (checked with sizing + catalog)"
 CHECKED_NOTE: Final[str] = "checked with sizing + catalog only"
 EDITED_SUFFIX: Final[str] = " (edited)"
 MINUS: Final[str] = "−"  # the typographic minus for mass savings
@@ -81,10 +84,12 @@ def _open(view: AgentRunView) -> None:
 
 
 # ------------------------------------------------------------- options ---
-def change_text(change: ChangeSet, view: AgentRunView) -> str:
-    """'Endurance (h) 6 → 3.2' for every field the change actually moves."""
+def change_text(change: ChangeSet, view: AgentRunView, plain: bool = False) -> str:
+    """'Endurance (h) 6 → 3.2' for every field the change actually moves; else the label, escaped for markdown
+    unless `plain` (for widgets that show text verbatim, such as st.dataframe)."""
     rows = change.describe(view.requirements, view.design_assumptions) if view.requirements else []
-    return "; ".join(f"{label} {old} → {new}" for label, old, new in rows) or inline(change.label)
+    fallback = " ".join(change.label.split()) if plain else inline(change.label)
+    return "; ".join(f"{label} {old} → {new}" for label, old, new in rows) or fallback
 
 
 def _as_number(text: str) -> Optional[float]:
@@ -109,12 +114,14 @@ def _tried_text(change: ChangeSet, view: AgentRunView) -> str:
 
 
 def _outcome_text(result: dict[str, Any]) -> str:
-    parts: list[str] = [f"MTOW {result['mtow_kg']:.1f} kg", f"Group {result['dod_group']}"]
+    """Solver figures at the precision the explanation's facts carry, plus the reserve-floor note if any."""
+    parts: list[str] = [f"MTOW {fact_text(result['mtow_kg'])} kg", f"Group {result['dod_group']}"]
     if result.get("battery_mass_kg"):
-        parts.append(f"battery {result['battery_mass_kg']:.1f} kg")
+        parts.append(f"battery {fact_text(result['battery_mass_kg'])} kg")
     if result.get("fuel_mass_kg"):
-        parts.append(f"fuel {result['fuel_mass_kg']:.1f} kg")
-    return " · ".join(parts)
+        parts.append(f"fuel {fact_text(result['fuel_mass_kg'])} kg")
+    note = floor_note(result.get("reserve_floor_applied"))
+    return " · ".join([*parts, *([note] if note else [])])
 
 
 def saving_text(mtow_saved_kg: float) -> str:
@@ -167,8 +174,10 @@ def render_options(view: AgentRunView, db_path: Path) -> None:
     """Closure cards for a design that did not close; on demand, improvement cards for a converged one."""
     if view.requirements is None:
         return
+    if view.explorer_note:
+        st.info(inline(view.explorer_note))
     if view.explorer_mode == CLOSURE_MODE and view.options:
-        st.subheader("Options that would close the design")
+        st.subheader(CLOSING_HEADING if any(o.get("closes") for o in view.options) else NONE_CLOSE_HEADING)
         if view.options_explanation:
             st.markdown(defang(view.options_explanation))
         _option_cards(view.options, view, saving=False)

@@ -9,9 +9,12 @@ from pathlib import Path
 import pytest
 
 from src.agent.agent_schemas import DesignerTurn, FieldChange, ProposedChange
-from src.agent.design_chat import (HISTORY_BUDGET, MAX_ROUNDS, MAX_WHAT_IFS, ROUND_LIMIT_NOTE, ChatContext,
-                                   ChatMessage, answer, to_change_set)
+from src.agent.design_chat import (HISTORY_BUDGET, LATE_WHAT_IFS_NOTE, MAX_ROUNDS, MAX_WHAT_IFS, ROUND_LIMIT_NOTE,
+                                   ChatContext, ChatMessage, answer, to_change_set)
+from src.agent.critic import RESERVE_MIN
+from src.agent.evaluator import Evaluation, round_fact
 from src.agent.llm import LLMError
+from src.agent.prompts import DESIGNER_SYSTEM
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import LABEL_MAX_LEN
 from src.ui import agent_service
@@ -138,7 +141,7 @@ def test_numbers_from_the_briefing_and_results_are_not_flagged(db: Path) -> None
     first = answer(ScriptedLLM(designer_turns=[_checking(_endurance(4.0)), _final("x")]), _ctx(db), (), "q")
     evaluation = first.what_ifs[0].result
     assert evaluation is not None
-    text = f"Endurance 6 h and radius 100 km; at 4 h the MTOW is {evaluation.mtow_kg} kg."
+    text = f"Endurance 6 h and radius 100 km; at 4 h the MTOW is {round_fact(evaluation.mtow_kg)} kg."
     llm = ScriptedLLM(designer_turns=[_checking(_endurance(4.0)), _final(text)])
     assert answer(llm, _ctx(db), (), "q").stray_numbers == ()
 
@@ -157,7 +160,7 @@ def test_a_number_the_designer_typed_is_not_a_fact(db: Path) -> None:
 
 def test_earlier_what_if_results_stay_citable(db: Path) -> None:
     first = answer(ScriptedLLM(designer_turns=[_checking(_endurance(4.0)), _final("x")]), _ctx(db), (), "q")
-    mtow = first.what_ifs[0].result.mtow_kg  # type: ignore[union-attr]
+    mtow = round_fact(first.what_ifs[0].result.mtow_kg)  # type: ignore[union-attr]  # facts carry rounded values
     reply = answer(ScriptedLLM(designer_turns=[_final(f"Earlier: {mtow} kg")]), _ctx(db), (first,), "again?")
     assert reply.stray_numbers == ()
 
@@ -200,6 +203,41 @@ def test_the_briefing_trims_history_and_lists_only_allowed_fields(db: Path) -> N
     answer(llm_knobs, _ctx(db, allow_knobs=True), (), "q")
     knobs = json.loads(llm_knobs.calls[0][1])["allowed_fields"]["knobs"]
     assert knobs["aspect_ratio"] == {"minimum": 4.0, "maximum": 25.0} and "reserve_fraction" not in knobs
+
+
+def test_a_chat_proposal_carries_the_reserve_floor_it_was_checked_with(db: Path) -> None:  # spec 6.2
+    hybrid = _change("Go hybrid", propulsion_type="series_hybrid")  # default fuel reserve 0.10 < floor
+    reply = answer(ScriptedLLM(designer_turns=[_final("hybrid closes", hybrid)]), _ctx(db), (), "q")
+    assert reply.proposal is not None and reply.proposal.requirements.propulsion_type == "series_hybrid"
+    assert reply.proposal.assumptions.fuel_reserve_fraction == RESERVE_MIN
+
+
+def test_a_reserve_what_if_below_the_floor_is_not_silently_clamped(db: Path) -> None:  # spec 7.3
+    low = _change("Hybrid, 12 % reserve", propulsion_type="series_hybrid", fuel_reserve_fraction=0.12)
+    reply = answer(ScriptedLLM(designer_turns=[_checking(low), _final("x")]), _ctx(db), (), "q")
+    (what_if,) = reply.what_ifs
+    assert what_if.result is not None and what_if.result.reserve_floor_applied == 0.12
+    assert what_if.facts()["result"]["reserve_floor_applied"] == 0.12  # type: ignore[index]
+
+
+def test_display_precision_citations_of_solver_numbers_are_not_flagged(
+        db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # final review finding 3
+    fixed = Evaluation(True, 16.623456789, 2, "series_hybrid", 0.81234567, 3.4567891, "")
+    monkeypatch.setattr("src.agent.design_chat.evaluate", lambda *args, **kwargs: fixed)
+    text = "It closes at 16.6 kg ... 3.5 kg of fuel"
+    reply = answer(ScriptedLLM(designer_turns=[_checking(_endurance(4.0)), _final(text)]), _ctx(db), (), "q")
+    assert reply.stray_numbers == ()
+
+
+def test_what_ifs_sent_with_the_final_answer_are_checked_and_flagged(db: Path) -> None:  # finding 5
+    turn = DesignerTurn(message="3 h closes", what_ifs=[_endurance(3.0)], proposal=None, done=True)
+    reply = answer(ScriptedLLM(designer_turns=[turn]), _ctx(db), (), "q")
+    assert reply.what_ifs[0].result is not None and LATE_WHAT_IFS_NOTE in reply.text
+    assert LATE_WHAT_IFS_NOTE not in answer(ScriptedLLM(designer_turns=[_final("ok")]), _ctx(db), (), "q").text
+
+
+def test_the_system_prompt_limits_citations_to_design_data_and_results() -> None:  # finding 12
+    assert "never from the designer's message or earlier chat text" in DESIGNER_SYSTEM
 
 
 def test_llm_errors_propagate(db: Path) -> None:

@@ -559,3 +559,79 @@ def test_chat_llm_error_shows_a_short_error_and_keeps_the_history(tmp_path: Path
     assert any("scripted failure" in e.value for e in at.error)
     assert len([m for m in at.chat_message if m.name == "assistant"]) == 1
     assert any(b.key.startswith("select_option_") for b in at.button)
+
+
+# ------------------------------------------------------ final review fixes ---
+def _change_json(label: str, **req: object) -> dict[str, object]:
+    from src.schemas.changes import ChangeSet
+
+    return ChangeSet.model_validate({"label": label, "requirements": req, "assumptions": {}, "knobs": {}}).model_dump()
+
+
+def _show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, view: Any) -> Any:
+    """Render `view` as the result of a description run (no solver, no LLM call)."""
+    from src.ui import agent_service
+
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", lambda *a, **k: view)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def test_what_if_rows_are_plain_text_at_solver_precision_with_the_floor_note() -> None:  # findings 2, 3, 9
+    from src.agent.design_chat import ChatMessage, WhatIfResult
+    from src.agent.evaluator import Evaluation
+    from src.schemas.changes import ChangeSet
+    from src.ui import agent_service, chat_panel
+
+    change = ChangeSet.model_validate({"label": "Try [x] *bold*", "requirements": {}, "assumptions": {}, "knobs": {}})
+    result = Evaluation(True, 16.623456789, 2, "series_hybrid", 0.8, 3.4, "", reserve_floor_applied=0.12)
+    message = ChatMessage(role="agent", text="x", what_ifs=(WhatIfResult(change, result, "bad \\ value [y]"),))
+    view = agent_service.AgentRunView("not_converged", run_id="r1", requirements=REQ_FAILED)
+    (row,) = chat_panel._what_if_rows(message, view)
+    assert row["What-if"] == "Try [x] *bold*" and row["Change"] == "Try [x] *bold*"
+    assert row["MTOW (kg)"] == "16.62"
+    assert row["Note"].startswith("bad \\ value [y]")
+    assert "sized with the 15 % reserve floor (requested 12 %)" in row["Note"]
+
+
+def test_option_outcome_uses_solver_precision_and_names_the_reserve_floor() -> None:  # findings 2, 3
+    from src.ui.design_loop import _outcome_text
+
+    text = _outcome_text({"mtow_kg": 16.623456789, "dod_group": 2, "battery_mass_kg": 0.8,
+                          "fuel_mass_kg": 3.4567891, "reserve_floor_applied": 0.1})
+    assert "MTOW 16.62 kg" in text and "fuel 3.46 kg" in text
+    assert "sized with the 15 % reserve floor (requested 10 %)" in text
+
+
+def test_no_closing_option_gets_an_honest_heading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # 7
+    from src.ui import agent_service
+
+    result = {"closes": False, "mtow_kg": 40.0, "dod_group": 2, "propulsion": "electric", "battery_mass_kg": 20.0,
+              "fuel_mass_kg": 0.0, "reason": "mass spiral"}
+    options = ({"lever": "endurance", "change": _change_json("endurance", endurance_hours=0.5), "result": result,
+                "relative_change": 0.0, "closes": False, "mtow_saved_kg": None, "group_drop": False},)
+    view = agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=REQ_FAILED,
+                                      explorer_mode="closure", options=options)
+    headings = [s.value for s in _show(tmp_path, monkeypatch, view).subheader]
+    assert "No single change closes the design (checked with sizing + catalog)" in headings
+    assert "Options that would close the design" not in headings
+
+
+def test_airframe_chat_opens_with_the_failed_gates_and_the_knobs(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:  # 1, 8
+    from src.ui import agent_service
+
+    gates = ({"name": "static_margin", "passed": False, "detail": "SM 3 % below the 5 % minimum"},
+             {"name": "lift_to_drag", "passed": True, "detail": "L/D fine"})
+    note = "Sizing + catalog close unchanged; the failure is in static_margin"
+    view = agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=G1_ELECTRIC_FW,
+                                      explorer_mode="airframe", gates=gates, explorer_note=note)
+    at = _show(tmp_path, monkeypatch, view)
+    first = next(m for m in at.chat_message if m.name == "assistant").markdown[0].value
+    assert "static_margin" in first and "SM 3 % below the 5 % minimum" in first and "L/D fine" not in first
+    assert "Aspect ratio (4–25)" in first and "Fuselage length factor (0.6–2.5)" in first
+    assert any(note in i.value for i in at.info)
+    assert not (tmp_path / "design_chat.json").exists()  # the opening is not an LLM turn and is not saved
