@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from src.agent import critic, report
+from src.agent import critic, nodes, report
 from src.agent.agent_schemas import (Adjustment, CriticDecision, Distance, Duration, Mass, Power, ReportNarrative,
                                      OptionsExplanation, RequirementsDraft, Speed)
 from src.agent.graph import run_agent
@@ -17,6 +17,8 @@ from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
 from src.schemas.assumptions import DesignAssumptions
+from src.schemas.state import CADArtifacts
+from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
@@ -456,3 +458,43 @@ def test_cli_prints_options_after_a_failed_run(tmp_path: Path, db: Path, capsys:
     spec.write_text(REQ_FAILED.model_dump_json())
     assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_NOT_CONVERGED
     assert "Options that close the design" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ 3D viewer ---
+VIEWER_MODEL: dict[str, Any] = {"frame": "x_aft_y_right_z_up", "cg_m": [0.5, 0, 0], "mass_kg": 10.0,
+                                "parts": [{"name": "fuselage", "group": "component", "mass_kg": 1.0,
+                                           "positions_b64": "", "indices_b64": ""}]}
+
+
+def test_compile_report_builds_the_viewer_from_the_exported_model(tmp_path: Path, db: Path) -> None:
+    ctx = _ctx(tmp_path, db, ScriptedLLM())
+    state = run_agent(ctx, requirements=G1_ELECTRIC_FW)
+    out = Path(state["out_dir"])
+    assert not (out / "viewer.html").exists()  # the aero/CAD-free run exported no mesh
+    (out / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
+    update = nodes.compile_report(state, ctx)
+    assert (out / "viewer.html").is_file() and update["viewer_error"] is None
+
+
+def test_a_viewer_failure_is_a_warning_not_a_failed_run(tmp_path: Path, db: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(run_dir: Path) -> Path:
+        raise ViewerError("bad model")
+
+    monkeypatch.setattr("src.agent.nodes.write_viewer", broken)
+    state = run_agent(_ctx(tmp_path, db, ScriptedLLM()), requirements=G1_ELECTRIC_FW)
+    assert Path(state["final_report_path"]).is_file()
+    assert state["viewer_error"] == "3D viewer not built: bad model"
+    assert "3D viewer not built: bad model" in nodes.run_warnings(state)
+    assert "bad model" in Path(state["final_report_path"]).read_text()
+
+
+def test_the_report_lists_the_viewer_file_when_a_mesh_was_exported() -> None:
+    cad = CADArtifacts(oml_vsp3_path="a.vsp3", oml_step_path="b.step", assembly_step_path="c.step", x_cg_m=0.3,
+                       static_margin=0.11, collision_count=0, as_built_mass_kg=10.0, ixx_kgm2=1.0, iyy_kgm2=1.0,
+                       izz_kgm2=1.0, ixz_kgm2=0.0, viewer_model_path="viewer_model.json")
+    inputs = report.ReportInputs(run_id="r", out_dir=Path("."), requirements=G1_ELECTRIC_FW, sizing=None,
+                                 bom=None, aero=None, cad=cad, fcs=None, converged=True, iterations=0)
+    assert "`viewer.html` (3D viewer)" in "\n".join(report._sections(inputs))
+    no_mesh = report.ReportInputs(**{**inputs.__dict__, "cad": cad.model_copy(update={"viewer_model_path": None})})
+    assert "viewer.html" not in "\n".join(report._sections(no_mesh))

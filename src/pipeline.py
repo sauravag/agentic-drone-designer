@@ -29,6 +29,7 @@ from src.tools.flight_control.runtime import (MAX_OVERSHOOT, MAX_SETTLING_S, MAX
                                               SitlValidationError, sitl_available)
 from src.tools.sizing.mission_solver import SizingDivergenceError, component_needs, size_aircraft
 from src.tools.sizing.topology import GroupClassificationError
+from src.viewer.build import ViewerError, write_viewer
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,16 @@ def _summary(run_id: str, stages: dict[str, bool], status: str, **extra: object)
             **stages, "status": status, **extra}
 
 
+def _viewer_warning(out_dir: Path) -> tuple[str, ...]:
+    """Write viewer.html when a mesh was exported; a failure is a run warning, never a failed run."""
+    try:
+        write_viewer(out_dir)
+    except (ViewerError, OSError) as exc:
+        logger.exception("3D viewer build failed")
+        return (f"3D viewer not built: {exc}",)
+    return ()
+
+
 def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: Path, stages: dict[str, bool],
              progress: Progress) -> DesignRun:
     _write_json(out_dir / "requirements.json", req)
@@ -202,7 +213,7 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
         if stages["sitl"]:
             fcs = run_sitl(req, sizing, bom, aero, cad, out_dir, progress)
             _write_json(out_dir / "fcs.json", fcs)
-    warnings = design_warnings(sizing, aero, cad, fcs) + payload_warnings(req, bom)
+    warnings = design_warnings(sizing, aero, cad, fcs) + payload_warnings(req, bom) + _viewer_warning(out_dir)
     _write_json(out_dir / "run_summary.json", _summary(run_id, stages, "ok", warnings=list(warnings)))
     progress("Done")
     return DesignRun(run_id, out_dir, req, sizing, bom, aero, cad, warnings, fcs)

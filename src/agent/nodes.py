@@ -25,6 +25,7 @@ from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import DEFAULT_DB_PATH
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
+from src.viewer.build import ViewerError, write_viewer
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,21 @@ def run_warnings(state: DesignState) -> list[str]:
                            + "; ".join(state.get("validation_errors", [])))
     if state.get("sitl_error"):
         warnings.insert(0, state["sitl_error"])
+    if state.get("viewer_error"):
+        warnings.append(state["viewer_error"])
     return warnings
+
+
+def _build_viewer(state: DesignState) -> DesignState:
+    """Write viewer.html when the CAD stage exported a mesh. A failure is a run warning, never a failed run."""
+    if not state.get("out_dir"):
+        return state
+    try:
+        write_viewer(Path(state["out_dir"]))
+    except (ViewerError, OSError) as exc:
+        logger.exception("3D viewer build failed")
+        return {**state, "viewer_error": f"3D viewer not built: {exc}"}
+    return {**state, "viewer_error": None}
 
 
 def _report_inputs(state: DesignState) -> report.ReportInputs:
@@ -281,6 +296,7 @@ def _explain_options(ctx: AgentContext, facts: str) -> Optional[OptionsExplanati
 
 
 def compile_report(state: DesignState, ctx: AgentContext) -> Update:
+    state = _build_viewer(state)  # before the report inputs, so the report sees any viewer warning
     inputs = _report_inputs(state)
     mode = explorer_mode(state)
     options: list[ExploreOption] = []
@@ -313,7 +329,8 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
         "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
         "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()},
         "explorer_note": note, "lineage": lineage.model_dump(mode="json") if lineage else None})
-    return {"final_report_path": str(path), "explorer_mode": mode, "explorer_note": note,
+    return {"final_report_path": str(path), "viewer_error": state.get("viewer_error"),
+            "explorer_mode": mode, "explorer_note": note,
             "explore_options": [option.to_json() for option in options],
             "options_explanation": None if explanation is None else
             f"{explanation.why_it_failed}\n\n{explanation.trade_offs}"}

@@ -157,3 +157,4 @@ class DesignState(TypedDict):
     options_explanation: Optional[str]  # LLM prose about the options (audited, defanged in the report)
     explorer_note: Optional[str]  # set when a failed design closes unchanged with sizing + catalog
     lineage: Optional[RunLineage]  # set on a linked re-run
+    viewer_error: Optional[str]  # why viewer.html was not built (a run warning, never a failed run)

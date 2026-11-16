@@ -152,3 +152,47 @@ def test_warnings_flag_a_failed_sitl_test(sizing_only_run: pipeline.DesignRun) -
                        roll_settling_s=4.2, pitch_settling_s=1.0, max_transition_altitude_loss_m=2.0, attempts=4)
     text = " ".join(pipeline.design_warnings(sizing_only_run.sizing, None, None, fcs))
     assert "SITL doublet test failed after 4 attempt(s)" in text and "31%" in text
+
+
+# ------------------------------------------------------------------ 3D viewer ---
+VIEWER_MODEL = {"frame": "x_aft_y_right_z_up", "cg_m": [0.5, 0, 0], "mass_kg": 10.0,
+                "parts": [{"name": "fuselage", "group": "component", "mass_kg": 1.0,
+                           "positions_b64": "", "indices_b64": ""}]}
+
+
+@pytest.fixture
+def fake_aero_cad(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend OpenVSP is installed; the stage drops a viewer model like the real CAD export would."""
+    def fake(sizing, bom, req, out_dir, progress):  # type: ignore[no-untyped-def]
+        (out_dir / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
+        return None, None
+
+    monkeypatch.setattr(pipeline, "aero_cad_available", lambda: True)
+    monkeypatch.setattr(pipeline, "run_aero_cad", fake)
+
+
+def test_run_design_builds_the_viewer_when_a_model_was_exported(tmp_path: Path, fake_aero_cad: None) -> None:
+    run = pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db",
+                              with_aero_cad=True, with_sitl=False)
+    assert (run.out_dir / "viewer.html").is_file()
+    assert not any("3D viewer" in w for w in run.warnings)
+
+
+def test_a_viewer_failure_is_a_run_warning_not_a_failed_run(tmp_path: Path, fake_aero_cad: None,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.viewer.build import ViewerError
+
+    def broken(run_dir: Path) -> Path:
+        raise ViewerError("bad model")
+
+    monkeypatch.setattr(pipeline, "write_viewer", broken)
+    run = pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db",
+                              with_aero_cad=True, with_sitl=False)
+    assert "3D viewer not built: bad model" in run.warnings
+    summary = json.loads((run.out_dir / "run_summary.json").read_text())
+    assert summary["status"] == "ok" and "3D viewer not built: bad model" in summary["warnings"]
+
+
+def test_a_run_without_a_model_has_no_viewer_and_no_warning(sizing_only_run: pipeline.DesignRun) -> None:
+    assert not (sizing_only_run.out_dir / "viewer.html").exists()
+    assert not any("3D viewer" in w for w in sizing_only_run.warnings)

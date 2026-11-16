@@ -225,7 +225,8 @@ def _sections(inputs: ReportInputs) -> list[str]:
     if inputs.cad:
         s += ["## CAD, mass properties and packaging\n", pairs(presenters.cad_rows(inputs.cad))]
         s += [f"Files: `{Path(inputs.cad.oml_step_path).name}`, `{Path(inputs.cad.assembly_step_path).name}`, "
-              f"`{Path(inputs.cad.oml_vsp3_path).name}`\n"]
+              f"`{Path(inputs.cad.oml_vsp3_path).name}`"
+              + (", `viewer.html` (3D viewer)" if inputs.cad.viewer_model_path else "") + "\n"]
     if inputs.fcs:
         s += ["## Flight control and SITL validation\n", table(presenters.fcs_rows(inputs.fcs))]
         s += [f"Parameters: `{Path(inputs.fcs.param_path).name}`; telemetry: `{Path(inputs.fcs.sitl_report_path).name}`\n"]
