@@ -116,7 +116,11 @@ def test_group_lever_names_the_group_the_design_closes_in(db: Path) -> None:
 def test_improvement_compares_against_the_evaluated_unchanged_design(db: Path) -> None:
     baseline = size_aircraft(G3_HYBRID_VTOL)  # unfloored reserve: not the reference for savings
     by_lever = {o.lever: o for o in explore_improvement(G3_HYBRID_VTOL, DEFAULT_ASSUMPTIONS, baseline, db)}
-    assert by_lever["endurance"].mtow_saved_kg > 0
+    shorter = G3_HYBRID_VTOL.model_copy(update={"endurance_hours": G3_HYBRID_VTOL.endurance_hours - 1.0})
+    expected = (evaluate(G3_HYBRID_VTOL, DEFAULT_ASSUMPTIONS, {}, db).mtow_kg
+                - evaluate(shorter, DEFAULT_ASSUMPTIONS, {}, db).mtow_kg)
+    assert expected > 0
+    assert by_lever["endurance"].mtow_saved_kg == pytest.approx(expected, rel=1e-6)
     assert "liion_max_c_rate" not in by_lever and "liion_specific_energy" not in by_lever  # no-ops on a hybrid
 
 
