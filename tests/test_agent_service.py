@@ -1,6 +1,8 @@
 """Web form <-> agent adapter (M6): structured and natural-language runs, clarification, errors, the view."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -143,7 +145,9 @@ def test_a_fatal_agent_error_becomes_an_error_view() -> None:
 
 def test_rerun_links_to_the_parent_and_applies_the_change(tmp_path: Path, no_key: None) -> None:
     first = _run(tmp_path, requirements=REQ_FAILED)
-    option = next(o for o in first.options if o["closes"])
+    closing = [o for o in first.options if o["closes"]]
+    assert closing, "REQ_FAILED must offer at least one closing option"
+    option = closing[0]
     change = ChangeSet.model_validate(option["change"])
     second = agent_service.rerun(first, change, "option", tmp_path / "o", tmp_path / "c.db", False, False, lambda _: None)
     assert second.lineage.parent_run_id == first.run_id and second.status == agent_service.STATUS_CONVERGED
@@ -161,9 +165,12 @@ def test_a_change_that_changes_nothing_is_refused(tmp_path: Path, no_key: None) 
 
 def test_description_runs_use_the_panel_assumptions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
-    a = DesignAssumptions(liion_max_c_rate=6)
+    a = DesignAssumptions(bsfc_kg_per_kwh=0.8)  # the SRS design is a series hybrid, so fuel burn matters
     view = _run(tmp_path, prompt=SRS_PROMPT, design_assumptions=a)
+    baseline = _run(tmp_path / "base", prompt=SRS_PROMPT)
     assert view.design_assumptions == a
+    assert view.sizing is not None and baseline.sizing is not None
+    assert view.sizing.fuel_mass_kg != baseline.sizing.fuel_mass_kg  # the assumption reached the design
 
 
 def test_rerun_needs_a_view_with_requirements(tmp_path: Path, no_key: None) -> None:
@@ -180,3 +187,9 @@ def test_explore_is_limited_to_converged_views(tmp_path: Path, no_key: None) -> 
     view = _run(tmp_path, requirements=G1_ELECTRIC_FW)
     options = agent_service.explore(view, tmp_path / "c.db")
     assert isinstance(options, tuple) and options
+
+
+def test_run_lineage_needs_no_import_order(tmp_path: Path) -> None:
+    code = ("from src.schemas.state import RunLineage; RunLineage.model_validate({'parent_run_id': 'r', "
+            "'change_source': 'chat', 'change_set': {'label': 'x', 'requirements': {}, 'assumptions': {}, 'knobs': {}}})")
+    subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(__file__).resolve().parent.parent)

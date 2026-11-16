@@ -15,6 +15,7 @@ from scipy.optimize import brentq
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import ComponentNeeds
+from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import SizingOutput
 from src.tools.sizing.aero_model import (
@@ -74,20 +75,6 @@ RE_REFRESH_TOL: Final[float] = 0.10
 INITIAL_AIRFOIL: Final[tuple[str, float]] = ("sd7037", 2e5)
 VTOL_ROTOR_COUNT: Final[int] = 4
 
-OVERRIDE_BOUNDS: Final[dict[str, tuple[float, float]]] = {
-    "aspect_ratio": (4.0, 25.0),
-    "tail_volume_h": (0.3, 1.2),
-    "tail_volume_v": (0.02, 0.10),
-    "fuselage_length_factor": (0.6, 2.5),
-    # end-of-mission energy reserve: battery SoC (electric) or fuel fraction (series hybrid); default by powertrain
-    "reserve_fraction": (0.10, 0.40),
-}
-OVERRIDE_DEFAULTS: Final[dict[str, float]] = {
-    "aspect_ratio": DEFAULT_ASPECT_RATIO,
-    "tail_volume_h": DEFAULT_TAIL_VOLUME_H,
-    "tail_volume_v": DEFAULT_TAIL_VOLUME_V,
-    "fuselage_length_factor": DEFAULT_FUSELAGE_LENGTH_FACTOR,
-}
 
 
 class SizingDivergenceError(RuntimeError):

@@ -8,15 +8,16 @@ import math
 from dataclasses import dataclass
 from typing import Final
 
+from src.schemas.knobs import (  # noqa: F401  (re-exported: the knob defaults live in the leaf module)
+    DEFAULT_ASPECT_RATIO,
+    DEFAULT_FUSELAGE_LENGTH_FACTOR,
+    DEFAULT_TAIL_VOLUME_H,
+    DEFAULT_TAIL_VOLUME_V,
+)
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.topology import Airframe
 from src.units import G0
 
-# Defaults the design critic may override (see mission_solver.OVERRIDE_BOUNDS).
-DEFAULT_ASPECT_RATIO: Final[float] = 12.0
-DEFAULT_TAIL_VOLUME_H: Final[float] = 0.50
-DEFAULT_TAIL_VOLUME_V: Final[float] = 0.04
-DEFAULT_FUSELAGE_LENGTH_FACTOR: Final[float] = 1.0
 
 FUSELAGE_LENGTH_COEFF: Final[float] = 0.55  # m per kg^(1/3)
 FUSELAGE_MIN_LENGTH_M: Final[float] = 0.6

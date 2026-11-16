@@ -1,15 +1,13 @@
 """LangGraph DesignState and the tool-output schemas each node writes into it (all SI)."""
 
-from typing import TYPE_CHECKING, Annotated, Literal, Optional, TypedDict
+from typing import Annotated, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.schemas.assumptions import DesignAssumptions
+from src.schemas.changes import ChangeSet
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-
-if TYPE_CHECKING:  # src.schemas.changes imports the solver, which imports this module: resolved by model_rebuild there
-    from src.schemas.changes import ChangeSet
 
 Positive = Annotated[float, Field(gt=0)]
 NonNegative = Annotated[float, Field(ge=0)]
@@ -124,7 +122,7 @@ class RunLineage(_Frozen):
     """Which run a re-run was derived from, and the change that was applied to it."""
 
     parent_run_id: str
-    change_set: "ChangeSet"
+    change_set: ChangeSet
     change_source: Literal["option", "chat", "manual"]
 
 

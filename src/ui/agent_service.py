@@ -14,6 +14,7 @@ from src import pipeline
 from src.agent.graph import run_agent
 from src.agent import providers
 from src.agent.explorer import ExploreOption, explore_improvement
+from src.agent.report import inline
 from src.agent.llm import StructuredLLM
 from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status, run_warnings
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
@@ -150,7 +151,7 @@ def rerun(view: AgentRunView, change: ChangeSet, source: Literal["option", "chat
     if view.requirements is None or view.run_id is None:
         raise ValueError("this run has no requirements to change")
     if change.is_empty() or not change.describe(view.requirements, view.design_assumptions):
-        raise NoChangeError(f"'{change.label}' does not change anything in this design")
+        raise NoChangeError(f"'{inline(change.label)}' does not change anything in this design")
     req, assumptions, knobs = apply_changes(view.requirements, view.design_assumptions, change)
     args = _context_args(outputs_root, db_path, with_aero_cad, with_sitl, progress, max_iterations)
     lineage = RunLineage(parent_run_id=view.run_id, change_set=change, change_source=source)
