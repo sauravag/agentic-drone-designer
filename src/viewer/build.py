@@ -7,10 +7,13 @@ page only through one `<script type="application/json" id="viewer-data">` block.
 
 import base64
 import json
+import logging
 import math
 import re
 from pathlib import Path
 from typing import Any, Final, Mapping, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 VIEWER_FILE: Final[str] = "viewer.html"
 # Copies of the producers' file names, so this module (and the UI importing it) never imports build123d or the
@@ -157,3 +160,13 @@ def write_viewer(run_dir: Path) -> Optional[Path]:
     except OSError as exc:
         raise ViewerError(f"cannot write {out_path}: {exc}") from exc
     return out_path
+
+
+def viewer_warning(run_dir: Path) -> Optional[str]:
+    """Builds the viewer for a run; a failure is logged and returned as warning text, never raised."""
+    try:
+        write_viewer(run_dir)
+    except (ViewerError, OSError) as exc:
+        logger.exception("3D viewer build failed")
+        return f"3D viewer not built: {exc}"
+    return None

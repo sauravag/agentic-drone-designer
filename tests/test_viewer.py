@@ -8,7 +8,7 @@ from typing import Any, Optional
 import pytest
 
 from src.viewer import build
-from src.viewer.build import ViewerError, build_viewer_html, load_trace, write_viewer
+from src.viewer.build import ViewerError, build_viewer_html, load_trace, viewer_warning, write_viewer
 
 MODEL: dict[str, Any] = {
     "frame": "x_aft_y_right_z_up", "cg_m": [0.5, 0, 0], "mass_kg": 10.0,
@@ -114,3 +114,19 @@ def test_a_non_finite_trace_value_raises_viewer_error(tmp_path: Path) -> None:
 def test_a_non_finite_unchecked_value_raises_viewer_error() -> None:
     with pytest.raises(ViewerError):
         build_viewer_html(MODEL, [{**TRACE[0], "alpha_deg": float("inf")}], True)
+
+
+def test_viewer_warning_is_none_when_the_viewer_builds_or_there_is_no_model(tmp_path: Path) -> None:
+    assert viewer_warning(tmp_path) is None
+    (tmp_path / build.VIEWER_MODEL_FILE).write_text(json.dumps(MODEL))
+    assert viewer_warning(tmp_path) is None and (tmp_path / build.VIEWER_FILE).is_file()
+
+
+@pytest.mark.parametrize("error", [ViewerError("bad model"), OSError("disk full")])
+def test_viewer_warning_turns_viewer_and_os_errors_into_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                              error: Exception) -> None:
+    def broken(run_dir: Path) -> Path:
+        raise error
+
+    monkeypatch.setattr(build, "write_viewer", broken)
+    assert viewer_warning(tmp_path) == f"3D viewer not built: {error}"

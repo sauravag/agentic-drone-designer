@@ -25,7 +25,7 @@ from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import DEFAULT_DB_PATH
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
-from src.viewer.build import ViewerError, write_viewer
+from src.viewer.build import viewer_warning
 
 logger = logging.getLogger(__name__)
 
@@ -255,15 +255,10 @@ def run_warnings(state: DesignState) -> list[str]:
 
 
 def _build_viewer(state: DesignState) -> DesignState:
-    """Write viewer.html when the CAD stage exported a mesh. A failure is a run warning, never a failed run."""
+    """Write viewer.html when the CAD stage exported a mesh; a failure becomes a run warning."""
     if not state.get("out_dir"):
         return state
-    try:
-        write_viewer(Path(state["out_dir"]))
-    except (ViewerError, OSError) as exc:
-        logger.exception("3D viewer build failed")
-        return {**state, "viewer_error": f"3D viewer not built: {exc}"}
-    return {**state, "viewer_error": None}
+    return {**state, "viewer_error": viewer_warning(Path(state["out_dir"]))}
 
 
 def _report_inputs(state: DesignState) -> report.ReportInputs:

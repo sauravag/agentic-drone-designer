@@ -185,7 +185,7 @@ def test_a_viewer_failure_is_a_run_warning_not_a_failed_run(tmp_path: Path, fake
     def broken(run_dir: Path) -> Path:
         raise ViewerError("bad model")
 
-    monkeypatch.setattr(pipeline, "write_viewer", broken)
+    monkeypatch.setattr("src.viewer.build.write_viewer", broken)
     run = pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db",
                               with_aero_cad=True, with_sitl=False)
     assert "3D viewer not built: bad model" in run.warnings
