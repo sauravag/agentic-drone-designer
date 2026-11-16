@@ -22,6 +22,43 @@ The web form accepts either a description (needs an LLM key) or structured requi
 key: rule-table critic, template report narrative). Both run the same agent and critic loop. Docker Compose
 reads `.env`; when running on the host, `export OPENROUTER_API_KEY=...` in your shell instead.
 
+### Designer in the loop
+
+The designer stays in charge of the numbers the agent would otherwise assume. Four pieces, all in the web form:
+
+**Design assumptions.** A panel above the forms holds the 12 technology constants the sizing chain uses; the
+defaults reproduce the historical values exactly.
+
+| Group | Values (default) |
+|---|---|
+| Li-ion | specific energy 200 Wh/kg, energy density 250 Wh/L, max discharge 3 C |
+| LiPo | specific energy 155 Wh/kg, energy density 280 Wh/L, max discharge 25 C |
+| Reserves | battery reserve 0.20, fuel reserve (hybrid) 0.10 |
+| Propulsion and VTOL | generator BSFC 0.50 kg/kWh, drivetrain efficiency 0.68, hover figure of merit 0.72, lift motor efficiency 0.85 |
+
+They apply to both description and form runs, and each has validated bounds. Changing a battery value makes the
+catalog battery packs *notional*: capacity and voltage stay catalog values, but pack mass and size are derived
+from your specific energy and density, and the report says so. The critic treats your reserve as a floor: it may raise the reserve to pass gate 4 but never
+lowers it below the value you set.
+
+**Option explorer.** When a run does not converge on sizing, catalog, reserve or group-limit failures, closure
+mode runs automatically and lists single changes that would close the design (requirement relaxations such as
+endurance, radius, payload or cruise speed, a different propulsion or airframe, a higher group limit, better
+battery assumptions). Options are checked with sizing and catalog only, with no aero, CAD or SITL, so they are fast
+but unverified against the airframe gates. They are ranked by how small the change is and stop at a time cap
+(unchecked options are marked "not evaluated"). Airframe-gate failures (static margin, L/D) do not get cards:
+they open the chat instead. On a converged run, **Explore alternatives** runs improvement mode and shows how
+sensitive the design is to each lever.
+
+**Design chat.** Ask what-ifs about a run ("what if the reserve were 25 %?"). It needs an LLM key. Every what-if is
+checked with the real solver, any number in an answer that did not come from the solver is flagged, and
+proposals only fill the review panel; nothing runs until you press Re-run. A message uses at most 3 LLM calls.
+The conversation is saved with the run.
+
+**Linked re-runs and design history.** Selecting an option or accepting a chat proposal fills a review panel with
+the change (requirements, assumptions, or knobs); **Re-run** starts a new run linked to its parent. The design
+history lists every run of the session with its parent and where the change came from, and Open reloads any of them.
+
 ### Choosing the LLM
 
 The provider and model are configuration. Every adapter returns schema-validated objects, so any model that
@@ -50,6 +87,19 @@ docker compose run --rm isr-forge python -m src.main \
 docker compose run --rm isr-forge python -m src.main --spec requirements.json --no-sitl
 ```
 
+`--spec` accepts an optional top-level `"assumptions"` object next to the requirements; give only the values you
+want to change (unknown names and out-of-range values are rejected):
+
+```json
+{
+  "mission_name": "Group 2 VTOL ISR",
+  "...": "other OperationalRequirements fields",
+  "assumptions": {"liion_specific_energy_wh_kg": 250, "fuel_reserve_fraction": 0.15}
+}
+```
+
+After a non-converged run the CLI also prints the options that close the design (the same explorer as the web form).
+
 | Option | Meaning |
 |---|---|
 | `--spec FILE` | `OperationalRequirements` JSON instead of a description (no LLM needed) |
@@ -71,6 +121,9 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 | `sitl_report.json` | take-off, transition and roll/pitch doublet telemetry and metrics |
 | `critic_log.json`, `run_summary.json` | every critic pass and the final status |
 | `requirements.json`, `sizing.json`, `aero.json`, `cad.json`, `fcs.json` | stage outputs |
+| `assumptions.json` | the design assumptions the run used (defaults when unchanged) |
+| `options.json` | explorer options with their sizing + catalog results (written when the explorer ran) |
+| `design_chat.json` | the design chat for this run (written from the web form once you chat) |
 
 ## Critic gates (SRS §5)
 
@@ -80,7 +133,8 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 4. Energy reserve ≥ 15 % (installed battery margin for electric, fuel reserve for hybrid)
 
 A failed gate sends the design back to sizing with adjusted overrides (aspect ratio, fuselage length, tail
-volumes, reserve), up to 8 iterations. The SRS example converges after one iteration: its 10 % hybrid fuel
+volumes, reserve), up to 8 iterations. The reserve knob may only be raised: the critic never lowers it below the
+reserve you set in the design assumptions. The SRS example converges after one iteration: its 10 % hybrid fuel
 reserve fails gate 4 and the critic raises it to 15 %.
 
 ## Known limitations

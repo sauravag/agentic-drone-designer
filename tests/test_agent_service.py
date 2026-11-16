@@ -1,5 +1,8 @@
 """Web form <-> agent adapter (M6): structured and natural-language runs, clarification, errors, the view."""
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +14,9 @@ from src.schemas.state import DesignState
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui import agent_service
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
-from tests.reference_designs import G1_ELECTRIC_FW
+from src.schemas.assumptions import DesignAssumptions
+from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges
+from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 
 
 def _run(tmp_path: Path, **kwargs: object) -> agent_service.AgentRunView:
@@ -136,3 +141,55 @@ def test_a_catalog_failure_keeps_the_sizing_and_skips_payload_warnings() -> None
 def test_a_fatal_agent_error_becomes_an_error_view() -> None:
     view = agent_service.to_view({"fatal_error": "parser unavailable", "run_id": None}, used_llm=True)  # type: ignore[typeddict-item]
     assert view.status == agent_service.STATUS_ERROR and view.message == "parser unavailable"
+
+
+def test_rerun_links_to_the_parent_and_applies_the_change(tmp_path: Path, no_key: None) -> None:
+    first = _run(tmp_path, requirements=REQ_FAILED)
+    closing = [o for o in first.options if o["closes"]]
+    assert closing, "REQ_FAILED must offer at least one closing option"
+    option = closing[0]
+    change = ChangeSet.model_validate(option["change"])
+    second = agent_service.rerun(first, change, "option", tmp_path / "o", tmp_path / "c.db", False, False, lambda _: None)
+    assert second.lineage.parent_run_id == first.run_id and second.status == agent_service.STATUS_CONVERGED
+    assert json.loads((second.out_dir / "run_summary.json").read_text())["lineage"]["change_source"] == "option"
+    assert f"Derived from run {first.run_id} (option)" in second.report_path.read_text()
+
+
+def test_a_change_that_changes_nothing_is_refused(tmp_path: Path, no_key: None) -> None:  # Review Focus 2
+    first = _run(tmp_path, requirements=G1_ELECTRIC_FW)
+    same = ChangeSet(label="same", requirements=RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours),
+                     assumptions=AssumptionChanges(), knobs=KnobChanges())
+    with pytest.raises(agent_service.NoChangeError):
+        agent_service.rerun(first, same, "chat", tmp_path / "o", tmp_path / "c.db", False, False, lambda _: None)
+
+
+def test_description_runs_use_the_panel_assumptions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
+    a = DesignAssumptions(bsfc_kg_per_kwh=0.8)  # the SRS design is a series hybrid, so fuel burn matters
+    view = _run(tmp_path, prompt=SRS_PROMPT, design_assumptions=a)
+    baseline = _run(tmp_path / "base", prompt=SRS_PROMPT)
+    assert view.design_assumptions == a
+    assert view.sizing is not None and baseline.sizing is not None
+    assert view.sizing.fuel_mass_kg != baseline.sizing.fuel_mass_kg  # the assumption reached the design
+
+
+def test_rerun_needs_a_view_with_requirements(tmp_path: Path, no_key: None) -> None:
+    change = ChangeSet(label="x", requirements=RequirementChanges(endurance_hours=2.0),
+                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    with pytest.raises(ValueError, match="requirements"):
+        agent_service.rerun(agent_service.AgentRunView(agent_service.STATUS_ERROR, "boom"), change, "manual",
+                            tmp_path / "o", tmp_path / "c.db", False, False, lambda _: None)
+
+
+def test_explore_is_limited_to_converged_views(tmp_path: Path, no_key: None) -> None:
+    with pytest.raises(ValueError, match="converged"):
+        agent_service.explore(agent_service.AgentRunView(agent_service.STATUS_ERROR, "boom"), tmp_path / "c.db")
+    view = _run(tmp_path, requirements=G1_ELECTRIC_FW)
+    options = agent_service.explore(view, tmp_path / "c.db")
+    assert isinstance(options, tuple) and options
+
+
+def test_run_lineage_needs_no_import_order(tmp_path: Path) -> None:
+    code = ("from src.schemas.state import RunLineage; RunLineage.model_validate({'parent_run_id': 'r', "
+            "'change_source': 'chat', 'change_set': {'label': 'x', 'requirements': {}, 'assumptions': {}, 'knobs': {}}})")
+    subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(__file__).resolve().parent.parent)

@@ -1,13 +1,17 @@
 """Local web form: form parsing, result presenters, and a headless Streamlit smoke test."""
 
+import json
 from pathlib import Path
+from typing import Any, Optional
 
 import pytest
 
 from src import pipeline
 from src.ui import presenters
 from src.ui.examples import EXAMPLE_MISSIONS
-from tests.reference_designs import G1_ELECTRIC_FW
+from src.agent.llm import StructuredLLM
+from src.schemas.requirements import OperationalRequirements
+from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "ui" / "app.py"
 
@@ -238,3 +242,396 @@ def test_app_shows_validation_errors_instead_of_running(tmp_path: Path, monkeypa
     assert not at.exception
     assert any("Mission name" in e.value for e in at.error)
     assert not (tmp_path / "outputs").exists()
+
+
+def test_assumptions_panel_shows_defaults_and_applies_to_description_runs(tmp_path: Path,
+                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from tests.agent_fakes import SRS_PROMPT, ScriptedLLM
+
+    from src.ui import agent_service
+
+    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
+    at = _llm_app(tmp_path, monkeypatch)
+    if not at.checkbox(key="with_aero_cad").disabled:
+        at.checkbox(key="with_aero_cad").uncheck()
+    assert at.number_input(key="assume_liion_specific_energy_wh_kg").value == 200
+    at.number_input(key="assume_liion_max_c_rate").set_value(6.0)
+    at.text_area(key="prompt").set_value(SRS_PROMPT)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    (saved,) = (tmp_path / "outputs").glob("*/assumptions.json")
+    assert json.loads(saved.read_text())["liion_max_c_rate"] == 6.0
+
+
+def test_reset_restores_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    at.number_input(key="assume_drivetrain_efficiency").set_value(0.9)
+    at.run()
+    at.button(key="reset_assumptions").click()
+    at.run()
+    assert at.number_input(key="assume_drivetrain_efficiency").value == pytest.approx(0.68)
+
+
+def test_assumptions_apply_to_the_structured_form_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import agent_service
+
+    seen: list[object] = []
+
+    def fake_run(*args: object, **kwargs: object) -> object:
+        seen.append(kwargs.get("design_assumptions"))
+        return agent_service.AgentRunView("error", message="stop")
+
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", fake_run)
+    at.number_input(key="assume_bsfc_kg_per_kwh").set_value(0.4)
+    at.button(key="submit").click()
+    at.run()
+    assert not at.exception
+    assert seen and seen[0].bsfc_kg_per_kwh == pytest.approx(0.4)
+
+
+SELECT_FIELDS = ("airframe_topology", "propulsion_type", "group_constraint")
+NO_LLM_PROBLEM = "no LLM in this test"
+
+
+def _fill_form_widget(at: Any, key: str, value: object) -> None:
+    if isinstance(value, bool):
+        box = at.checkbox(key=key)
+        box.check() if value else box.uncheck()
+    elif key in SELECT_FIELDS:
+        at.selectbox(key=key).set_value(value)
+    elif isinstance(value, str):
+        at.text_input(key=key).set_value(value)
+    else:
+        at.number_input(key=key).set_value(value)
+
+
+def _form_app_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, req: OperationalRequirements,
+                   llm: Optional[StructuredLLM] = None) -> Any:
+    """Fill the structured form from `req`, aero/CAD off, (optionally) a scripted LLM; submit and return the app."""
+    from streamlit.testing.v1 import AppTest
+
+    from src.ui import agent_service
+
+    monkeypatch.setattr(agent_service, "llm_problem", lambda: None if llm is not None else NO_LLM_PROBLEM)
+    monkeypatch.setattr(agent_service, "make_llm", lambda: llm)
+    monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
+    monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
+    at = AppTest.from_file(str(APP_PATH), default_timeout=300)
+    at.run()
+    if not at.checkbox(key="with_aero_cad").disabled:
+        at.checkbox(key="with_aero_cad").uncheck()
+    for key, value in presenters.form_defaults(req).items():
+        if key in presenters.FIELD_LABELS:
+            _fill_form_widget(at, key, value)
+    at.button(key="submit").click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def test_failed_design_offers_cards_and_a_linked_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    assert any(b.key.startswith("select_option_") for b in at.button)
+    assert any("checked with sizing + catalog only" in c.value for c in at.caption)
+    at.button(key="select_option_0").click()
+    at.run()
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    summaries = sorted((tmp_path / "outputs").glob("*/run_summary.json"))
+    assert json.loads(summaries[-1].read_text())["lineage"]["change_source"] == "option"
+    assert len([b for b in at.button if b.key.startswith("open_run_")]) == 2
+    assert at.session_state["pending_change"] is None
+
+
+def test_reopening_a_run_shows_its_own_assumptions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, G1_ELECTRIC_FW)
+    first = at.session_state["last_run"].run_id
+    at.number_input(key="assume_liion_specific_energy_wh_kg").set_value(300.0)
+    at.button(key="submit").click()
+    at.run()
+    at.button(key=f"open_run_{first}").click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["last_run"].design_assumptions.liion_specific_energy_wh_kg == 200
+    assert at.number_input(key="assume_liion_specific_energy_wh_kg").value == 300  # the panel keeps the designer's
+
+
+def test_converged_design_can_explore_improvements(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, G1_ELECTRIC_FW)
+    run_id = at.session_state["last_run"].run_id
+    at.button(key="explore_alternatives").click()
+    at.run()
+    assert not at.exception
+    assert any("kg" in m.value for m in at.markdown if "−" in m.value or "-" in m.value)
+    explored = at.session_state["explored_options"][run_id]
+    assert explored and any(o["closes"] for o in explored)
+    assert any(m.value.startswith("**") and "MTOW \u2212 " in m.value and m.value.endswith(("kg", "group"))
+               for m in at.markdown)  # a saving card, not the headline metric
+
+
+def test_a_change_that_alters_nothing_shows_an_error_and_does_not_run(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    at.button(key="select_option_0").click()
+    at.run()
+    view = at.session_state["last_run"]
+    widgets = [w for w in [*at.number_input, *at.selectbox, *at.checkbox] if (w.key or "").startswith("review_")]
+    assert widgets
+    for widget in widgets:  # put every proposed value back to the run's own value
+        _, section, field = widget.key.split("_", 2)
+        source = view.requirements if section == "requirements" else view.design_assumptions
+        widget.set_value(getattr(source, field))
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    assert any("does not change anything" in e.value for e in at.error)
+    assert len(list((tmp_path / "outputs").glob("*/run_summary.json"))) == 1
+
+
+def test_cancel_clears_the_pending_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    at.button(key="select_option_0").click()
+    at.run()
+    assert any(b.key == "rerun" for b in at.button)
+    at.button(key="cancel_change").click()
+    at.run()
+    assert at.session_state["pending_change"] is None
+    assert not any(b.key == "rerun" for b in at.button)
+
+
+def test_improvement_savings_read_with_a_true_minus_and_gains_with_a_plus() -> None:
+    from src.ui.design_loop import saving_text
+
+    assert saving_text(3.14) == "MTOW − 3.1 kg"
+    assert saving_text(-0.12) == "MTOW + 0.1 kg"
+
+
+def test_rerun_uses_the_stage_checkboxes_at_click_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import agent_service
+
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)  # parent run: aero/CAD and SITL off
+    assert at.session_state["last_run"].cad is None
+    seen: dict[str, object] = {}
+
+    def fake_rerun(*args: object, **kwargs: object) -> object:
+        seen.update(kwargs)
+        return agent_service.AgentRunView("error", message="stop")  # never touches the toolchain
+
+    monkeypatch.setattr(agent_service, "rerun", fake_rerun)
+    at.button(key="select_option_0").click()
+    at.run()
+    at.session_state["with_aero_cad"] = True
+    at.session_state["with_sitl"] = True
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    assert seen["with_aero_cad"] is True and seen["with_sitl"] is True
+
+
+def test_an_out_of_bounds_review_value_is_rejected_without_running(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    at.button(key="select_option_0").click()  # hybrid: propulsion + fuel reserve
+    at.run()
+    at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(5.0)
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    assert any("fuel_reserve_fraction" in e.value for e in at.error)
+    assert len(list((tmp_path / "outputs").glob("*/run_summary.json"))) == 1
+    assert at.session_state["pending_change"] is not None  # the panel stays open to fix the value
+
+
+def test_selecting_another_option_reseeds_the_review_widgets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    at.button(key="select_option_0").click()
+    at.run()
+    at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(0.3)
+    at.run()
+    at.button(key="select_option_0").click()  # same option again, panel still open: the edit must not stick
+    at.run()
+    assert at.number_input(key="review_assumptions_fuel_reserve_fraction").value == pytest.approx(0.15)
+    at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(0.3)
+    at.run()
+    at.button(key="select_option_1").click()  # Li-ion specific energy
+    at.run()
+    keys = {w.key for w in [*at.number_input, *at.selectbox] if (w.key or "").startswith("review_")}
+    assert keys == {"review_assumptions_liion_specific_energy_wh_kg"}
+    proposed = at.session_state["pending_change"][0].assumptions.liion_specific_energy_wh_kg
+    assert at.number_input(key="review_assumptions_liion_specific_energy_wh_kg").value == proposed
+    at.button(key="cancel_change").click()
+    at.run()
+    at.button(key="select_option_0").click()
+    at.run()
+    assert at.number_input(key="review_assumptions_fuel_reserve_fraction").value == pytest.approx(0.15)
+
+
+def test_options_explanation_and_non_closing_options_render_safely(tmp_path: Path,
+                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.schemas.changes import ChangeSet
+    from src.ui import agent_service
+
+    def change(label: str, **req: object) -> dict[str, object]:
+        return ChangeSet.model_validate({"label": label, "requirements": req, "assumptions": {},
+                                         "knobs": {}}).model_dump()
+
+    result = {"closes": True, "mtow_kg": 16.9, "dod_group": 2, "propulsion": "series_hybrid",
+              "battery_mass_kg": 0.8, "fuel_mass_kg": 1.7, "reason": ""}
+    options = (
+        {"lever": "propulsion", "change": change("hybrid", propulsion_type="series_hybrid"), "result": result,
+         "relative_change": 1.0, "closes": True, "mtow_saved_kg": None, "group_drop": False},
+        {"lever": "endurance", "change": change("endurance", endurance_hours=0.5),
+         "result": {**result, "closes": False, "reason": "mass spiral"}, "relative_change": 0.0, "closes": False,
+         "mtow_saved_kg": None, "group_drop": False},
+    )
+    view = agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=REQ_FAILED,
+                                      explorer_mode="closure", options=options,
+                                      options_explanation="Try ![x](https://evil.example/a.png) or [this](http://x)")
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", lambda *a, **k: view)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    texts = [m.value for m in at.markdown]
+    assert any("!\\[x\\]" in t for t in texts)
+    assert not any("![x](" in t or "[this](" in t for t in texts)
+    assert any("Endurance (h): tried down to 0.5 — mass spiral" in t for t in texts)
+
+
+def test_chat_tests_a_what_if_and_hands_a_proposal_to_the_review_panel(tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.agent.agent_schemas import DesignerTurn
+    from src.agent.design_chat import to_change_set
+    from tests.agent_fakes import ScriptedLLM
+    from tests.test_design_chat import _endurance
+
+    turns = [DesignerTurn(message="3 h closes", what_ifs=[_endurance(3.0)], proposal=_endurance(3.0), done=True)]
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED, llm=ScriptedLLM(designer_turns=turns))
+    at.chat_input(key="design_chat").set_value("Keep electric?").run()
+    assert not at.exception
+    assert any("3 h closes" in m.markdown[0].value for m in at.chat_message if m.name == "assistant")
+    assert any("Keep electric?" in m.markdown[0].value for m in at.chat_message if m.name == "user")
+    assert any("1 LLM round" in c.value for c in at.caption)
+    assert any("What-if" in d.value.columns for d in at.dataframe)  # the what-if table under the answer
+    at.button(key="use_proposal_0").click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["pending_change"][1] == "chat"
+    assert at.session_state["pending_change"][0] == to_change_set(_endurance(3.0))
+    assert at.number_input(key="review_requirements_endurance_hours").value == pytest.approx(3.0)
+    saved = json.loads(next((tmp_path / "outputs").glob("*/design_chat.json")).read_text())
+    assert [m["role"] for m in saved["messages"]] == ["designer", "agent"]
+    agent = saved["messages"][1]
+    assert agent["rounds"] == 1 and agent["proposal"]["requirements"]["endurance_hours"] == 3.0
+    what_if = agent["what_if_results"][0]
+    assert what_if["error"] is None and what_if["result"]["reason"]  # the solver's verdict, saved verbatim
+    assert what_if["change"]["requirements"]["endurance_hours"] == 3.0
+
+
+def test_chat_is_disabled_without_a_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED, llm=None)
+    assert not [c for c in at.chat_input if c.key == "design_chat"] or at.chat_input(key="design_chat").disabled
+    assert any("design chat needs an LLM" in c.value for c in at.caption)
+    assert any(b.key.startswith("select_option_") for b in at.button)  # option cards still work
+
+
+def test_chat_llm_error_shows_a_short_error_and_keeps_the_history(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.agent.agent_schemas import DesignerTurn
+    from tests.agent_fakes import ScriptedLLM
+
+    turns = [DesignerTurn(message="Ask me about [x](http://evil.example) margins", what_ifs=[], proposal=None,
+                          done=True)]
+    llm = ScriptedLLM(designer_turns=turns)
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED, llm=llm)
+    at.chat_input(key="design_chat").set_value("Hello").run()
+    assistant = [m.markdown[0].value for m in at.chat_message if m.name == "assistant"]
+    assert assistant and "\\[x\\]" in assistant[0] and "[x](" not in assistant[0]
+    assert not [b for b in at.button if b.key.startswith("use_proposal_")]  # no proposal, no button
+    llm.fail_on = (DesignerTurn,)
+    at.chat_input(key="design_chat").set_value("Again").run()
+    assert not at.exception
+    assert any("scripted failure" in e.value for e in at.error)
+    assert len([m for m in at.chat_message if m.name == "assistant"]) == 1
+    assert any(b.key.startswith("select_option_") for b in at.button)
+
+
+# ------------------------------------------------------ final review fixes ---
+def _change_json(label: str, **req: object) -> dict[str, object]:
+    from src.schemas.changes import ChangeSet
+
+    return ChangeSet.model_validate({"label": label, "requirements": req, "assumptions": {}, "knobs": {}}).model_dump()
+
+
+def _show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, view: Any) -> Any:
+    """Render `view` as the result of a description run (no solver, no LLM call)."""
+    from src.ui import agent_service
+
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", lambda *a, **k: view)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def test_what_if_rows_are_plain_text_at_solver_precision_with_the_floor_note() -> None:  # findings 2, 3, 9
+    from src.agent.design_chat import ChatMessage, WhatIfResult
+    from src.agent.evaluator import Evaluation
+    from src.schemas.changes import ChangeSet
+    from src.ui import agent_service, chat_panel
+
+    change = ChangeSet.model_validate({"label": "Try [x] *bold*", "requirements": {}, "assumptions": {}, "knobs": {}})
+    result = Evaluation(True, 16.623456789, 2, "series_hybrid", 0.8, 3.4, "", reserve_floor_applied=0.12)
+    message = ChatMessage(role="agent", text="x", what_ifs=(WhatIfResult(change, result, "bad \\ value [y]"),))
+    view = agent_service.AgentRunView("not_converged", run_id="r1", requirements=REQ_FAILED)
+    (row,) = chat_panel._what_if_rows(message, view)
+    assert row["What-if"] == "Try [x] *bold*" and row["Change"] == "Try [x] *bold*"
+    assert row["MTOW (kg)"] == "16.62"
+    assert row["Note"].startswith("bad \\ value [y]")
+    assert "sized with the 15 % reserve floor (requested 12 %)" in row["Note"]
+
+
+def test_option_outcome_uses_solver_precision_and_names_the_reserve_floor() -> None:  # findings 2, 3
+    from src.ui.design_loop import _outcome_text
+
+    text = _outcome_text({"mtow_kg": 16.623456789, "dod_group": 2, "battery_mass_kg": 0.8,
+                          "fuel_mass_kg": 3.4567891, "reserve_floor_applied": 0.1})
+    assert "MTOW 16.62 kg" in text and "fuel 3.46 kg" in text
+    assert "sized with the 15 % reserve floor (requested 10 %)" in text
+
+
+def test_no_closing_option_gets_an_honest_heading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # 7
+    from src.ui import agent_service
+
+    result = {"closes": False, "mtow_kg": 40.0, "dod_group": 2, "propulsion": "electric", "battery_mass_kg": 20.0,
+              "fuel_mass_kg": 0.0, "reason": "mass spiral"}
+    options = ({"lever": "endurance", "change": _change_json("endurance", endurance_hours=0.5), "result": result,
+                "relative_change": 0.0, "closes": False, "mtow_saved_kg": None, "group_drop": False},)
+    view = agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=REQ_FAILED,
+                                      explorer_mode="closure", options=options)
+    headings = [s.value for s in _show(tmp_path, monkeypatch, view).subheader]
+    assert "No single change closes the design (checked with sizing + catalog)" in headings
+    assert "Options that would close the design" not in headings
+
+
+def test_airframe_chat_opens_with_the_failed_gates_and_the_knobs(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:  # 1, 8
+    from src.ui import agent_service
+
+    gates = ({"name": "static_margin", "passed": False, "detail": "SM 3 % below the 5 % minimum"},
+             {"name": "lift_to_drag", "passed": True, "detail": "L/D fine"})
+    note = "Sizing + catalog close unchanged; the failure is in static_margin"
+    view = agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=G1_ELECTRIC_FW,
+                                      explorer_mode="airframe", gates=gates, explorer_note=note)
+    at = _show(tmp_path, monkeypatch, view)
+    first = next(m for m in at.chat_message if m.name == "assistant").markdown[0].value
+    assert "static_margin" in first and "SM 3 % below the 5 % minimum" in first and "L/D fine" not in first
+    assert "Aspect ratio (4–25)" in first and "Fuselage length factor (0.6–2.5)" in first
+    assert any(note in i.value for i in at.info)
+    assert not (tmp_path / "design_chat.json").exists()  # the opening is not an LLM turn and is not saved

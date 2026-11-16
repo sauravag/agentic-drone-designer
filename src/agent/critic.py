@@ -14,11 +14,13 @@ from dataclasses import asdict, dataclass
 from typing import Final, Literal, Optional
 
 from src.agent.agent_schemas import Adjustment, Knob
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
+from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN
-from src.tools.sizing.mission_solver import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS, reserve_fraction
+from src.tools.sizing.mission_solver import reserve_fraction
 from src.tools.sizing.topology import GROUP1_UPPER_KG, GROUP2_UPPER_KG, GROUP3_UPPER_KG
 from src.units import WH_TO_J
 
@@ -118,9 +120,10 @@ def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Opt
     return fixes
 
 
-def _current(knob: str, overrides: dict[str, float], propulsion: str) -> float:
+def _current(knob: str, overrides: dict[str, float], propulsion: str,
+             assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS) -> float:
     if knob == "reserve_fraction":
-        return reserve_fraction(overrides, propulsion)  # type: ignore[arg-type]
+        return reserve_fraction(overrides, propulsion, assumptions)  # type: ignore[arg-type]
     return overrides.get(knob, OVERRIDE_DEFAULTS[knob])
 
 
@@ -134,10 +137,12 @@ def _step(knob: str, direction: str, value: float) -> float:
 
 def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices: list[Adjustment],
                       gates: list[GateResult], cad: Optional[CADArtifacts],
-                      stage: Optional[str] = None) -> tuple[dict[str, float], list[AppliedChange]]:
+                      stage: Optional[str] = None,
+                      assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS) -> tuple[dict[str, float], list[AppliedChange]]:
     """New overrides (a copy) plus the changes made. One move per knob. The rule table wins on every knob
     a failed gate governs (so a poor or prompt-injected LLM choice cannot push a knob the wrong way); the
-    LLM may add moves on other knobs."""
+    LLM may add moves on other knobs. The designer's reserve is a floor: a reserve step that would cross
+    it is dropped (the critic may only raise the reserve)."""
     chosen: dict[Knob, tuple[Adjustment, Literal["llm", "rule"]]] = {}
     for adj in _rule_fixes(gates, cad, stage):
         chosen.setdefault(adj.knob, (adj, "rule"))
@@ -146,9 +151,10 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
     updated: dict[str, float] = dict(overrides)
     changes: list[AppliedChange] = []
     for knob, (adj, source) in chosen.items():
-        old: float = _current(knob, overrides, propulsion)
+        old: float = _current(knob, overrides, propulsion, assumptions)
         new: float = _step(knob, adj.direction, old)
-        if abs(new - old) > VALUE_TOLERANCE:
+        below_floor: bool = knob == "reserve_fraction" and new < assumptions.reserve_for(propulsion) - VALUE_TOLERANCE
+        if abs(new - old) > VALUE_TOLERANCE and not below_floor:
             updated[knob] = new
             changes.append(AppliedChange(knob, adj.direction, old, new, source, adj.reason))
     return updated, changes

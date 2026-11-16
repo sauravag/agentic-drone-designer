@@ -3,9 +3,12 @@
 import logging
 import math
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import SizingOutput
 from src.tools.database.matcher import select_bom
@@ -16,10 +19,11 @@ from src.units import G0
 from src.tools.sizing.mission_solver import (
     SizingDivergenceError,
     component_needs,
+    reserve_fraction,
     size_aircraft,
 )
 from src.tools.sizing.topology import classify_group, select_airframe, select_propulsion
-from tests.reference_designs import CASES, G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL
+from tests.reference_designs import CASES, G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL, REQ_FAILED
 
 GROUP1_MAX_KG: float = 9.07
 GROUP2_MAX_KG: float = 24.95
@@ -251,3 +255,122 @@ def test_reserve_fraction_override_resizes_the_energy_store() -> None:
         assert store(tight) > store(base)
     with pytest.raises(ValueError, match="reserve_fraction"):
         size_aircraft(G1_ELECTRIC_FW, {"reserve_fraction": 0.9})
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_default_assumptions_reproduce_the_reference_designs(name: str) -> None:
+    req = CASES[name]
+    assert size_aircraft(req).mtow_kg == size_aircraft(req, None, DEFAULT_ASSUMPTIONS).mtow_kg
+
+
+def test_c_rate_drives_electric_vtol_battery_mass() -> None:
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 1.0, "combat_radius_km": 20.0, "cruise_speed_ms": 22.0})
+    base = size_aircraft(req)
+    fast = size_aircraft(req, None, DesignAssumptions(liion_max_c_rate=5))
+    assert base.mtow_kg == pytest.approx(46.7, rel=0.02)
+    assert fast.mtow_kg == pytest.approx(15.9, rel=0.05)
+
+
+def test_specific_energy_and_efficiency_change_the_design() -> None:
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 3.0, "combat_radius_km": 50.0, "cruise_speed_ms": 22.0})
+    better = size_aircraft(req, None, DesignAssumptions(liion_specific_energy_wh_kg=300))
+    assert better.mtow_kg == pytest.approx(23.1, rel=0.03)
+    with pytest.raises(SizingDivergenceError):
+        size_aircraft(req)  # 200 Wh/kg spirals
+
+
+def test_reserve_comes_from_assumptions_unless_overridden() -> None:
+    a = DesignAssumptions(battery_reserve_fraction=0.30)
+    assert reserve_fraction({}, "electric", a) == 0.30
+    assert reserve_fraction({"reserve_fraction": 0.25}, "electric", a) == 0.25
+    assert reserve_fraction({}, "series_hybrid", a) == 0.10
+
+
+def test_slow_or_oscillating_fixed_point_now_converges(monkeypatch: pytest.MonkeyPatch) -> None:
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 1.0, "combat_radius_km": 20.0})  # 30 m/s: oscillated
+    calls: list[tuple[float, float]] = []
+    real_evaluate = mission_solver._evaluate
+
+    def spy(mtow: float, design: object) -> object:
+        ev = real_evaluate(mtow, design)  # type: ignore[arg-type]
+        calls.append((mtow, ev.mtow_out))
+        return ev
+
+    monkeypatch.setattr(mission_solver, "_evaluate", spy)
+    sizing = size_aircraft(req)
+    assert 10.0 < sizing.mtow_kg < 150.0
+    mtow_in, mtow_out = calls[-1]  # the returned evaluation is the last one computed
+    assert mtow_out == pytest.approx(sizing.mtow_kg)
+    assert abs(mtow_out - mtow_in) <= 1e-6 * mtow_in
+
+
+def test_genuine_spirals_still_raise() -> None:
+    with pytest.raises(SizingDivergenceError, match="mass spiral"):
+        size_aircraft(REQ_FAILED)
+
+
+# --- synthetic maps exercising the damping and root-find fallback in isolation ---
+
+def _fake_design() -> SimpleNamespace:
+    return SimpleNamespace(req=SimpleNamespace(payload_mass_kg=1.0), propulsion="electric", airframe="fixed_wing")
+
+
+def _patch_map(monkeypatch: pytest.MonkeyPatch, f: Callable[[float], float]) -> None:
+    monkeypatch.setattr(mission_solver, "_evaluate",
+                        lambda mtow, design: SimpleNamespace(mtow_in=mtow, mtow_out=f(mtow)))
+
+
+def test_is_oscillating_requires_a_full_alternating_window() -> None:
+    window = mission_solver.OSCILLATION_WINDOW
+    alternating = [1 if i % 2 == 0 else -1 for i in range(window)]
+    assert mission_solver._is_oscillating(alternating)
+    assert not mission_solver._is_oscillating(alternating[:-1])  # short window
+    assert not mission_solver._is_oscillating([*alternating[:-1], alternating[-2]])  # one repeat
+    assert not mission_solver._is_oscillating([1] * window)
+
+
+def test_overshooting_map_halves_damping_then_converges(monkeypatch: pytest.MonkeyPatch) -> None:
+    # f' = -4: the damping-0.5 iteration has slope -1.5 (alternating, diverging); 0.25 gives slope -0.25.
+    _patch_map(monkeypatch, lambda m: 50.0 - 4.0 * m)
+    real = mission_solver._is_oscillating
+    detections: list[bool] = []
+    monkeypatch.setattr(mission_solver, "_is_oscillating", lambda s: detections.append(real(s)) or detections[-1])
+    monkeypatch.setattr(mission_solver, "_root_find", lambda *a: pytest.fail("fallback must not run"))
+    ev = mission_solver._converge(_fake_design())  # type: ignore[arg-type]
+    assert any(detections)
+    assert ev.mtow_out == pytest.approx(10.0, rel=1e-6)
+
+
+def _spy_root_find(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    ran: list[bool] = []
+    real = mission_solver._root_find
+    monkeypatch.setattr(mission_solver, "_root_find", lambda *a: ran.append(True) or real(*a))
+    return ran
+
+
+def test_slow_contraction_uses_upward_bracket_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_map(monkeypatch, lambda m: m + 0.001 * (10.0 - m))  # fixed point 10 above the start, f' = 0.999
+    ran = _spy_root_find(monkeypatch)
+    ev = mission_solver._converge(_fake_design())  # type: ignore[arg-type]
+    assert ran
+    assert ev.mtow_out == pytest.approx(10.0, rel=1e-6)
+
+
+def test_slow_contraction_uses_downward_bracket_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_map(monkeypatch, lambda m: m - 0.001 * (m - 3.0))  # fixed point 3 below the start
+    ran = _spy_root_find(monkeypatch)
+    ev = mission_solver._converge(_fake_design())  # type: ignore[arg-type]
+    assert ran
+    assert ev.mtow_out == pytest.approx(3.0, rel=1e-6)
+
+
+def test_rootless_growing_map_raises_mass_spiral(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_map(monkeypatch, lambda m: m + 1.0)
+    with pytest.raises(SizingDivergenceError, match="mass spiral"):
+        mission_solver._converge(_fake_design())  # type: ignore[arg-type]
+
+
+def test_rootless_shrinking_map_raises_mass_collapse(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_map(monkeypatch, lambda m: m * 0.999)
+    with pytest.raises(SizingDivergenceError, match="mass collapse"):
+        mission_solver._converge(_fake_design())  # type: ignore[arg-type]

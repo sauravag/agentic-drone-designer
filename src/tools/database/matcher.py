@@ -24,7 +24,8 @@ from src.schemas.components import (
     SensorType,
     VtolMotor,
 )
-from src.tools.database.seed_data import CATALOG_TABLES
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.tools.database.seed_data import CATALOG_TABLES, pack_envelope
 from src.units import WH_TO_J
 
 SAFETY_MARGIN: float = 1.15
@@ -83,20 +84,42 @@ def match_ice_generator(db_path: Path, required_power_w: float) -> IceGenerator:
                      f"continuous power >= {need:.0f} W (incl. margin)")
 
 
+def rescale_pack(battery: Battery, assumptions: DesignAssumptions) -> Battery:
+    """Copy of `battery` whose mass, box and C-rate follow the run's assumptions for its chemistry.
+
+    Capacity and voltage stay catalog values; with non-default assumptions the pack is notional.
+    """
+    chem = battery.chemistry
+    mass, length, width, height = pack_envelope(
+        battery.capacity_wh, assumptions.specific_energy_wh_kg(chem), assumptions.energy_density_wh_l(chem)
+    )
+    return battery.model_copy(update={
+        "mass_kg": mass, "length_m": length, "width_m": width, "height_m": height,
+        "max_c_rate": assumptions.max_c_rate(chem),
+    })
+
+
 def match_battery(
     db_path: Path,
     required_energy_j: float,
     required_peak_power_w: float,
     chemistry: Optional[Literal["li_ion", "lipo"]] = None,
+    assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS,
 ) -> Battery:
+    """Lightest pack that fits, after rescaling every catalog pack to the run's assumptions."""
     energy: float = _require_positive(required_energy_j, "required_energy_j") * SAFETY_MARGIN
     peak: float = _require_positive(required_peak_power_w, "required_peak_power_w") * SAFETY_MARGIN
-
-    def fits(b: Battery) -> bool:
-        return b.capacity_j >= energy and b.max_power_w >= peak and (chemistry is None or b.chemistry == chemistry)
-
-    return _lightest(db_path, "batteries", fits,
-                     f"energy >= {energy / WH_TO_J:.0f} Wh, peak >= {peak:.0f} W, chemistry={chemistry or 'any'}")
+    packs: list[Battery] = [rescale_pack(b, assumptions) for b in load_catalog(db_path, "batteries")]
+    candidates: list[Battery] = [
+        b for b in packs
+        if b.capacity_j >= energy and b.max_power_w >= peak and (chemistry is None or b.chemistry == chemistry)
+    ]
+    if not candidates:
+        raise ComponentNotFoundError(
+            f"No part in batteries satisfies energy >= {energy / WH_TO_J:.0f} Wh, peak >= {peak:.0f} W, "
+            f"chemistry={chemistry or 'any'}"
+        )
+    return min(candidates, key=lambda b: b.mass_kg)
 
 
 def match_propeller(db_path: Path, motor_max_power_w: float, application: Literal["cruise", "vtol"]) -> Propeller:
@@ -129,7 +152,9 @@ def match_payload(
     return min(candidates, key=lambda p: (p.mass_kg, p.power_w))
 
 
-def select_bom(db_path: Path, needs: ComponentNeeds) -> SelectedBOM:
+def select_bom(
+    db_path: Path, needs: ComponentNeeds, assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
+) -> SelectedBOM:
     """Snap every SI requirement to a discrete COTS part. VTOL rotors and the ICE generator are
     selected only when the sizing engine asked for them."""
     cruise_motor: CruiseMotor = match_cruise_motor(db_path, needs.cruise_power_w)
@@ -144,7 +169,8 @@ def select_bom(db_path: Path, needs: ComponentNeeds) -> SelectedBOM:
     return SelectedBOM(
         cruise_motor=cruise_motor,
         cruise_propeller=match_propeller(db_path, cruise_motor.max_power_w, "cruise"),
-        battery=match_battery(db_path, needs.battery_energy_j, needs.battery_peak_power_w, needs.battery_chemistry),
+        battery=match_battery(db_path, needs.battery_energy_j, needs.battery_peak_power_w, needs.battery_chemistry,
+                              assumptions),
         payload=match_payload(db_path, needs.payload_mass_kg, needs.payload_sensor_type, needs.payload_power_w),
         vtol_motor=vtol_motor,
         vtol_propeller=vtol_prop,

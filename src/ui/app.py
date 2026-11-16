@@ -26,8 +26,10 @@ from src.agent.providers import LLMConfigError  # noqa: E402
 from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
-from src.ui import agent_service, presenters  # noqa: E402
+from src.schemas.assumptions import DesignAssumptions  # noqa: E402
+from src.ui import agent_service, chat_panel, design_loop, presenters  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
+from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -142,13 +144,15 @@ def _status_label(view: AgentRunView) -> str:
     return f"Run {view.run_id} finished: {view.status.replace('_', ' ')}"
 
 
-def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] = None) -> None:
+def _execute(assumptions: DesignAssumptions, prompt: str = "",
+             requirements: Optional[OperationalRequirements] = None) -> None:
     with st.status("Designing…", expanded=True) as status:
         try:
             do_aero: bool = st.session_state["with_aero_cad"]
             view = agent_service.run(OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero,
                                      with_sitl=do_aero and st.session_state["with_sitl"], progress=status.write,
-                                     prompt=prompt, requirements=requirements)
+                                     prompt=prompt, requirements=requirements,
+                                     design_assumptions=assumptions)
         except (pipeline.PipelineError, LLMConfigError) as exc:
             logger.warning("design run rejected: %s", exc)
             _fail(status, "Design not started", defang(str(exc)))
@@ -159,25 +163,41 @@ def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] =
             return
         failed: bool = view.status == agent_service.STATUS_ERROR
         status.update(label=_status_label(view), state="error" if failed else "complete", expanded=False)
-    st.session_state["last_run"] = view
+    design_loop.record_run(view)
+
+
+def _assumptions_or_stop() -> Optional[DesignAssumptions]:
+    """The panel's validated assumptions; None (messages shown, no run) when a value is out of bounds."""
+    assumptions, errors = current_assumptions()
+    if assumptions is None:
+        for message in errors:
+            st.error(f"Design assumptions: {message}")
+        st.session_state.pop("last_run", None)
+    return assumptions
 
 
 def _run_description(prompt: str) -> None:
+    assumptions = _assumptions_or_stop()
+    if assumptions is None:
+        return
     if not prompt.strip():
         st.error("Describe the mission first.")
         st.session_state.pop("last_run", None)
         return
-    _execute(prompt=prompt)
+    _execute(assumptions, prompt=prompt)
 
 
 def _run_form(values: dict[str, Any]) -> None:
+    assumptions = _assumptions_or_stop()
+    if assumptions is None:
+        return
     req, errors = presenters.parse_form(values)
     if req is None:
         for message in errors:
             st.error(message)
         st.session_state.pop("last_run", None)
         return
-    _execute(requirements=req)
+    _execute(assumptions, requirements=req)
 
 
 # ------------------------------------------------------------------ output ---
@@ -255,6 +275,7 @@ def _render(view: AgentRunView) -> None:
     (st.success if view.status == agent_service.STATUS_CONVERGED else st.warning)(
         STATUS_TEXT.get(view.status, view.status))
     st.caption(f"Run `{view.run_id}` · files in `{view.out_dir}`")
+    design_loop.render_assumptions_used(view)
     for note in view.warnings:
         st.warning(note)
     if view.assumptions:
@@ -264,6 +285,9 @@ def _render(view: AgentRunView) -> None:
         st.error("Sizing did not converge for the final iteration; see the Critic and Report tabs.")
     else:
         _headline(view)
+    design_loop.render_options(view, DB_PATH)
+    design_loop.render_review_panel(view, OUTPUTS_ROOT, DB_PATH)
+    chat_panel.render_chat(view, DB_PATH)
     tabs = st.tabs([*DESIGN_TABS, *AGENT_TABS])
     if view.sizing is not None:
         _design_tabs(view, *tabs[:len(DESIGN_TABS)])
@@ -278,11 +302,13 @@ def main() -> None:
     _init_state()
     _stage_options()
     _llm_info()
+    render_assumptions_panel()
     if _description_form():
         _run_description(st.session_state["prompt"])
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)
     if _requirements_form():
         _run_form({key: st.session_state[key] for key in presenters.FIELD_LABELS})
+    design_loop.render_history()
     if "last_run" in st.session_state:
         _render(st.session_state["last_run"])
 

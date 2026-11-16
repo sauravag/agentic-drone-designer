@@ -12,11 +12,6 @@ from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.topology import Airframe
 from src.units import G0
 
-# Defaults the design critic may override (see mission_solver.OVERRIDE_BOUNDS).
-DEFAULT_ASPECT_RATIO: Final[float] = 12.0
-DEFAULT_TAIL_VOLUME_H: Final[float] = 0.50
-DEFAULT_TAIL_VOLUME_V: Final[float] = 0.04
-DEFAULT_FUSELAGE_LENGTH_FACTOR: Final[float] = 1.0
 
 FUSELAGE_LENGTH_COEFF: Final[float] = 0.55  # m per kg^(1/3)
 FUSELAGE_MIN_LENGTH_M: Final[float] = 0.6

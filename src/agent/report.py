@@ -12,15 +12,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Optional, Sequence
 
-from src.agent.agent_schemas import ReportNarrative
+from src.agent.agent_schemas import OptionsExplanation, ReportNarrative
+from src.agent.explorer import ExploreOption
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, RunLineage, SizingOutput
 from src.ui import presenters
 
 POLAR_ALPHAS_DEG: Final[tuple[float, ...]] = (-4.0, 0.0, 4.0, 8.0, 12.0)  # SRS VSPAERO sweep
 NUMBER_PATTERN: Final[re.Pattern[str]] = re.compile(r"\d+(?:\.\d+)?")
 TRIVIAL_NUMBERS: Final[frozenset[str]] = frozenset({"0", "1", "2", "3", "4", "5"})  # counts, list items, "Group 2"
+CITATION_DECIMALS: Final[int] = 1  # prose often cites a 2-decimal fact at one decimal (16.62 kg -> 16.6 kg)
+
+
+BATTERY_DENSITY_FIELDS: Final[frozenset[str]] = frozenset({
+    "liion_specific_energy_wh_kg", "liion_energy_density_wh_l",
+    "lipo_specific_energy_wh_kg", "lipo_energy_density_wh_l"})
+NOTIONAL_BATTERY_NOTE: Final[str] = ("Battery specific energy or energy density differs from the default: catalog "
+                                     "battery packs are notional (their mass and size are derived from these assumptions).")
 
 
 @dataclass(frozen=True)
@@ -38,7 +48,13 @@ class ReportInputs:
     final_gates: Sequence[dict[str, Any]] = ()
     critic_log: Sequence[dict[str, Any]] = ()
     assumptions: Sequence[str] = ()
+    design_assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
     warnings: Sequence[str] = field(default_factory=tuple)
+    options: Sequence[ExploreOption] = ()
+    options_explanation: Optional[OptionsExplanation] = None
+    lineage: Optional[RunLineage] = None
+    options_facts: str = ""  # what the explanation was given (its numbers are audited against this)
+    explorer_note: Optional[str] = None  # why a failed design gets no closure options
 
 
 def cell(value: Any) -> str:
@@ -67,11 +83,22 @@ def table(rows: Sequence[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def unsupported_numbers(narrative: ReportNarrative, facts_text: str) -> list[str]:
-    """Numbers the LLM wrote that do not appear in the facts it was given (Zero-LLM-Math audit)."""
-    prose: str = " ".join((narrative.executive_summary, narrative.trade_offs, narrative.risks_and_next_steps))
+def stray_numbers(text: str, facts_text: str) -> list[str]:
+    """Numbers in LLM prose that do not appear in the facts it was given (Zero-LLM-Math audit)."""
     known: set[str] = set(NUMBER_PATTERN.findall(facts_text))
-    return sorted({n for n in NUMBER_PATTERN.findall(prose) if n not in known and n not in TRIVIAL_NUMBERS})
+    return sorted({n for n in NUMBER_PATTERN.findall(text) if n not in known and n not in TRIVIAL_NUMBERS})
+
+
+def citable(facts_text: str) -> str:
+    """`facts_text` plus each finer-grained number rounded to CITATION_DECIMALS, for `stray_numbers`: citing a
+    fact at that coarser precision is still citing the fact, not inventing one."""
+    finer = [n for n in NUMBER_PATTERN.findall(facts_text) if len(n.partition(".")[2]) > CITATION_DECIMALS]
+    return " ".join([facts_text, *sorted({str(round(float(n), CITATION_DECIMALS)) for n in finer})])
+
+
+def unsupported_numbers(narrative: ReportNarrative, facts_text: str) -> list[str]:
+    prose: str = " ".join((narrative.executive_summary, narrative.trade_offs, narrative.risks_and_next_steps))
+    return stray_numbers(prose, facts_text)
 
 
 def pairs(rows: Sequence[tuple[str, str]]) -> str:
@@ -94,11 +121,28 @@ def requirement_rows(req: OperationalRequirements) -> list[tuple[str, str]]:
     return [(label, str(values[key])) for key, label in presenters.FIELD_LABELS.items()]
 
 
+def design_assumption_rows(assumptions: DesignAssumptions) -> list[dict[str, Any]]:
+    """All assumption fields with value, default and a marker for the ones the designer changed."""
+    defaults: DesignAssumptions = DesignAssumptions()
+    return [{"Assumption": name, "Value": getattr(assumptions, name), "Default": getattr(defaults, name),
+             "Changed": "yes" if getattr(assumptions, name) != getattr(defaults, name) else ""}
+            for name in DesignAssumptions.model_fields]
+
+
+def design_assumptions_section(assumptions: DesignAssumptions) -> list[str]:
+    section: list[str] = ["## Design assumptions\n", table(design_assumption_rows(assumptions))]
+    if any(name in BATTERY_DENSITY_FIELDS for name in assumptions.non_default()):
+        section.append(NOTIONAL_BATTERY_NOTE + "\n")
+    return section
+
+
 def facts(inputs: ReportInputs) -> str:
     """Compact JSON of the computed results, given to the LLM as the only source of numbers."""
     data: dict[str, Any] = {"requirements": inputs.requirements.model_dump(mode="json"),
                             "converged": inputs.converged, "iterations": inputs.iterations,
                             "gates": list(inputs.final_gates), "assumptions": list(inputs.assumptions),
+                            "non_default_design_assumptions": {k: list(v) for k, v in
+                                                               inputs.design_assumptions.non_default().items()},
                             "warnings": list(inputs.warnings)}
     if inputs.sizing:
         data["sizing"] = dict(presenters.sizing_summary(inputs.sizing))
@@ -124,10 +168,49 @@ def fallback_narrative(inputs: ReportInputs, reason: str) -> ReportNarrative:
     )
 
 
+OPTIONS_NOTE: Final[str] = "Checked with sizing + catalog only (no aero, CAD or flight test)."
+
+
+def option_rows(options: Sequence[ExploreOption], inputs: ReportInputs) -> list[dict[str, Any]]:
+    sizing_gap: str = "does not close"
+    rows: list[dict[str, Any]] = []
+    for option in options:
+        result = option.result
+        change: str = "; ".join(f"{label}: {old} -> {new}" for label, old, new in
+                                option.change.describe(inputs.requirements, inputs.design_assumptions))
+        rows.append({
+            "Change": change or option.change.label, "Closes": "yes" if option.closes else "no",
+            "MTOW (kg)": "-" if result.mtow_kg is None else f"{result.mtow_kg:.2f}",
+            "DoD group": "-" if result.dod_group is None else result.dod_group,
+            "Battery / fuel (kg)": _energy_mass(result.battery_mass_kg, result.fuel_mass_kg),
+            "Relative change": f"{option.relative_change:.0%}" if option.closes else "-",
+            "Note": "group drops" if option.closes and option.group_drop else
+                    ("" if option.closes else result.reason or sizing_gap)})
+    return rows
+
+
+def _energy_mass(battery_kg: Optional[float], fuel_kg: Optional[float]) -> str:
+    parts: list[str] = [f"battery {m:.2f}" for m in (battery_kg,) if m] + [f"fuel {m:.2f}" for m in (fuel_kg,) if m]
+    return ", ".join(parts) or "-"
+
+
+def options_section(inputs: ReportInputs) -> list[str]:
+    if inputs.explorer_note:
+        return ["## Design options\n", inline(inputs.explorer_note) + "\n"]
+    if not inputs.options:
+        return []
+    s: list[str] = ["## Options that close the design\n", OPTIONS_NOTE + "\n", table(option_rows(inputs.options, inputs))]
+    explanation = inputs.options_explanation
+    if explanation:
+        s += [defang(explanation.why_it_failed) + "\n", defang(explanation.trade_offs) + "\n"]
+    return s
+
+
 def _sections(inputs: ReportInputs) -> list[str]:
     s: list[str] = []
     s += ["## Operational requirements\n", pairs(requirement_rows(inputs.requirements))]
     s += ["### Assumptions\n", "\n".join(f"- {inline(a)}" for a in inputs.assumptions) or "_none_", "\n"]
+    s += design_assumptions_section(inputs.design_assumptions)
     s += ["## Design compliance (critic gates)\n", table(list(inputs.final_gates))]
     s += ["### Critic iterations\n", table([{"Iteration": c["iteration"], "Failed gates": ", ".join(c["failed"]) or "-",
                                              "Changes": "; ".join(c["changes"]) or "-"} for c in inputs.critic_log])]
@@ -149,15 +232,22 @@ def _sections(inputs: ReportInputs) -> list[str]:
     return s
 
 
+def _lineage_line(inputs: ReportInputs) -> list[str]:
+    lineage = inputs.lineage
+    if lineage is None:
+        return []
+    return [f"Derived from run {lineage.parent_run_id} ({lineage.change_source}): {inline(lineage.change_set.label)}\n"]
+
+
 def render(inputs: ReportInputs, narrative: ReportNarrative) -> str:
     status: str = "CONVERGED" if inputs.converged else "NOT CONVERGED"
     stamp: str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     head: list[str] = [f"# Design report: {inline(inputs.requirements.mission_name)}\n",
                        f"Run `{inputs.run_id}` · {stamp} · status **{status}** after {inputs.iterations} critic "
-                       f"iteration(s)\n", "## Executive summary\n",
+                       f"iteration(s)\n", *_lineage_line(inputs), "## Executive summary\n",
                        "_Narrative written by the LLM from the computed results; the tables are authoritative._\n",
                        defang(narrative.executive_summary) + "\n"]
-    tail: list[str] = ["## Trade-offs\n", defang(narrative.trade_offs) + "\n",
+    tail: list[str] = options_section(inputs) + ["## Trade-offs\n", defang(narrative.trade_offs) + "\n",
                        "## Risks and next steps\n", defang(narrative.risks_and_next_steps) + "\n",
                        "## Warnings\n", "\n".join(f"- {inline(w)}" for w in inputs.warnings) or "_none_", "\n"]
     return "\n".join(head + _sections(inputs) + tail)
@@ -168,6 +258,13 @@ def write_report(inputs: ReportInputs, narrative: ReportNarrative) -> Path:
     if stray:
         inputs = replace(inputs, warnings=(*inputs.warnings, "The LLM narrative mentions figures not in the computed "
                                            f"results (treat as unverified): {', '.join(stray)}"))
+    expl = inputs.options_explanation
+    if expl:
+        stray_options: list[str] = stray_numbers(f"{expl.why_it_failed} {expl.trade_offs}",
+                                                     citable(inputs.options_facts))
+        if stray_options:
+            inputs = replace(inputs, warnings=(*inputs.warnings, "The LLM explanation of the options mentions figures "
+                                               f"not in the computed results (treat as unverified): {', '.join(stray_options)}"))
     path: Path = inputs.out_dir / "design_report.md"
     path.write_text(render(inputs, narrative))
     return path

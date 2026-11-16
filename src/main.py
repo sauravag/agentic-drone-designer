@@ -12,6 +12,7 @@ critic, template narrative). Aero/CAD and SITL run when their toolchains are ins
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -24,6 +25,9 @@ from src.agent.graph import run_agent
 from src.agent.llm import StructuredLLM
 from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status
 from src.agent.providers import LLMConfigError, make_llm
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.schemas.changes import ChangeSet
+from src.schemas.state import DesignState
 from src.schemas.requirements import OperationalRequirements
 from src.tools.database.seed_data import DEFAULT_DB_PATH
 
@@ -55,8 +59,13 @@ def _iterations(text: str) -> int:
     return value
 
 
-def _load_spec(path: Path) -> OperationalRequirements:
-    return OperationalRequirements.model_validate_json(path.read_text())
+def _load_spec(path: Path) -> tuple[OperationalRequirements, DesignAssumptions]:
+    """Requirements plus the optional top-level "assumptions" object (unknown fields are rejected)."""
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: the spec must be a JSON object")
+    assumptions = DesignAssumptions.model_validate(data.pop("assumptions", {}))
+    return OperationalRequirements.model_validate(data), assumptions
 
 
 def _context(args: argparse.Namespace) -> AgentContext:
@@ -67,6 +76,19 @@ def _context(args: argparse.Namespace) -> AgentContext:
                         progress=lambda message: None if args.quiet else print(f"[Tool] {message}", flush=True))
 
 
+def _print_options(state: DesignState) -> None:
+    options: list[dict] = state.get("explore_options") or []
+    if not options:
+        return
+    req, assumptions = state["requirements"], state.get("design_assumptions") or DEFAULT_ASSUMPTIONS
+    print("Options that close the design (checked with sizing + catalog only):")
+    for option in options:
+        change = ChangeSet.model_validate(option["change"])
+        text = "; ".join(f"{label}: {old} -> {new}" for label, old, new in change.describe(req, assumptions))
+        verdict = "closes" if option["closes"] else f"does not close ({option['result']['reason']})"
+        print(f"  - {text or change.label}: {verdict}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
@@ -74,9 +96,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Give either a design request or --spec requirements.json (not both)", file=sys.stderr)
         return EXIT_ERROR
     try:
-        requirements = _load_spec(args.spec) if args.spec else None
-        state = run_agent(_context(args), args.prompt, requirements)
-    except (OSError, ValidationError, LLMConfigError, pipeline.PipelineError) as exc:
+        requirements, assumptions = _load_spec(args.spec) if args.spec else (None, None)
+        state = run_agent(_context(args), args.prompt, requirements, design_assumptions=assumptions)
+    except (OSError, ValueError, ValidationError, LLMConfigError, pipeline.PipelineError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     if state.get("fatal_error"):
@@ -86,6 +108,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Clarification needed: {state['clarification_needed']}")
         return EXIT_CLARIFY
     status: str = run_status(state)
+    _print_options(state)
     print(f"Run {state['run_id']}: {status.replace('_', ' ')} after {state['iteration_count']} critic "
           f"iteration(s). Report: {state['final_report_path']}")
     return EXIT_CONVERGED if status == "converged" else EXIT_NOT_CONVERGED

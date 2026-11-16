@@ -5,7 +5,7 @@ not crash the run: it is recorded as `stage_error` and handed to the critic, lik
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Final, Optional
 
@@ -13,10 +13,13 @@ from pydantic import BaseModel
 
 from src import pipeline
 from src.agent import critic, report
-from src.agent.agent_schemas import CriticDecision, ReportNarrative, RequirementsDraft
+from src.agent.agent_schemas import CriticDecision, OptionsExplanation, ReportNarrative, RequirementsDraft
 from src.agent.llm import LLMError, StructuredLLM
 from src.agent.parsing import to_requirements
-from src.agent.prompts import CRITIC_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
+from src.agent.explorer import (ExploreOption, explore_closure, explorer_mode, unchanged_closes,
+                                unchanged_closes_note)
+from src.agent.prompts import CRITIC_SYSTEM, OPTIONS_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
@@ -85,10 +88,15 @@ def parse_requirements(state: DesignState, ctx: AgentContext) -> Update:
     update: Update = {"requirements": req, "run_id": run_id, "out_dir": str(out_dir),
                       "assumptions": list(assumptions), "clarification_needed": None}
     _write(update, "requirements.json", req)  # type: ignore[arg-type]
+    _write(update, "assumptions.json", state.get("design_assumptions") or DEFAULT_ASSUMPTIONS)  # type: ignore[arg-type]
     return update
 
 
 # ------------------------------------------------------------- tool nodes ---
+def _assumptions(state: DesignState) -> DesignAssumptions:
+    return state.get("design_assumptions") or DEFAULT_ASSUMPTIONS
+
+
 def run_sizing(state: DesignState, ctx: AgentContext) -> Update:
     (req,) = _require(state, "requirements")
     overrides: dict[str, float] = state.get("sizing_overrides") or {}
@@ -96,7 +104,7 @@ def run_sizing(state: DesignState, ctx: AgentContext) -> Update:
     cleared: Update = {"selected_bom": None, "aero_stability": None, "cad_artifacts": None, "fcs_artifacts": None,
                        "stage_error": None, "sitl_error": None}
     try:
-        sizing = size_aircraft(req, overrides)
+        sizing = size_aircraft(req, overrides, _assumptions(state))
     except pipeline.DESIGN_ERRORS as exc:
         return cleared | {"sizing_results": None, "stage_error": {"stage": "sizing", "message": str(exc)}}
     _write(state, "sizing.json", sizing)
@@ -107,7 +115,7 @@ def match_cots(state: DesignState, ctx: AgentContext) -> Update:
     req, sizing = _require(state, "requirements", "sizing_results")
     _tool(ctx, "match_cots: selecting catalog components")
     try:
-        bom = select_bom(ctx.db_path, component_needs(sizing, req))
+        bom = select_bom(ctx.db_path, component_needs(sizing, req), _assumptions(state))
     except pipeline.DESIGN_ERRORS as exc:
         return {"stage_error": {"stage": "cots", "message": str(exc)}}
     _write(state, "bom.json", bom)
@@ -202,7 +210,8 @@ def _adjust(state: DesignState, gates: list[critic.GateResult], failed: list[cri
     stage = (state.get("stage_error") or {}).get("stage")
     cad = state.get("cad_artifacts")
     overrides, changes = critic.apply_adjustments(state.get("sizing_overrides") or {}, _propulsion(state),
-                                                  decision.adjustments, gates, cad, stage)
+                                                  decision.adjustments, gates, cad, stage,
+                                                  _assumptions(state))
     stuck: list[str] = critic.unfixable(gates, cad, stage)
     entry["summary"] = decision.summary + (f" No automatic fix for: {', '.join(stuck)}." if stuck else "")
     entry["changes"] = [f"{c.knob} {c.old:.3g} -> {c.new:.3g} ({c.source}: {c.reason})" for c in changes]
@@ -251,11 +260,42 @@ def _report_inputs(state: DesignState) -> report.ReportInputs:
         run_id=run_id, out_dir=Path(out_dir), requirements=req, sizing=sizing, bom=state.get("selected_bom"),
         aero=aero, cad=cad, fcs=fcs, converged=bool(state.get("converged")),
         iterations=state.get("iteration_count", 0), final_gates=state.get("gate_results", []),
-        critic_log=state.get("critic_log", []), assumptions=state.get("assumptions", []), warnings=tuple(warnings))
+        critic_log=state.get("critic_log", []), assumptions=state.get("assumptions", []), design_assumptions=_assumptions(state),
+        warnings=tuple(warnings), lineage=state.get("lineage"))
+
+
+def _options_facts(options: list[ExploreOption], state: DesignState) -> str:
+    return json.dumps({"failure": state.get("validation_errors", []),
+                       "options": [option.to_json() for option in options]}, indent=1)
+
+
+def _explain_options(ctx: AgentContext, facts: str) -> Optional[OptionsExplanation]:
+    """The optional LLM prose; an outage costs the explanation, never the run."""
+    if ctx.llm is None:
+        return None
+    try:
+        return ctx.llm.parse(OPTIONS_SYSTEM, facts, OptionsExplanation)
+    except LLMError as exc:
+        logger.warning("options explanation unavailable: %s", exc)
+        return None
 
 
 def compile_report(state: DesignState, ctx: AgentContext) -> Update:
     inputs = _report_inputs(state)
+    mode = explorer_mode(state)
+    options: list[ExploreOption] = []
+    explanation: Optional[OptionsExplanation] = None
+    note: Optional[str] = None
+    if mode == "closure" and unchanged_closes(inputs.requirements, inputs.design_assumptions, ctx.db_path):
+        mode, note = "airframe", unchanged_closes_note(state)  # no closure option would be a real fix
+        inputs = replace(inputs, explorer_note=note)
+    if mode == "closure":
+        _tool(ctx, "compile_report: exploring options that close the design")
+        options = explore_closure(inputs.requirements, inputs.design_assumptions, ctx.db_path)
+        _write(state, "options.json", [option.to_json() for option in options])
+        facts = _options_facts(options, state)
+        explanation = _explain_options(ctx, facts) if options else None
+        inputs = replace(inputs, options=tuple(options), options_explanation=explanation, options_facts=facts)
     _tool(ctx, "compile_report: writing design_report.md")
     narrative: ReportNarrative
     if ctx.llm is None:
@@ -266,8 +306,14 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
         except LLMError as exc:
             narrative = report.fallback_narrative(inputs, str(exc))
     path: Path = report.write_report(inputs, narrative)
+    lineage = state.get("lineage")
     _write(state, "run_summary.json", {
         "run_id": inputs.run_id, "status": run_status(state), "converged": inputs.converged,
         "sitl_passed": sitl_passed(state), "iterations": inputs.iterations,
-        "final_overrides": state.get("sizing_overrides") or {}, "report": path.name})
-    return {"final_report_path": str(path)}
+        "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
+        "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()},
+        "explorer_note": note, "lineage": lineage.model_dump(mode="json") if lineage else None})
+    return {"final_report_path": str(path), "explorer_mode": mode, "explorer_note": note,
+            "explore_options": [option.to_json() for option in options],
+            "options_explanation": None if explanation is None else
+            f"{explanation.why_it_failed}\n\n{explanation.trade_offs}"}

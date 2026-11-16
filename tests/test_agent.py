@@ -11,15 +11,16 @@ import pytest
 
 from src.agent import critic, report
 from src.agent.agent_schemas import (Adjustment, CriticDecision, Distance, Duration, Mass, Power, ReportNarrative,
-                                     RequirementsDraft, Speed)
+                                     OptionsExplanation, RequirementsDraft, Speed)
 from src.agent.graph import run_agent
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
-from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, main
-from src.tools.sizing.mission_solver import SizingDivergenceError
+from src.schemas.assumptions import DesignAssumptions
+from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
+from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
-from tests.reference_designs import G1_ELECTRIC_FW
+from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 from tests.test_flight_control import load_design
 
 
@@ -336,3 +337,122 @@ def test_cli_validates_iterations_and_rejects_prompt_plus_spec(tmp_path: Path) -
     spec = tmp_path / "s.json"
     spec.write_text(G1_ELECTRIC_FW.model_dump_json())
     assert main(["a prompt", f"--spec={spec}"]) == EXIT_ERROR
+
+
+# ------------------------------------------------------------ design assumptions ---
+def test_run_uses_and_saves_the_designer_assumptions(tmp_path: Path, db: Path) -> None:
+    a = DesignAssumptions(liion_specific_energy_wh_kg=260)
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW, design_assumptions=a)
+    out = Path(state["out_dir"])
+    assert DesignAssumptions.model_validate_json((out / "assumptions.json").read_text()) == a
+    assert state["sizing_results"].mtow_kg < size_aircraft(G1_ELECTRIC_FW).mtow_kg
+    text = (out / "design_report.md").read_text()
+    assert "## Design assumptions" in text and "catalog battery packs are notional" in text
+    assert json.loads((out / "run_summary.json").read_text())["non_default_assumptions"] == {
+        "liion_specific_energy_wh_kg": [200.0, 260.0]}
+
+
+def test_default_assumptions_report_no_notional_battery_note(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW)
+    out = Path(state["out_dir"])
+    assert "notional" not in (out / "design_report.md").read_text()
+    assert json.loads((out / "run_summary.json").read_text())["non_default_assumptions"] == {}
+
+
+def test_critic_never_lowers_the_reserve_below_the_designer_floor() -> None:
+    a = DesignAssumptions(battery_reserve_fraction=0.20)
+    llm = [Adjustment(knob="reserve_fraction", direction="decrease", reason="x")]
+    overrides, changes = critic.apply_adjustments({}, "electric", llm, [], None, None, a)
+    assert overrides.get("reserve_fraction", 0.20) >= 0.20 and not changes
+
+
+def test_critic_may_still_raise_the_reserve_above_the_floor() -> None:
+    a = DesignAssumptions(battery_reserve_fraction=0.20)
+    llm = [Adjustment(knob="reserve_fraction", direction="increase", reason="x")]
+    overrides, _ = critic.apply_adjustments({}, "electric", llm, [], None, None, a)
+    assert overrides["reserve_fraction"] == pytest.approx(0.25)
+
+
+def test_cli_spec_accepts_an_assumptions_block(tmp_path: Path, db: Path) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({**G1_ELECTRIC_FW.model_dump(mode="json"), "assumptions": {"liion_max_c_rate": 6}}))
+    assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_CONVERGED
+    (saved,) = (tmp_path / "o").glob("*/assumptions.json")
+    assert json.loads(saved.read_text())["liion_max_c_rate"] == 6
+
+
+def test_cli_spec_rejects_unknown_assumption_fields(tmp_path: Path, db: Path) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({**G1_ELECTRIC_FW.model_dump(mode="json"), "assumptions": {"warp_drive": 9}}))
+    assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_ERROR
+
+
+# --------------------------------------------------------------- options (task 8) ---
+def test_a_non_converged_sizing_failure_offers_options(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, ScriptedLLM()), requirements=REQ_FAILED)
+    assert state["explorer_mode"] == "closure" and any(o["closes"] for o in state["explore_options"])
+    out = Path(state["out_dir"])
+    assert (out / "options.json").is_file()
+    assert "## Options that close the design" in (out / "design_report.md").read_text()
+    assert state["options_explanation"]
+
+
+def test_a_closure_option_that_fails_an_airframe_gate_comes_back_in_airframe_mode(
+        tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # Review Focus 3
+    monkeypatch.setattr("src.agent.nodes._gates", lambda state: [critic.GateResult("static_margin", False, "SM 3 %")])
+    state = run_agent(_ctx(tmp_path, db, None, max_iterations=0),
+                      requirements=REQ_FAILED.model_copy(update={"propulsion_type": "series_hybrid"}))
+    assert state["explorer_mode"] == "airframe" and state["explore_options"] == []
+    assert not (Path(state["out_dir"]) / "options.json").exists()
+
+
+def test_a_design_that_closes_unchanged_ends_in_airframe_mode_with_a_note(
+        tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # final review finding 1
+    gate = critic.GateResult("collisions_and_group", False, "as-built mass 26 kg is over the Group 1 limit")
+    monkeypatch.setattr("src.agent.nodes._gates", lambda state: [gate])
+    state = run_agent(_ctx(tmp_path, db, None, max_iterations=0), requirements=G1_ELECTRIC_FW)
+    note = "Sizing + catalog close unchanged; the failure is in collisions_and_group"
+    assert state["explorer_mode"] == "airframe" and state["explore_options"] == []
+    assert state["explorer_note"] == note
+    assert note in Path(state["final_report_path"]).read_text()
+    assert not (Path(state["out_dir"]) / "options.json").exists()
+
+
+def test_options_explanation_citing_rounded_solver_numbers_is_not_flagged(
+        tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # final review finding 3
+    from src.agent.evaluator import Evaluation
+    from src.agent.explorer import ExploreOption
+    from src.schemas.changes import ChangeSet
+
+    change = ChangeSet.model_validate({"label": "hybrid", "requirements": {"propulsion_type": "series_hybrid"},
+                                      "assumptions": {}, "knobs": {}})
+    result = Evaluation(True, 16.623456789, 2, "series_hybrid", 0.81234567, 3.4567891, "")
+    option = ExploreOption("propulsion", change, result, 1.0, True, None, False)
+    monkeypatch.setattr("src.agent.nodes.explore_closure", lambda *args, **kwargs: [option])
+    llm = ScriptedLLM(options=OptionsExplanation(why_it_failed="A hybrid closes at 16.6 kg.",
+                                                 trade_offs="It carries 3.46 kg of fuel."))
+    state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)
+    assert "explanation of the options mentions" not in Path(state["final_report_path"]).read_text()
+
+
+def test_an_options_llm_outage_costs_only_the_explanation(tmp_path: Path, db: Path) -> None:
+    llm = ScriptedLLM(fail_on=(OptionsExplanation,))
+    state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)
+    assert state["explore_options"] and state["options_explanation"] is None and state["final_report_path"]
+
+
+def test_numbers_the_options_explanation_invents_are_flagged(tmp_path: Path, db: Path) -> None:
+    llm = ScriptedLLM(options=OptionsExplanation(why_it_failed="Needs 987.6 kg of battery.", trade_offs="None."))
+    state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)
+    assert "987.6" in Path(state["final_report_path"]).read_text().split("## Warnings")[1]
+
+
+def test_stray_numbers_ignores_known_and_trivial_figures() -> None:
+    assert report.stray_numbers("13.43 kg, 42.7 kg and 2 more", '{"m": 13.43}') == ["42.7"]
+
+
+def test_cli_prints_options_after_a_failed_run(tmp_path: Path, db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(REQ_FAILED.model_dump_json())
+    assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_NOT_CONVERGED
+    assert "Options that close the design" in capsys.readouterr().out

@@ -4,6 +4,8 @@ from typing import Annotated, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.schemas.assumptions import DesignAssumptions
+from src.schemas.changes import ChangeSet
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 
@@ -116,6 +118,14 @@ class FCSArtifacts(_Frozen):
     attempts: int = Field(default=1, ge=1)
 
 
+class RunLineage(_Frozen):
+    """Which run a re-run was derived from, and the change that was applied to it."""
+
+    parent_run_id: str
+    change_set: ChangeSet
+    change_source: Literal["option", "chat", "manual"]
+
+
 class DesignState(TypedDict):
     user_prompt: str
     requirements: Optional[OperationalRequirements]
@@ -133,6 +143,7 @@ class DesignState(TypedDict):
     run_id: Optional[str]
     out_dir: Optional[str]
     assumptions: list[str]  # defaults the parser applied, reported verbatim
+    design_assumptions: DesignAssumptions  # the designer's technology constants for this run
     gate_results: list[dict]  # latest critic gates: {name, passed, detail}
     critic_log: list[dict]  # one entry per critic pass
     stage_error: Optional[dict[str, str]]  # {stage, message} of a tool node that failed this iteration
@@ -140,3 +151,8 @@ class DesignState(TypedDict):
     critic_exhausted: bool  # iteration cap reached, or no knob could move
     fatal_error: Optional[str]  # the run cannot continue (e.g. the LLM parser is unavailable)
     sitl_error: Optional[str]  # the SITL stage could not complete (distinct from completed-but-failed)
+    explorer_mode: str  # closure | airframe | improvement | none, set when the report is compiled
+    explore_options: list[dict]  # ExploreOption.to_json() of the closure options (empty otherwise)
+    options_explanation: Optional[str]  # LLM prose about the options (audited, defanged in the report)
+    explorer_note: Optional[str]  # set when a failed design closes unchanged with sizing + catalog
+    lineage: Optional[RunLineage]  # set on a linked re-run
