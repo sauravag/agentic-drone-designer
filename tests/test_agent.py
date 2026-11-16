@@ -5,7 +5,7 @@ All run on the host with a scripted LLM and aero/CAD off; tests/test_agent_e2e.p
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -466,14 +466,34 @@ VIEWER_MODEL: dict[str, Any] = {"frame": "x_aft_y_right_z_up", "cg_m": [0.5, 0, 
                                            "positions_b64": "", "indices_b64": ""}]}
 
 
+def _cad_with_model(model_path: Optional[str]) -> CADArtifacts:
+    return CADArtifacts(oml_vsp3_path="a.vsp3", oml_step_path="b.step", assembly_step_path="c.step", x_cg_m=0.3,
+                        static_margin=0.11, collision_count=0, as_built_mass_kg=10.0, ixx_kgm2=1.0, iyy_kgm2=1.0,
+                        izz_kgm2=1.0, ixz_kgm2=0.0, viewer_model_path=model_path)
+
+
 def test_compile_report_builds_the_viewer_from_the_exported_model(tmp_path: Path, db: Path) -> None:
     ctx = _ctx(tmp_path, db, ScriptedLLM())
     state = run_agent(ctx, requirements=G1_ELECTRIC_FW)
     out = Path(state["out_dir"])
     assert not (out / "viewer.html").exists()  # the aero/CAD-free run exported no mesh
     (out / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
-    update = nodes.compile_report(state, ctx)
+    update = nodes.compile_report(
+        {**state, "cad_artifacts": _cad_with_model(str(out / "viewer_model.json"))}, ctx)
     assert (out / "viewer.html").is_file() and update["viewer_error"] is None
+
+
+@pytest.mark.parametrize("cad", [None, _cad_with_model(None)], ids=["no_cad", "no_mesh_path"])
+def test_a_stale_viewer_model_never_becomes_the_viewer(tmp_path: Path, db: Path, cad: Optional[CADArtifacts]) -> None:
+    ctx = _ctx(tmp_path, db, ScriptedLLM())
+    state = run_agent(ctx, requirements=G1_ELECTRIC_FW)
+    out = Path(state["out_dir"])
+    (out / "viewer.html").unlink(missing_ok=True)
+    (out / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))  # left behind by an earlier iteration
+    update = nodes.compile_report({**state, "cad_artifacts": cad}, ctx)
+    assert not (out / "viewer.html").exists()
+    assert update["viewer_error"] is None
+    assert not any("3D viewer not built" in w for w in nodes.run_warnings({**state, **update}))
 
 
 def test_a_viewer_failure_is_a_warning_not_a_failed_run(tmp_path: Path, db: Path,
@@ -482,11 +502,12 @@ def test_a_viewer_failure_is_a_warning_not_a_failed_run(tmp_path: Path, db: Path
         raise ViewerError("bad model")
 
     monkeypatch.setattr("src.viewer.build.write_viewer", broken)
-    state = run_agent(_ctx(tmp_path, db, ScriptedLLM()), requirements=G1_ELECTRIC_FW)
-    assert Path(state["final_report_path"]).is_file()
-    assert state["viewer_error"] == "3D viewer not built: bad model"
-    assert "3D viewer not built: bad model" in nodes.run_warnings(state)
-    assert "bad model" in Path(state["final_report_path"]).read_text()
+    ctx = _ctx(tmp_path, db, ScriptedLLM())
+    state = run_agent(ctx, requirements=G1_ELECTRIC_FW)
+    update = nodes.compile_report({**state, "cad_artifacts": _cad_with_model("viewer_model.json")}, ctx)
+    assert Path(update["final_report_path"]).is_file()
+    assert update["viewer_error"] == "3D viewer not built: bad model"
+    assert "bad model" in Path(update["final_report_path"]).read_text()
 
 
 def test_the_report_lists_the_viewer_file_only_when_it_was_built(tmp_path: Path) -> None:
@@ -496,5 +517,8 @@ def test_the_report_lists_the_viewer_file_only_when_it_was_built(tmp_path: Path)
     inputs = report.ReportInputs(run_id="r", out_dir=tmp_path, requirements=G1_ELECTRIC_FW, sizing=None,
                                  bom=None, aero=None, cad=cad, fcs=None, converged=True, iterations=0)
     assert "viewer.html" not in "\n".join(report._sections(inputs))  # mesh exported, but the build failed
+    no_mesh = report.ReportInputs(run_id="r", out_dir=tmp_path, requirements=G1_ELECTRIC_FW, sizing=None, bom=None,
+                                  aero=None, cad=_cad_with_model(None), fcs=None, converged=True, iterations=0)
+    assert "viewer.html" not in "\n".join(report._sections(no_mesh))  # no mesh exported: nothing to list
     (tmp_path / "viewer.html").write_text("<html></html>")
     assert "`viewer.html` (3D viewer)" in "\n".join(report._sections(inputs))

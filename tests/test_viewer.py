@@ -122,8 +122,9 @@ def test_viewer_warning_is_none_when_the_viewer_builds_or_there_is_no_model(tmp_
     assert viewer_warning(tmp_path) is None and (tmp_path / build.VIEWER_FILE).is_file()
 
 
-@pytest.mark.parametrize("error", [ViewerError("bad model"), OSError("disk full")])
-def test_viewer_warning_turns_viewer_and_os_errors_into_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("error", [ViewerError("bad model"), OSError("disk full"),
+                                   RuntimeError("boom"), ValueError("bad value")])
+def test_viewer_warning_turns_any_error_into_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                               error: Exception) -> None:
     def broken(run_dir: Path) -> Path:
         raise error

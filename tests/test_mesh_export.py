@@ -69,6 +69,18 @@ def test_export_failure_returns_none_and_logs(tmp_path: Path, monkeypatch: pytes
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
+def test_failed_export_removes_a_stale_viewer_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    stale = tmp_path / "viewer_model.json"
+    stale.write_text("{}")
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("tessellation failed")
+
+    monkeypatch.setattr(mesh_export, "tessellate", boom)
+    assert mesh_export.export_viewer_model(_fake_result(), tmp_path) is None
+    assert not stale.exists()
+
+
 def test_design_warnings_flag_a_missing_viewer_model() -> None:
     cad = CADArtifacts(oml_vsp3_path="a", oml_step_path="b", assembly_step_path="c", x_cg_m=1.0, static_margin=0.1,
                        collision_count=0, as_built_mass_kg=10.0, ixx_kgm2=1.0, iyy_kgm2=1.0, izz_kgm2=1.0,

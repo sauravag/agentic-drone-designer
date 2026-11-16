@@ -160,12 +160,17 @@ VIEWER_MODEL = {"frame": "x_aft_y_right_z_up", "cg_m": [0.5, 0, 0], "mass_kg": 1
                            "positions_b64": "", "indices_b64": ""}]}
 
 
+_CAD_WITH_MODEL = CADArtifacts(oml_vsp3_path="a", oml_step_path="b", assembly_step_path="c", x_cg_m=0.3,
+                               static_margin=0.11, collision_count=0, as_built_mass_kg=10.0, ixx_kgm2=1.0,
+                               iyy_kgm2=1.0, izz_kgm2=1.0, ixz_kgm2=0.0, viewer_model_path="viewer_model.json")
+
+
 @pytest.fixture
 def fake_aero_cad(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend OpenVSP is installed; the stage drops a viewer model like the real CAD export would."""
     def fake(sizing, bom, req, out_dir, progress):  # type: ignore[no-untyped-def]
         (out_dir / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
-        return None, None
+        return None, _CAD_WITH_MODEL
 
     monkeypatch.setattr(pipeline, "aero_cad_available", lambda: True)
     monkeypatch.setattr(pipeline, "run_aero_cad", fake)
@@ -196,3 +201,16 @@ def test_a_viewer_failure_is_a_run_warning_not_a_failed_run(tmp_path: Path, fake
 def test_a_run_without_a_model_has_no_viewer_and_no_warning(sizing_only_run: pipeline.DesignRun) -> None:
     assert not (sizing_only_run.out_dir / "viewer.html").exists()
     assert not any("3D viewer" in w for w in sizing_only_run.warnings)
+
+
+def test_a_stale_model_without_cad_artifacts_is_not_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def stale(sizing, bom, req, out_dir, progress):  # type: ignore[no-untyped-def]
+        (out_dir / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
+        return None, None  # the stage failed after an earlier pass left a mesh behind
+
+    monkeypatch.setattr(pipeline, "aero_cad_available", lambda: True)
+    monkeypatch.setattr(pipeline, "run_aero_cad", stale)
+    run = pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db",
+                              with_aero_cad=True, with_sitl=False)
+    assert not (run.out_dir / "viewer.html").exists()
+    assert not any("3D viewer" in w for w in run.warnings)

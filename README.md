@@ -131,7 +131,7 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 | `design_report.md` | requirements and assumptions, critic gates and iterations, sizing, energy budget, BOM, VSPAERO derivatives and polar, CAD/inertia, SITL metrics, warnings |
 | `bom.json` | selected COTS parts and total hardware mass |
 | `oml.step`, `oml.vsp3`, `assembly.step` | outer mould line, and internal structure with packed components |
-| `viewer_model.json`, `viewer.html` | tessellated parts, CG and flight trace for the 3D viewer, and the self-contained page built from them |
+| `viewer_model.json`, `viewer.html` | `viewer_model.json` is the display mesh (tessellated parts) and CG; `viewer.html` is the self-contained page with that mesh and the replayed SITL flight trace inlined |
 | `ardupilot.param` | ArduPlane / QuadPlane parameters flown in SITL |
 | `sitl_report.json` | take-off, transition and roll/pitch doublet telemetry and metrics |
 | `critic_log.json`, `run_summary.json` | every critic pass and the final status |

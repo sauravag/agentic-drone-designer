@@ -679,3 +679,14 @@ def test_render_viewer_embeds_the_page_at_the_fixed_height(tmp_path: Path, monke
     viewer_panel.render_viewer(_viewer_view(run, tmp_path))
     assert calls == [("<html>PAGE</html>", viewer_panel.VIEWER_HEIGHT_PX)]
     assert viewer_panel.VIEWER_HEIGHT_PX == 640
+
+
+def test_render_viewer_warns_when_the_page_is_not_valid_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                              run: pipeline.DesignRun) -> None:
+    from src.ui import viewer_panel
+
+    (tmp_path / "viewer.html").write_bytes(b"\xff\xfe\x00bad")
+    warnings: list[str] = []
+    monkeypatch.setattr(viewer_panel.st, "warning", warnings.append)
+    viewer_panel.render_viewer(_viewer_view(run, tmp_path))
+    assert len(warnings) == 1 and "could not be read" in warnings[0]

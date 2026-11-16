@@ -87,9 +87,11 @@ def write_viewer_model(parts: Sequence[MeshPart], cg_m: Sequence[float], mass_kg
 
 def export_viewer_model(result: "PackingResult", out_dir: Path) -> Optional[Path]:
     """Write `viewer_model.json`; never raises - a failure is logged and reported as None."""
+    target: Path = out_dir / VIEWER_MODEL_FILE
     try:
-        return write_viewer_model(model_parts(result), result.mass.cg_m, result.mass.mass_kg,
-                                  out_dir / VIEWER_MODEL_FILE)
+        # Drop any file from an earlier critic iteration first: a failed export must not leave stale geometry.
+        target.unlink(missing_ok=True)
+        return write_viewer_model(model_parts(result), result.mass.cg_m, result.mass.mass_kg, target)
     except Exception:
         logger.exception("viewer mesh export failed; the run continues without a 3D viewer")
         return None

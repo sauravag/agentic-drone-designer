@@ -255,9 +255,12 @@ def run_warnings(state: DesignState) -> list[str]:
 
 
 def _build_viewer(state: DesignState) -> DesignState:
-    """Write viewer.html when the CAD stage exported a mesh; a failure becomes a run warning."""
+    """Write viewer.html when the final design's CAD stage exported a mesh; a failure becomes a run warning."""
     if not state.get("out_dir"):
         return state
+    cad = state.get("cad_artifacts")
+    if cad is None or cad.viewer_model_path is None:
+        return {**state, "viewer_error": None}  # never build from a stale mesh of an earlier iteration
     return {**state, "viewer_error": viewer_warning(Path(state["out_dir"]))}
 
 

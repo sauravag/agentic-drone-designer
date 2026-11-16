@@ -25,9 +25,9 @@ def render_viewer(view: AgentRunView) -> None:
         return
     try:
         html = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         st.warning(f"The 3D viewer could not be read: {exc}")
         return
     components.html(html, height=VIEWER_HEIGHT_PX)
     st.download_button(DOWNLOAD_LABEL, data=html, file_name=VIEWER_FILE, mime="text/html", key="download_viewer")
-    st.caption("viewer.html is self-contained: open it offline in any browser or share it as is.")
+    st.caption(f"{VIEWER_FILE} is self-contained: open it offline in any browser or share it as is.")

@@ -166,7 +166,7 @@ def viewer_warning(run_dir: Path) -> Optional[str]:
     """Builds the viewer for a run; a failure is logged and returned as warning text, never raised."""
     try:
         write_viewer(run_dir)
-    except (ViewerError, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001 - the viewer must never fail a run
         logger.exception("3D viewer build failed")
         return f"3D viewer not built: {exc}"
     return None
