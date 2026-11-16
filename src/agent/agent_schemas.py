@@ -5,17 +5,22 @@
 * the critic picks *which* sizing knob to move and in *which direction* from an enumerated set; the
   step sizes and bounds are deterministic (src/agent/critic.py);
 * the report writer only produces prose; every number in the report comes from the tools;
-* the design chat proposes change sets for the solver to check; it never states a result itself.
+* the design chat proposes field changes (a flat allow-list) for the solver to check; it never states a
+  result itself.
 """
 
 from typing import Final, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from src.schemas.changes import ChangeSet
+from src.schemas.changes import AssumptionChanges, KnobChanges, RequirementChanges
 from src.schemas.components import SensorType
 
 MAX_WHAT_IFS: Final[int] = 4  # per design-chat round; enforced after parsing (see DesignerTurn)
+# every field a designer change set may touch, generated from the change models so the two cannot drift
+CHANGE_FIELDS: Final[tuple[str, ...]] = (*RequirementChanges.model_fields, *AssumptionChanges.model_fields,
+                                         *KnobChanges.model_fields)
+ChangeField = Literal[CHANGE_FIELDS]  # type: ignore[valid-type]  # Literal["propulsion_type", ...]
 
 
 class Mass(BaseModel):
@@ -98,12 +103,29 @@ class OptionsExplanation(BaseModel):
     trade_offs: str = Field(description="How the listed options compare and what each costs the designer")
 
 
+class FieldChange(BaseModel):
+    field: ChangeField  # type: ignore[valid-type]
+    value: str = Field(description="New value as text, e.g. \"4.5\", \"true\", \"series_hybrid\" or \"2\"")
+
+
+# A change set as the LLM writes it: flat, so the strict schema has no nullable parameters. The app converts it
+# to a `ChangeSet` (src/agent/design_chat.py), which validates types and bounds. (Docstrings of these models
+# become schema descriptions the LLM reads, so implementation notes live in comments.)
+class ProposedChange(BaseModel):
+    """A design change: the fields to alter and their new values."""
+
+    label: str = Field(description="Short name for the change, e.g. \"Endurance 4.5 h\"")
+    changes: list[FieldChange] = Field(description="Each field to change, at most once")
+
+
+# The what-if limit is enforced by the app after parsing, not by the JSON schema (`maxItems` is not supported by
+# every provider's strict structured outputs). `proposal` is the schema's only nullable parameter (Anthropic
+# limits optional/union parameters in strict schemas).
 class DesignerTurn(BaseModel):
-    """One round of the design chat (spec 7.2). The what-if limit is enforced by the app after parsing, not by
-    the JSON schema (`maxItems` is not supported by every provider's strict structured outputs)."""
+    """One round of the design chat: a reply, what-ifs to check first, and an optional proposal."""
 
     message: str = Field(description="Reply to the designer; cite only numbers given in the briefing or results")
-    what_ifs: list[ChangeSet] = Field(
-        description=f"Change sets to check with the solver before answering (at most {MAX_WHAT_IFS})")
-    proposal: Optional[ChangeSet] = Field(description="A change set you recommend the designer accepts, or null")
+    what_ifs: list[ProposedChange] = Field(
+        description=f"Changes to check with the solver before answering (at most {MAX_WHAT_IFS})")
+    proposal: Optional[ProposedChange] = Field(description="A change you recommend the designer accepts, or null")
     done: bool = Field(description="true when ready to answer without further checks")

@@ -10,11 +10,11 @@ import pytest
 from pydantic import BaseModel
 
 from src.agent import providers
-from src.agent.agent_schemas import Adjustment, CriticDecision, DesignerTurn, ReportNarrative
+from src.agent.agent_schemas import (Adjustment, CriticDecision, DesignerTurn, FieldChange, ProposedChange,
+                                     ReportNarrative)
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.openrouter import OPENROUTER_BASE_URL, OpenRouterLLM
 from src.agent.providers import LLMConfigError
-from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges
 from tests.agent_fakes import SRS_DRAFT
 
 OR_KEY: str = "sk-or-test-key"
@@ -189,10 +189,10 @@ def test_designer_turn_round_trips_through_the_openai_sdk() -> None:
     assert _llm(_reply(_completion(turn.model_dump_json()))).parse("s", "p", DesignerTurn) == turn
 
 
-def test_a_designer_turn_with_change_sets_round_trips_under_a_strict_schema() -> None:
+def test_a_designer_turn_with_changes_round_trips_under_a_strict_schema() -> None:
     seen: list[httpx.Request] = []
-    change = ChangeSet(label="AR 14", requirements=RequirementChanges(endurance_hours=4.0),
-                       assumptions=AssumptionChanges(), knobs=KnobChanges(aspect_ratio=14.0))
+    change = ProposedChange(label="AR 14", changes=[FieldChange(field="endurance_hours", value="4"),
+                                                    FieldChange(field="aspect_ratio", value="14")])
     turn = DesignerTurn(message="m", what_ifs=[change, change], proposal=change, done=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -202,3 +202,21 @@ def test_a_designer_turn_with_change_sets_round_trips_under_a_strict_schema() ->
     assert _llm(handler).parse("s", "p", DesignerTurn) == turn
     schema = json.loads(seen[0].content)["response_format"]["json_schema"]
     assert schema["strict"] is True and set(schema["schema"]["required"]) == {"message", "what_ifs", "proposal", "done"}
+
+
+def _nullable_or_union(node: Any) -> int:
+    """How many schema nodes in `node` are unions (anyOf/oneOf or a list of types)."""
+    if isinstance(node, list):
+        return sum(_nullable_or_union(item) for item in node)
+    if not isinstance(node, dict):
+        return 0
+    own = int("anyOf" in node or "oneOf" in node or isinstance(node.get("type"), list))
+    return own + sum(_nullable_or_union(value) for value in node.values())
+
+
+def test_the_designer_turn_schema_claude_receives_has_at_most_two_unions() -> None:
+    from anthropic.lib._parse._transform import to_json_output_format  # what beta.messages.parse sends
+
+    schema = to_json_output_format(DesignerTurn)["schema"]
+    assert _nullable_or_union(schema) <= 2
+    assert "ChangeSet" not in json.dumps(schema)  # the nested all-optional ChangeSet is never sent to an LLM

@@ -167,6 +167,13 @@ def explore(view: AgentRunView, db_path: Path) -> tuple[ExploreOption, ...]:
     return tuple(explore_improvement(view.requirements, view.design_assumptions, view.sizing, db_path))
 
 
+def _critic_line(entry: dict[str, Any]) -> str:
+    """One critic pass for the chat briefing: iteration, failed gates, knob changes."""
+    failed = ", ".join(entry.get("failed", [])) or "none"
+    changes = "; ".join(entry.get("changes", [])) or "none"
+    return f"iteration {entry.get('iteration', '?')}: failed {failed}; changes {changes}"
+
+
 def chat(view: AgentRunView, history: tuple[ChatMessage, ...], message: str, db_path: Path) -> ChatMessage:
     """The design assistant's answer to `message`, with its what-ifs checked by the solver.
 
@@ -179,5 +186,6 @@ def chat(view: AgentRunView, history: tuple[ChatMessage, ...], message: str, db_
         raise ValueError(f"the design chat needs an LLM: {providers.config_problem()}")
     failed = tuple(f"{g['name']}: {g['detail']}" for g in view.gates if g.get("passed") is False)
     ctx = ChatContext(requirements=view.requirements, assumptions=view.design_assumptions, failed_gates=failed,
-                      options=view.options, allow_knobs=view.explorer_mode == CHAT_KNOBS_MODE, db_path=db_path)
+                      options=view.options, allow_knobs=view.explorer_mode == CHAT_KNOBS_MODE, db_path=db_path,
+                      critic_summary=tuple(_critic_line(entry) for entry in view.critic_log))
     return answer(llm, ctx, history, message)
