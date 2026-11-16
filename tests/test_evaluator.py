@@ -77,3 +77,12 @@ def test_describe_never_uses_exponent_notation() -> None:
     rows = dict((label, (old, new)) for label, old, new in cs.describe(REQ_FAILED, DEFAULT_ASSUMPTIONS))
     assert rows["Service ceiling (m)"][1] == "12000"
     assert rows["Battery reserve"] == ("0.2", "0.15")
+
+
+def test_number_formatting_is_lossless() -> None:
+    from src.schemas.changes import _format
+
+    assert _format(1e-7) != _format(4e-7) and _format(1e-7) == "0.0000001"
+    assert _format(0.1234567) != _format(0.1234568)
+    assert _format(-0.0) == "0" and _format(-1e-7) == "-0.0000001"
+    assert (_format(12000.0), _format(3.0), _format(0.15)) == ("12000", "3", "0.15")

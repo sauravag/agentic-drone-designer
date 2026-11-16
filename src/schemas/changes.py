@@ -5,6 +5,7 @@ is an allow-list; `None` means "leave unchanged". Applying a change set never mu
 re-validates through the target models, so bounds and cross-field validators always run.
 """
 
+from decimal import Decimal
 from typing import Final, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +15,6 @@ from src.schemas.requirements import OperationalRequirements
 from src.tools.sizing.mission_solver import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 
 LABEL_MAX_LEN: Final[int] = 120
-FLOAT_DECIMALS: Final[int] = 6  # fixed-point, trailing zeros stripped; never exponent notation
 
 FIELD_LABELS: Final[dict[str, str]] = {
     # requirements
@@ -91,7 +91,10 @@ def _format(value: object) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, float):
-        return f"{value:.{FLOAT_DECIMALS}f}".rstrip("0").rstrip(".")
+        if value == 0:
+            return "0"  # folds -0.0
+        # shortest round-trip digits, fixed-point (never exponent notation)
+        return format(Decimal(repr(float(value))).normalize(), "f")
     return str(value)
 
 
