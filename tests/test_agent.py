@@ -406,6 +406,35 @@ def test_a_closure_option_that_fails_an_airframe_gate_comes_back_in_airframe_mod
     assert not (Path(state["out_dir"]) / "options.json").exists()
 
 
+def test_a_design_that_closes_unchanged_ends_in_airframe_mode_with_a_note(
+        tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # final review finding 1
+    gate = critic.GateResult("collisions_and_group", False, "as-built mass 26 kg is over the Group 1 limit")
+    monkeypatch.setattr("src.agent.nodes._gates", lambda state: [gate])
+    state = run_agent(_ctx(tmp_path, db, None, max_iterations=0), requirements=G1_ELECTRIC_FW)
+    note = "Sizing + catalog close unchanged; the failure is in collisions_and_group"
+    assert state["explorer_mode"] == "airframe" and state["explore_options"] == []
+    assert state["explorer_note"] == note
+    assert note in Path(state["final_report_path"]).read_text()
+    assert not (Path(state["out_dir"]) / "options.json").exists()
+
+
+def test_options_explanation_citing_rounded_solver_numbers_is_not_flagged(
+        tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # final review finding 3
+    from src.agent.evaluator import Evaluation
+    from src.agent.explorer import ExploreOption
+    from src.schemas.changes import ChangeSet
+
+    change = ChangeSet.model_validate({"label": "hybrid", "requirements": {"propulsion_type": "series_hybrid"},
+                                      "assumptions": {}, "knobs": {}})
+    result = Evaluation(True, 16.623456789, 2, "series_hybrid", 0.81234567, 3.4567891, "")
+    option = ExploreOption("propulsion", change, result, 1.0, True, None, False)
+    monkeypatch.setattr("src.agent.nodes.explore_closure", lambda *args, **kwargs: [option])
+    llm = ScriptedLLM(options=OptionsExplanation(why_it_failed="A hybrid closes at 16.6 kg.",
+                                                 trade_offs="It carries 3.46 kg of fuel."))
+    state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)
+    assert "explanation of the options mentions" not in Path(state["final_report_path"]).read_text()
+
+
 def test_an_options_llm_outage_costs_only_the_explanation(tmp_path: Path, db: Path) -> None:
     llm = ScriptedLLM(fail_on=(OptionsExplanation,))
     state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)

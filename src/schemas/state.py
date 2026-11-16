@@ -154,4 +154,5 @@ class DesignState(TypedDict):
     explorer_mode: str  # closure | airframe | improvement | none, set when the report is compiled
     explore_options: list[dict]  # ExploreOption.to_json() of the closure options (empty otherwise)
     options_explanation: Optional[str]  # LLM prose about the options (audited, defanged in the report)
+    explorer_note: Optional[str]  # set when a failed design closes unchanged with sizing + catalog
     lineage: Optional[RunLineage]  # set on a linked re-run

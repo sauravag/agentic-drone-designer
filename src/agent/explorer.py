@@ -16,13 +16,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Final, Literal, Optional
 
-from src.agent.critic import RESERVE_MIN
-from src.agent.evaluator import Evaluation, evaluate
+from src.agent.evaluator import Evaluation, evaluate, round_fact, with_reserve_floor
 from src.schemas.assumptions import SERIES_HYBRID, DesignAssumptions
 from src.schemas.changes import (FIELD_LABELS, AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges,
                                  apply_changes)
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import DesignState, SizingOutput
+from src.schemas.state import DesignState
 
 ExplorerMode = Literal["closure", "airframe", "improvement", "none"]
 
@@ -33,8 +32,7 @@ TIME_BUDGET_REASON: Final[str] = "not evaluated (time budget)"
 OUT_OF_RANGE_REASON: Final[str] = "does not close within range"
 CRUISE_SCAN_STEPS: Final[int] = 8
 CRUISE_SCAN_FACTOR: Final[float] = 1.2  # scan [1.2 x stall, 1.2 x requested]
-CRUISE_MIN_MS: Final[float] = 8.5  # requirements demand cruise > 8 m/s
-CRUISE_MAX_MS: Final[float] = 120.0  # requirements cap
+CRUISE_MIN_MARGIN_MS: Final[float] = 0.5  # keeps the scan strictly above the schema's exclusive minimum
 VALUE_DECIMALS: Final[int] = 6  # snaps grid values (6.0 - 8 x 0.1 -> 5.2)
 GROUP_MAX: Final[int] = 3
 ELECTRIC: Final[str] = "electric"
@@ -43,8 +41,20 @@ AIRFRAME_GATES: Final[frozenset[str]] = frozenset({"static_margin", "lift_to_dra
 COLLISIONS_AND_GROUP_GATE: Final[str] = "collisions_and_group"
 RESERVE_GATE: Final[str] = "reserve"
 REFERENCE_LABEL: Final[str] = "Unchanged design"
+UNCHANGED_CLOSES_NOTE: Final[str] = "Sizing + catalog close unchanged; the failure is in {where}"
 BATTERY_LEVERS: Final[frozenset[str]] = frozenset({"liion_specific_energy", "liion_max_c_rate"})
 
+
+
+def _cruise_limits() -> tuple[float, float]:
+    """The requirements schema's cruise-speed bounds (exclusive minimum plus a margin, inclusive maximum)."""
+    meta = OperationalRequirements.model_fields["cruise_speed_ms"].metadata
+    low = next(m.gt for m in meta if getattr(m, "gt", None) is not None)
+    high = next(m.le for m in meta if getattr(m, "le", None) is not None)
+    return float(low) + CRUISE_MIN_MARGIN_MS, float(high)
+
+
+CRUISE_MIN_MS, CRUISE_MAX_MS = _cruise_limits()
 Section = Literal["requirements", "assumptions"]
 Probe = Callable[[float], Optional[Evaluation]]
 
@@ -82,7 +92,7 @@ class ExploreOption:
         return {
             "lever": self.lever, "change": self.change.model_dump(), "result": self.result.as_facts(),
             "relative_change": self.relative_change, "closes": self.closes,
-            "mtow_saved_kg": self.mtow_saved_kg, "group_drop": self.group_drop,
+            "mtow_saved_kg": round_fact(self.mtow_saved_kg), "group_drop": self.group_drop,
         }
 
 
@@ -124,6 +134,20 @@ def explorer_mode(state: DesignState) -> ExplorerMode:
     return "airframe" if failed & AIRFRAME_GATES else "closure"
 
 
+def unchanged_closes(req: OperationalRequirements, assumptions: DesignAssumptions, db_path: Path) -> bool:
+    """True when the design closes with sizing + catalog as it stands (default knobs, floored reserve): its
+    failure then lies outside what the closure explorer can change."""
+    return evaluate(req, assumptions, {}, db_path).closes
+
+
+def unchanged_closes_note(state: DesignState) -> str:
+    """Says where the failure is for a design that closes unchanged: the failed stage, else the failed gates."""
+    stage_error = state.get("stage_error")
+    failed = [gate["name"] for gate in state.get("gate_results") or [] if not gate["passed"]]
+    where = f"the {stage_error['stage']} stage" if stage_error else ", ".join(failed) or "the final checks"
+    return UNCHANGED_CLOSES_NOTE.format(where=where)
+
+
 # --------------------------------------------------------------- helpers ---
 def _change(label: str, requirements: Optional[dict] = None, assumptions: Optional[dict] = None) -> ChangeSet:
     return ChangeSet(label=label, requirements=RequirementChanges(**(requirements or {})),
@@ -147,18 +171,8 @@ def _relative(requested: float, value: float) -> float:
     return abs(value - requested) / abs(requested)
 
 
-def _with_reserve(change: ChangeSet, result: Evaluation, assumptions: DesignAssumptions) -> ChangeSet:
-    """Spec 6.2: carry the reserve floor the option was checked with into its change set."""
-    if result.propulsion is None:
-        return change
-    field = "fuel_reserve_fraction" if result.propulsion == SERIES_HYBRID else "battery_reserve_fraction"
-    if getattr(assumptions, field) >= RESERVE_MIN:
-        return change
-    return change.model_copy(update={"assumptions": change.assumptions.model_copy(update={field: RESERVE_MIN})})
-
-
 def _option(search: _Search, lever: str, change: ChangeSet, result: Evaluation, relative: float) -> ExploreOption:
-    final = _with_reserve(change, result, search.assumptions)
+    final = with_reserve_floor(change, result, search.assumptions)
     return ExploreOption(lever, final, result, relative, result.closes, None, False)
 
 
@@ -278,8 +292,12 @@ def _search_cruise(search: _Search, name: str, lever: Lever) -> ExploreOption:
 
 def explore_closure(req: OperationalRequirements, assumptions: DesignAssumptions, db_path: Path,
                     time_budget_s: float = CLOSURE_BUDGET_S) -> list[ExploreOption]:
-    """Single changes that make `req` close; closing first by relative change, then non-closing."""
+    """Single changes that make `req` close; closing first by relative change, then non-closing. None when the
+    unchanged design already closes (any option would only look like a fix; see `unchanged_closes`)."""
     search = _Search(req, assumptions, db_path, time.monotonic() + time_budget_s)
+    reference = search.probe(_change(REFERENCE_LABEL))
+    if reference is not None and reference.closes:
+        return []
     options = [_search_discrete(search, name, change) for name, change in _discrete_candidates(req)]
     options += _search_group(search)
     for name, lever in LEVERS.items():
@@ -317,15 +335,14 @@ def _improve_lever(search: _Search, name: str, lever: Lever,
     return replace(_option(search, name, change, result, relative), mtow_saved_kg=saved, group_drop=bool(drop))
 
 
-def explore_improvement(req: OperationalRequirements, assumptions: DesignAssumptions, baseline: SizingOutput,
-                        db_path: Path, time_budget_s: float = IMPROVEMENT_BUDGET_S) -> list[ExploreOption]:
+def explore_improvement(req: OperationalRequirements, assumptions: DesignAssumptions, db_path: Path,
+                        time_budget_s: float = IMPROVEMENT_BUDGET_S) -> list[ExploreOption]:
     """Per-lever sensitivity of a converged design: MTOW saved for one stated step, ranked by MTOW saved per
     relative change (closing first).
 
     Savings and group drops are measured against the unchanged design evaluated once through the same path
-    (reserve floor, default knobs; counts against the budget), not against `baseline`: the run's sizing may use
-    unfloored reserves and critic-adjusted knobs, so comparing to it would mix two different evaluations.
-    `baseline` is kept for callers and is not used in the comparison."""
+    (reserve floor, default knobs; counts against the budget), not against the run's own sizing: that may use
+    unfloored reserves and critic-adjusted knobs, so comparing to it would mix two different evaluations."""
     search = _Search(req, assumptions, db_path, time.monotonic() + time_budget_s)
     reference = search.probe(_change(REFERENCE_LABEL))
     options = [o for name, lever in LEVERS.items() if (o := _improve_lever(search, name, lever, reference))]

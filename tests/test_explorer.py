@@ -5,11 +5,12 @@ import pytest
 
 from src.agent.critic import RESERVE_MIN
 from src.agent.evaluator import evaluate
-from src.agent.explorer import OUT_OF_RANGE_REASON, explore_closure, explore_improvement, explorer_mode
+from src.agent.explorer import (CRUISE_MAX_MS, CRUISE_MIN_MS, OUT_OF_RANGE_REASON, explore_closure,
+                                explore_improvement, explorer_mode, unchanged_closes)
 from src.agent.graph import initial_state
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import apply_changes
-from src.tools.sizing.mission_solver import size_aircraft
+from src.schemas.requirements import OperationalRequirements
 from tests.reference_designs import G1_ELECTRIC_FW, G3_HYBRID_VTOL, REQ_FAILED
 
 
@@ -70,9 +71,19 @@ def test_time_budget_marks_unevaluated_levers(db: Path) -> None:
     assert options and all(not o.closes and "time budget" in o.result.reason for o in options)
 
 
+def test_closure_explorer_offers_nothing_when_the_unchanged_design_closes(db: Path) -> None:
+    assert unchanged_closes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db)
+    assert not unchanged_closes(REQ_FAILED, DEFAULT_ASSUMPTIONS, db)
+    assert explore_closure(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db) == []
+
+
+def test_cruise_scan_limits_come_from_the_requirements_schema() -> None:
+    meta = {type(m).__name__: m for m in OperationalRequirements.model_fields["cruise_speed_ms"].metadata}
+    assert CRUISE_MIN_MS > meta["Gt"].gt and CRUISE_MAX_MS == meta["Le"].le
+
+
 def test_improvement_mode_reports_savings(db: Path) -> None:
-    baseline = size_aircraft(G1_ELECTRIC_FW)
-    options = explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, baseline, db)
+    options = explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db)
     assert any(o.mtow_saved_kg and o.mtow_saved_kg > 0 for o in options)
     by_lever = {o.lever: o for o in options}
     assert by_lever["endurance"].change.requirements.endurance_hours == G1_ELECTRIC_FW.endurance_hours - 1.0
@@ -114,8 +125,7 @@ def test_group_lever_names_the_group_the_design_closes_in(db: Path) -> None:
 
 
 def test_improvement_compares_against_the_evaluated_unchanged_design(db: Path) -> None:
-    baseline = size_aircraft(G3_HYBRID_VTOL)  # unfloored reserve: not the reference for savings
-    by_lever = {o.lever: o for o in explore_improvement(G3_HYBRID_VTOL, DEFAULT_ASSUMPTIONS, baseline, db)}
+    by_lever = {o.lever: o for o in explore_improvement(G3_HYBRID_VTOL, DEFAULT_ASSUMPTIONS, db)}
     shorter = G3_HYBRID_VTOL.model_copy(update={"endurance_hours": G3_HYBRID_VTOL.endurance_hours - 1.0})
     expected = (evaluate(G3_HYBRID_VTOL, DEFAULT_ASSUMPTIONS, {}, db).mtow_kg
                 - evaluate(shorter, DEFAULT_ASSUMPTIONS, {}, db).mtow_kg)
@@ -125,6 +135,5 @@ def test_improvement_compares_against_the_evaluated_unchanged_design(db: Path) -
 
 
 def test_a_no_op_step_saves_nothing(db: Path) -> None:
-    baseline = size_aircraft(G1_ELECTRIC_FW)
-    c_rate = {o.lever: o for o in explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, baseline, db)}["liion_max_c_rate"]
+    c_rate = {o.lever: o for o in explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db)}["liion_max_c_rate"]
     assert abs(c_rate.mtow_saved_kg) < 0.01

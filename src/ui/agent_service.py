@@ -55,6 +55,7 @@ class AgentRunView:
     explorer_mode: str = "none"
     options: tuple[dict[str, Any], ...] = ()
     options_explanation: Optional[str] = None
+    explorer_note: Optional[str] = None  # why a failed design gets no closure options (it closes unchanged)
     lineage: Optional[RunLineage] = None
 
     @property
@@ -102,7 +103,8 @@ def to_view(state: DesignState, used_llm: bool) -> AgentRunView:
         critic_log=tuple(state.get("critic_log", [])), report_path=_optional_path(state.get("final_report_path")),
         used_llm=used_llm, design_assumptions=state.get("design_assumptions") or DEFAULT_ASSUMPTIONS,
         explorer_mode=state.get("explorer_mode", "none"), options=tuple(state.get("explore_options", [])),
-        options_explanation=state.get("options_explanation"), lineage=state.get("lineage"),
+        options_explanation=state.get("options_explanation"), explorer_note=state.get("explorer_note"),
+        lineage=state.get("lineage"),
     )
 
 
@@ -164,7 +166,7 @@ def explore(view: AgentRunView, db_path: Path) -> tuple[ExploreOption, ...]:
     """On-demand improvement mode: what shrinks a converged design the most per stated step."""
     if view.status != STATUS_CONVERGED or view.requirements is None or view.sizing is None:
         raise ValueError("improvement options need a converged design with sizing results")
-    return tuple(explore_improvement(view.requirements, view.design_assumptions, view.sizing, db_path))
+    return tuple(explore_improvement(view.requirements, view.design_assumptions, db_path))
 
 
 def _critic_line(entry: dict[str, Any]) -> str:

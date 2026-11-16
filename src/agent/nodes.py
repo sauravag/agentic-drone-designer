@@ -16,7 +16,8 @@ from src.agent import critic, report
 from src.agent.agent_schemas import CriticDecision, OptionsExplanation, ReportNarrative, RequirementsDraft
 from src.agent.llm import LLMError, StructuredLLM
 from src.agent.parsing import to_requirements
-from src.agent.explorer import ExploreOption, explore_closure, explorer_mode
+from src.agent.explorer import (ExploreOption, explore_closure, explorer_mode, unchanged_closes,
+                                unchanged_closes_note)
 from src.agent.prompts import CRITIC_SYSTEM, OPTIONS_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
@@ -284,6 +285,10 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
     mode = explorer_mode(state)
     options: list[ExploreOption] = []
     explanation: Optional[OptionsExplanation] = None
+    note: Optional[str] = None
+    if mode == "closure" and unchanged_closes(inputs.requirements, inputs.design_assumptions, ctx.db_path):
+        mode, note = "airframe", unchanged_closes_note(state)  # no closure option would be a real fix
+        inputs = replace(inputs, explorer_note=note)
     if mode == "closure":
         _tool(ctx, "compile_report: exploring options that close the design")
         options = explore_closure(inputs.requirements, inputs.design_assumptions, ctx.db_path)
@@ -307,8 +312,8 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
         "sitl_passed": sitl_passed(state), "iterations": inputs.iterations,
         "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
         "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()},
-        "lineage": lineage.model_dump(mode="json") if lineage else None})
-    return {"final_report_path": str(path), "explorer_mode": mode,
+        "explorer_note": note, "lineage": lineage.model_dump(mode="json") if lineage else None})
+    return {"final_report_path": str(path), "explorer_mode": mode, "explorer_note": note,
             "explore_options": [option.to_json() for option in options],
             "options_explanation": None if explanation is None else
             f"{explanation.why_it_failed}\n\n{explanation.trade_offs}"}
