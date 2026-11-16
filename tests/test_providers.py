@@ -10,10 +10,11 @@ import pytest
 from pydantic import BaseModel
 
 from src.agent import providers
-from src.agent.agent_schemas import Adjustment, CriticDecision, ReportNarrative
+from src.agent.agent_schemas import Adjustment, CriticDecision, DesignerTurn, ReportNarrative
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.openrouter import OPENROUTER_BASE_URL, OpenRouterLLM
 from src.agent.providers import LLMConfigError
+from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges
 from tests.agent_fakes import SRS_DRAFT
 
 OR_KEY: str = "sk-or-test-key"
@@ -181,3 +182,23 @@ def test_rejected_openrouter_credentials_give_a_fixed_message_without_the_body()
     with pytest.raises(LLMError, match="rejected the credentials") as info:
         _llm(handler).parse("s", "p", CriticDecision)
     assert "SECRET" not in str(info.value) and "OPENROUTER_API_KEY" in str(info.value)
+
+
+def test_designer_turn_round_trips_through_the_openai_sdk() -> None:
+    turn = DesignerTurn(message="m", what_ifs=[], proposal=None, done=True)
+    assert _llm(_reply(_completion(turn.model_dump_json()))).parse("s", "p", DesignerTurn) == turn
+
+
+def test_a_designer_turn_with_change_sets_round_trips_under_a_strict_schema() -> None:
+    seen: list[httpx.Request] = []
+    change = ChangeSet(label="AR 14", requirements=RequirementChanges(endurance_hours=4.0),
+                       assumptions=AssumptionChanges(), knobs=KnobChanges(aspect_ratio=14.0))
+    turn = DesignerTurn(message="m", what_ifs=[change, change], proposal=change, done=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_completion(turn.model_dump_json()))
+
+    assert _llm(handler).parse("s", "p", DesignerTurn) == turn
+    schema = json.loads(seen[0].content)["response_format"]["json_schema"]
+    assert schema["strict"] is True and set(schema["schema"]["required"]) == {"message", "what_ifs", "proposal", "done"}

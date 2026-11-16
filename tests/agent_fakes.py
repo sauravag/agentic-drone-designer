@@ -1,11 +1,11 @@
 """Scripted StructuredLLM for agent tests: deterministic stand-in for Claude (no network, no cost)."""
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from pydantic import BaseModel
 
-from src.agent.agent_schemas import (CriticDecision, Distance, Duration, Mass, OptionsExplanation, ReportNarrative,
-                                     RequirementsDraft)
+from src.agent.agent_schemas import (CriticDecision, DesignerTurn, Distance, Duration, Mass, OptionsExplanation,
+                                     ReportNarrative, RequirementsDraft)
 from src.agent.llm import LLMError
 
 SRS_PROMPT: str = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, 6-hour "
@@ -18,17 +18,20 @@ SRS_DRAFT = RequirementsDraft(
 
 
 class ScriptedLLM:
-    """Answers each schema with a fixed object (or a callable of the prompt); records every call."""
+    """Answers each schema with a fixed object (or a callable of the prompt); records every call.
+    `DesignerTurn` answers come from `designer_turns` in order (one per call)."""
 
     def __init__(self, draft: Optional[RequirementsDraft] = SRS_DRAFT,
                  critic: Callable[[str], CriticDecision] | CriticDecision | None = None,
                  fail_on: tuple[type[BaseModel], ...] = (),
-                 options: Optional[OptionsExplanation] = None) -> None:
+                 options: Optional[OptionsExplanation] = None,
+                 designer_turns: Sequence[DesignerTurn] = ()) -> None:
         self.options = options or OptionsExplanation(why_it_failed="Scripted failure reason.",
                                                      trade_offs="Scripted option trade-offs.")
         self.draft = draft
         self.critic = critic or CriticDecision(summary="defer to the rule table")
         self.fail_on = fail_on
+        self.designer_turns: list[DesignerTurn] = list(designer_turns)
         self.calls: list[tuple[str, str]] = []
 
     def parse(self, system: str, prompt: str, schema: type[Any], effort: str = "medium") -> Any:
@@ -44,4 +47,7 @@ class ScriptedLLM:
                                    risks_and_next_steps="Scripted next steps.")
         if schema is OptionsExplanation:
             return self.options
+        if schema is DesignerTurn:
+            assert self.designer_turns, "no scripted DesignerTurn left"
+            return self.designer_turns.pop(0)
         raise AssertionError(f"unexpected schema {schema}")

@@ -13,6 +13,7 @@ from typing import Any, Callable, Final, Literal, Optional
 from src import pipeline
 from src.agent.graph import run_agent
 from src.agent import providers
+from src.agent.design_chat import ChatContext, ChatMessage, answer
 from src.agent.explorer import ExploreOption, explore_improvement
 from src.agent.report import inline
 from src.agent.llm import StructuredLLM
@@ -26,6 +27,7 @@ from src.schemas.state import AeroStabilityOutput, CADArtifacts, DesignState, FC
 STATUS_CONVERGED: Final[str] = "converged"
 STATUS_CLARIFY: Final[str] = "clarification"
 STATUS_ERROR: Final[str] = "error"
+CHAT_KNOBS_MODE: Final[str] = "airframe"  # knob changes are allowed only after an airframe failure (spec 6.1)
 NO_LLM_TEMPLATE: Final[str] = ("Designing from a description needs an LLM: {problem} (in .env for Docker Compose, "
                                "or in your shell on the host), or use the structured form below.")
 
@@ -163,3 +165,19 @@ def explore(view: AgentRunView, db_path: Path) -> tuple[ExploreOption, ...]:
     if view.status != STATUS_CONVERGED or view.requirements is None or view.sizing is None:
         raise ValueError("improvement options need a converged design with sizing results")
     return tuple(explore_improvement(view.requirements, view.design_assumptions, view.sizing, db_path))
+
+
+def chat(view: AgentRunView, history: tuple[ChatMessage, ...], message: str, db_path: Path) -> ChatMessage:
+    """The design assistant's answer to `message`, with its what-ifs checked by the solver.
+
+    Raises ValueError for a view without requirements or when no LLM is configured, providers.LLMConfigError
+    for an invalid provider setting; LLMError from the model propagates."""
+    if view.requirements is None:
+        raise ValueError("this run has no requirements to discuss")
+    llm: Optional[StructuredLLM] = make_llm()
+    if llm is None:
+        raise ValueError(f"the design chat needs an LLM: {providers.config_problem()}")
+    failed = tuple(f"{g['name']}: {g['detail']}" for g in view.gates if g.get("passed") is False)
+    ctx = ChatContext(requirements=view.requirements, assumptions=view.design_assumptions, failed_gates=failed,
+                      options=view.options, allow_knobs=view.explorer_mode == CHAT_KNOBS_MODE, db_path=db_path)
+    return answer(llm, ctx, history, message)

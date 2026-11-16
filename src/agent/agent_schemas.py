@@ -4,14 +4,18 @@
   to SI happens in deterministic code (src/agent/parsing.py);
 * the critic picks *which* sizing knob to move and in *which direction* from an enumerated set; the
   step sizes and bounds are deterministic (src/agent/critic.py);
-* the report writer only produces prose; every number in the report comes from the tools.
+* the report writer only produces prose; every number in the report comes from the tools;
+* the design chat proposes change sets for the solver to check; it never states a result itself.
 """
 
-from typing import Literal, Optional
+from typing import Final, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from src.schemas.changes import ChangeSet
 from src.schemas.components import SensorType
+
+MAX_WHAT_IFS: Final[int] = 4  # per design-chat round; enforced after parsing (see DesignerTurn)
 
 
 class Mass(BaseModel):
@@ -92,3 +96,14 @@ class ReportNarrative(BaseModel):
 class OptionsExplanation(BaseModel):
     why_it_failed: str = Field(description="Why the requested design does not close, in plain words")
     trade_offs: str = Field(description="How the listed options compare and what each costs the designer")
+
+
+class DesignerTurn(BaseModel):
+    """One round of the design chat (spec 7.2). The what-if limit is enforced by the app after parsing, not by
+    the JSON schema (`maxItems` is not supported by every provider's strict structured outputs)."""
+
+    message: str = Field(description="Reply to the designer; cite only numbers given in the briefing or results")
+    what_ifs: list[ChangeSet] = Field(
+        description=f"Change sets to check with the solver before answering (at most {MAX_WHAT_IFS})")
+    proposal: Optional[ChangeSet] = Field(description="A change set you recommend the designer accepts, or null")
+    done: bool = Field(description="true when ready to answer without further checks")
