@@ -411,7 +411,6 @@ def test_improvement_savings_read_with_a_true_minus_and_gains_with_a_plus() -> N
     assert saving_text(-0.12) == "MTOW + 0.1 kg"
 
 
-
 def test_rerun_uses_the_stage_checkboxes_at_click_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from src.ui import agent_service
 
@@ -452,6 +451,11 @@ def test_selecting_another_option_reseeds_the_review_widgets(tmp_path: Path, mon
     at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
     at.button(key="select_option_0").click()
     at.run()
+    at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(0.3)
+    at.run()
+    at.button(key="select_option_0").click()  # same option again, panel still open: the edit must not stick
+    at.run()
+    assert at.number_input(key="review_assumptions_fuel_reserve_fraction").value == pytest.approx(0.15)
     at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(0.3)
     at.run()
     at.button(key="select_option_1").click()  # Li-ion specific energy
