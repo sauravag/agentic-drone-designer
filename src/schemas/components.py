@@ -13,7 +13,7 @@ Power = Annotated[float, Field(gt=0, le=250_000.0)]
 Voltage = Annotated[float, Field(gt=0, le=1_000.0)]
 
 MIN_SPECIFIC_ENERGY_WH_KG: float = 80.0
-MAX_SPECIFIC_ENERGY_WH_KG: float = 350.0
+MAX_SPECIFIC_ENERGY_WH_KG: float = 500.0
 MIN_VTOL_ROTORS: int = 4
 
 

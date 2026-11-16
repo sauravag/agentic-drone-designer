@@ -15,6 +15,7 @@ from typing import Final
 
 from pydantic import BaseModel
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.components import Battery, CruiseMotor, IceGenerator, Payload, Propeller, VtolMotor
 from src.units import INCH_TO_M
 
@@ -30,8 +31,12 @@ CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
 }
 
 # Pack-level properties used to derive battery mass and volume from capacity.
-PACK_SPECIFIC_ENERGY_WH_KG: Final[dict[str, float]] = {"li_ion": 200.0, "lipo": 155.0}
-PACK_ENERGY_DENSITY_WH_L: Final[dict[str, float]] = {"li_ion": 250.0, "lipo": 280.0}
+PACK_SPECIFIC_ENERGY_WH_KG: Final[dict[str, float]] = {
+    chem: DEFAULT_ASSUMPTIONS.specific_energy_wh_kg(chem) for chem in ("li_ion", "lipo")
+}
+PACK_ENERGY_DENSITY_WH_L: Final[dict[str, float]] = {
+    chem: DEFAULT_ASSUMPTIONS.energy_density_wh_l(chem) for chem in ("li_ion", "lipo")
+}
 PACK_ASPECT: Final[tuple[float, float, float]] = (3.0, 1.5, 1.0)  # L : W : H
 
 # fmt: off
