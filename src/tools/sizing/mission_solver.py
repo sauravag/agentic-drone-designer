@@ -53,7 +53,7 @@ from src.tools.sizing.mission_profile import (
     simulate,
 )
 from src.tools.sizing.topology import Airframe, Propulsion, classify_group, select_airframe, select_propulsion
-from src.units import G0
+from src.units import G0, KWH_TO_J
 
 logger = logging.getLogger(__name__)
 
@@ -157,15 +157,21 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
 
 
 def _evaluate(mtow: float, design: _Design) -> _Evaluation:
-    req, a = design.req, design.assumptions
+    req, assumptions = design.req, design.assumptions
+    eta: float = assumptions.drivetrain_efficiency
     aero, mu_c = _aero_state(mtow, design)
     hotel: float = hotel_power_w(req, mtow)
-    cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, a.drivetrain_efficiency) + hotel
+    cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, eta) + hotel
     is_hybrid: bool = design.propulsion == "series_hybrid"
     gen_w: float = GENERATOR_MARGIN * cruise_total if is_hybrid else 0.0
-    trace = simulate(phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w, a)
-    reserve: float = reserve_fraction(design.params, design.propulsion, a)
-    storage = hybrid_storage(trace, gen_w, reserve, a) if is_hybrid else electric_storage(trace, reserve, a)
+    trace = simulate(
+        phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w,
+        assumptions.bsfc_kg_per_kwh / KWH_TO_J, eta, assumptions.hover_figure_of_merit,
+        assumptions.lift_motor_efficiency,
+    )
+    reserve: float = reserve_fraction(design.params, design.propulsion, assumptions)
+    storage = (hybrid_storage(trace, gen_w, reserve, assumptions) if is_hybrid
+               else electric_storage(trace, reserve, assumptions))
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
     loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
     empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads).values())

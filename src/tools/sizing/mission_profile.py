@@ -11,7 +11,7 @@ from src.schemas.state import PhaseResult
 from src.tools.sizing.aero_model import AirfoilPolar, air_properties
 from src.tools.sizing.mass_model import Geometry
 from src.tools.sizing.topology import Airframe
-from src.units import G0, KWH_TO_J, WH_TO_J
+from src.units import G0, WH_TO_J
 
 CLIMB_RATE_MS: Final[float] = 2.5
 VTOL_PHASE_S: Final[float] = 60.0
@@ -139,29 +139,36 @@ def phase_plan(
     return tuple(plan)
 
 
-def _step_power_w(spec: PhaseSpec, weight_n: float, aero: AeroState, a: DesignAssumptions) -> tuple[float, float]:
+def _step_power_w(
+    spec: PhaseSpec, weight_n: float, aero: AeroState,
+    drivetrain_efficiency: float, figure_of_merit: float, lift_motor_efficiency: float,
+) -> tuple[float, float]:
     """(sustained propulsive power for energy, installed peak propulsive power for sizing)."""
     if spec.is_hover:
-        fom, eta_m = a.hover_figure_of_merit, a.lift_motor_efficiency
-        return hover_power_w(weight_n, aero, fom, eta_m), hover_power_w(weight_n, aero, fom, eta_m, VTOL_THRUST_TO_WEIGHT)
-    power: float = forward_power_w(weight_n, spec.speed_ms, spec.rho, aero, a.drivetrain_efficiency, spec.climb_rate_ms)
+        sustained: float = hover_power_w(weight_n, aero, figure_of_merit, lift_motor_efficiency)
+        peak: float = hover_power_w(weight_n, aero, figure_of_merit, lift_motor_efficiency, VTOL_THRUST_TO_WEIGHT)
+        return sustained, peak
+    power: float = forward_power_w(
+        weight_n, spec.speed_ms, spec.rho, aero, drivetrain_efficiency, spec.climb_rate_ms
+    )
     return power, power
 
 
 def simulate(
     plan: tuple[PhaseSpec, ...], mtow_kg: float, aero: AeroState, hotel_w: float, gen_w: float,
-    assumptions: DesignAssumptions,
+    bsfc_kg_per_j: float, drivetrain_efficiency: float, figure_of_merit: float, lift_motor_efficiency: float,
 ) -> MissionTrace:
     """Integrate each phase in STEPS_PER_PHASE steps. The generator (if any) supplies demand up to
     its rating and burns fuel, lightening the aircraft; the battery covers any deficit."""
-    bsfc_kg_per_j: float = assumptions.bsfc_kg_per_kwh / KWH_TO_J
     fuel = peak_total = peak_hover = sustained_hover = peak_deficit = peak_forward = non_hover_deficit_j = 0.0
     results: list[PhaseResult] = []
     for spec in plan:
         dt: float = spec.duration_s / STEPS_PER_PHASE
         prop_sum = total_sum = energy = phase_fuel = 0.0
         for _ in range(STEPS_PER_PHASE):
-            prop, prop_peak = _step_power_w(spec, (mtow_kg - fuel) * G0, aero, assumptions)
+            prop, prop_peak = _step_power_w(
+                spec, (mtow_kg - fuel) * G0, aero, drivetrain_efficiency, figure_of_merit, lift_motor_efficiency
+            )
             total, total_peak = prop + hotel_w, prop_peak + hotel_w
             from_gen: float = min(total, gen_w)
             burned: float = bsfc_kg_per_j * from_gen * dt
