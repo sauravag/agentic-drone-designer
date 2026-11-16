@@ -80,7 +80,7 @@ def test_aero_cad_without_openvsp_is_rejected(tmp_path: Path) -> None:
 def _cad(as_built: float, sm: float = 0.11, collisions: int = 0) -> CADArtifacts:
     return CADArtifacts(oml_vsp3_path="a", oml_step_path="b", assembly_step_path="c", x_cg_m=0.3,
                         static_margin=sm, collision_count=collisions, as_built_mass_kg=as_built,
-                        ixx_kgm2=1.0, iyy_kgm2=1.0, izz_kgm2=1.0, ixz_kgm2=0.0)
+                        ixx_kgm2=1.0, iyy_kgm2=1.0, izz_kgm2=1.0, ixz_kgm2=0.0, viewer_model_path="d")
 
 
 def test_warnings_flag_mass_growth_margin_and_collisions(sizing_only_run: pipeline.DesignRun) -> None:

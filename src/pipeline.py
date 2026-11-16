@@ -126,6 +126,8 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
             notes.append(f"Final static margin {cad.static_margin:.3f} is outside {SM_MIN}-{SM_MAX}.")
         if cad.collision_count:
             notes.append(f"{cad.collision_count} interference(s) between parts, booms or the skin.")
+        if cad.viewer_model_path is None:
+            notes.append("The 3D viewer mesh could not be exported; the run has no 3D viewer.")
     return tuple(notes)
 
 

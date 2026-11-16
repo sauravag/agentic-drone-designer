@@ -429,6 +429,8 @@ def test_pack_aircraft_exports_assembly(designs: dict, tmp_path: Path) -> None:
     art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3", oml, tmp_path)
     assembly = Path(art.assembly_step_path)
     assert assembly.exists() and assembly.stat().st_size > 0
+    assert art.viewer_model_path is not None and Path(art.viewer_model_path).name == "viewer_model.json"
+    assert Path(art.viewer_model_path).stat().st_size > 0
     reloaded = build123d.import_step(str(assembly))
     assert len(reloaded.solids()) >= 2 * len(structure.rib_stations(lay)) + 4
     tensor = np.array([[art.ixx_kgm2, 0, -art.ixz_kgm2], [0, art.iyy_kgm2, 0], [-art.ixz_kgm2, 0, art.izz_kgm2]])

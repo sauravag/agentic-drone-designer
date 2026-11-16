@@ -103,6 +103,7 @@ class CADArtifacts(_Frozen):
     iyy_kgm2: Positive
     izz_kgm2: Positive
     ixz_kgm2: float
+    viewer_model_path: Optional[str] = None  # display mesh for the 3D viewer; None if export failed
 
 
 class FCSArtifacts(_Frozen):

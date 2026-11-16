@@ -33,6 +33,7 @@ from src.tools.aero_cad.components import (  # noqa: F401  (re-exported for call
     overlap_volume_m3,
 )
 from src.tools.aero_cad.layout import AircraftLayout
+from src.tools.aero_cad.mesh_export import export_viewer_model
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
@@ -238,11 +239,13 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
     """Write `assembly.step` and report CG, static margin, interference, as-built mass and inertia.
     `collision_count` covers part-part, part-boom and part-skin interference."""
     assembly: Path = _export_assembly(result, out_dir / "assembly.step")
+    viewer_model: Optional[Path] = export_viewer_model(result, out_dir)
     ixx, iyy, izz, ixz = mp.body_inertia(result.mass)
     return CADArtifacts(
         oml_vsp3_path=str(oml_vsp3), oml_step_path=str(oml_step), assembly_step_path=str(assembly),
         x_cg_m=result.mass.cg_m[0], static_margin=result.static_margin, collision_count=result.interference_count,
         as_built_mass_kg=result.mass.mass_kg, ixx_kgm2=ixx, iyy_kgm2=iyy, izz_kgm2=izz, ixz_kgm2=ixz,
+        viewer_model_path=str(viewer_model) if viewer_model else None,
     )
 
 
