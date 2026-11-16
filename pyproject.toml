@@ -42,6 +42,10 @@ isr-forge = "src.main:main"
 [tool.setuptools.packages.find]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+# The 3D viewer page is assembled at run time from these non-Python files (vendor/ is Three.js, MIT).
+"src.viewer" = ["*.html", "*.js", "vendor/*.js", "vendor/LICENSE"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

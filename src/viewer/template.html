@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aircraft 3D viewer</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: rgba(255, 255, 255, 0.92); --text: #1d232b; --muted: #5d6773;
+    --border: #d5dae0; --accent: #2563eb; --danger: #c62828; --on-accent: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181d; --panel: rgba(30, 35, 42, 0.92); --text: #e6e9ed; --muted: #9aa4b0;
+      --border: #3a424d; --accent: #60a5fa; --danger: #ef5350; --on-accent: #0b1220;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0; }
+  #stage canvas { display: block; }
+  .panel { position: absolute; background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; }
+  [hidden] { display: none !important; }
+  #toolbar { top: 10px; left: 10px; display: flex; gap: 8px; align-items: center; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: var(--text); padding: 4px 10px; cursor: pointer;
+    font: inherit; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+  .badge { background: var(--danger); color: #fff; border-radius: 4px; padding: 2px 8px; font-weight: 600; }
+  #legend { top: 56px; left: 10px; max-height: calc(100% - 200px); overflow-y: auto; min-width: 180px; }
+  #legend h3 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+  #legend ul { list-style: none; margin: 0; padding: 0; }
+  #legend li { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+  #legend .swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
+  #legend .mass { margin-left: auto; color: var(--muted); padding-left: 12px; font-variant-numeric: tabular-nums; }
+  #tooltip { pointer-events: none; padding: 4px 8px; white-space: nowrap; }
+  #cg-label { pointer-events: none; padding: 2px 6px; font-size: 11px; white-space: nowrap; }
+  #scale { bottom: 10px; right: 10px; padding: 4px 8px; font-size: 11px; color: var(--muted); }
+  body.has-replay #scale { bottom: 104px; }
+  #replay { left: 10px; right: 10px; bottom: 10px; display: grid; gap: 6px; }
+  #replay .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  #replay input[type="range"] { flex: 1; min-width: 120px; }
+  #replay button, #replay select { font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+  #readout { display: flex; gap: 14px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+  #readout b { color: var(--muted); font-weight: 500; margin-right: 4px; }
+  #note { color: var(--muted); font-style: italic; }
+  #error { top: 50%; left: 50%; transform: translate(-50%, -50%); color: var(--danger); }
+</style>
+<script type="importmap">{{IMPORT_MAP}}</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="toolbar" class="panel">
+  <div class="seg" role="group" aria-label="View mode">
+    <button type="button" id="mode-shape" aria-pressed="true">Shape</button>
+    <button type="button" id="mode-xray" aria-pressed="false">X-ray</button>
+  </div>
+  <span id="sitl-badge" class="badge" hidden>SITL: FAILED</span>
+</div>
+<div id="legend" class="panel" hidden><h3>Components</h3><ul id="legend-list"></ul></div>
+<div id="tooltip" class="panel" hidden></div>
+<div id="cg-label" class="panel" hidden></div>
+<div id="replay" class="panel" hidden>
+  <div class="row">
+    <button type="button" id="play">Play</button>
+    <label>Speed <select id="speed">
+      <option value="0.5">0.5×</option><option value="1" selected>1×</option>
+      <option value="2">2×</option><option value="5">5×</option>
+    </select></label>
+    <input type="range" id="time" min="0" max="1" step="0.01" value="0" aria-label="Flight time">
+    <label>Camera <select id="camera">
+      <option value="orbit" selected>Orbit</option><option value="chase">Chase</option>
+    </select></label>
+  </div>
+  <div id="readout">
+    <span><b>t</b><output id="r-t"></output></span>
+    <span><b>alt</b><output id="r-alt"></output></span>
+    <span><b>airspeed</b><output id="r-speed"></output></span>
+    <span><b>roll</b><output id="r-roll"></output></span>
+    <span><b>pitch</b><output id="r-pitch"></output></span>
+    <span><b>heading</b><output id="r-heading"></output></span>
+  </div>
+  <div id="note" hidden>Heading and position were not recorded for this run.</div>
+</div>
+<div id="scale" class="panel">Scale bar on the ground = 1 m · grid cells 1 m near start, 10 m beyond</div>
+<div id="error" class="panel" hidden></div>
+<script type="application/json" id="viewer-data">{{VIEWER_DATA}}</script>
+<script type="module">{{VIEWER_JS}}</script>
+</body>
+</html>
