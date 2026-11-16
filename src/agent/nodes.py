@@ -17,6 +17,7 @@ from src.agent.agent_schemas import CriticDecision, ReportNarrative, Requirement
 from src.agent.llm import LLMError, StructuredLLM
 from src.agent.parsing import to_requirements
 from src.agent.prompts import CRITIC_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
@@ -85,10 +86,15 @@ def parse_requirements(state: DesignState, ctx: AgentContext) -> Update:
     update: Update = {"requirements": req, "run_id": run_id, "out_dir": str(out_dir),
                       "assumptions": list(assumptions), "clarification_needed": None}
     _write(update, "requirements.json", req)  # type: ignore[arg-type]
+    _write(update, "assumptions.json", state.get("design_assumptions") or DEFAULT_ASSUMPTIONS)  # type: ignore[arg-type]
     return update
 
 
 # ------------------------------------------------------------- tool nodes ---
+def _assumptions(state: DesignState) -> DesignAssumptions:
+    return state.get("design_assumptions") or DEFAULT_ASSUMPTIONS
+
+
 def run_sizing(state: DesignState, ctx: AgentContext) -> Update:
     (req,) = _require(state, "requirements")
     overrides: dict[str, float] = state.get("sizing_overrides") or {}
@@ -96,7 +102,7 @@ def run_sizing(state: DesignState, ctx: AgentContext) -> Update:
     cleared: Update = {"selected_bom": None, "aero_stability": None, "cad_artifacts": None, "fcs_artifacts": None,
                        "stage_error": None, "sitl_error": None}
     try:
-        sizing = size_aircraft(req, overrides)
+        sizing = size_aircraft(req, overrides, _assumptions(state))
     except pipeline.DESIGN_ERRORS as exc:
         return cleared | {"sizing_results": None, "stage_error": {"stage": "sizing", "message": str(exc)}}
     _write(state, "sizing.json", sizing)
@@ -107,7 +113,7 @@ def match_cots(state: DesignState, ctx: AgentContext) -> Update:
     req, sizing = _require(state, "requirements", "sizing_results")
     _tool(ctx, "match_cots: selecting catalog components")
     try:
-        bom = select_bom(ctx.db_path, component_needs(sizing, req))
+        bom = select_bom(ctx.db_path, component_needs(sizing, req), _assumptions(state))
     except pipeline.DESIGN_ERRORS as exc:
         return {"stage_error": {"stage": "cots", "message": str(exc)}}
     _write(state, "bom.json", bom)
@@ -202,7 +208,8 @@ def _adjust(state: DesignState, gates: list[critic.GateResult], failed: list[cri
     stage = (state.get("stage_error") or {}).get("stage")
     cad = state.get("cad_artifacts")
     overrides, changes = critic.apply_adjustments(state.get("sizing_overrides") or {}, _propulsion(state),
-                                                  decision.adjustments, gates, cad, stage)
+                                                  decision.adjustments, gates, cad, stage,
+                                                  _assumptions(state))
     stuck: list[str] = critic.unfixable(gates, cad, stage)
     entry["summary"] = decision.summary + (f" No automatic fix for: {', '.join(stuck)}." if stuck else "")
     entry["changes"] = [f"{c.knob} {c.old:.3g} -> {c.new:.3g} ({c.source}: {c.reason})" for c in changes]
@@ -251,7 +258,8 @@ def _report_inputs(state: DesignState) -> report.ReportInputs:
         run_id=run_id, out_dir=Path(out_dir), requirements=req, sizing=sizing, bom=state.get("selected_bom"),
         aero=aero, cad=cad, fcs=fcs, converged=bool(state.get("converged")),
         iterations=state.get("iteration_count", 0), final_gates=state.get("gate_results", []),
-        critic_log=state.get("critic_log", []), assumptions=state.get("assumptions", []), warnings=tuple(warnings))
+        critic_log=state.get("critic_log", []), assumptions=state.get("assumptions", []), design_assumptions=_assumptions(state),
+        warnings=tuple(warnings))
 
 
 def compile_report(state: DesignState, ctx: AgentContext) -> Update:
@@ -269,5 +277,6 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
     _write(state, "run_summary.json", {
         "run_id": inputs.run_id, "status": run_status(state), "converged": inputs.converged,
         "sitl_passed": sitl_passed(state), "iterations": inputs.iterations,
-        "final_overrides": state.get("sizing_overrides") or {}, "report": path.name})
+        "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
+        "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()}})
     return {"final_report_path": str(path)}

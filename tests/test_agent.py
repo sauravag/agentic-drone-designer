@@ -16,8 +16,9 @@ from src.agent.graph import run_agent
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
+from src.schemas.assumptions import DesignAssumptions
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, main
-from src.tools.sizing.mission_solver import SizingDivergenceError
+from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
 from tests.reference_designs import G1_ELECTRIC_FW
 from tests.test_flight_control import load_design
@@ -336,3 +337,51 @@ def test_cli_validates_iterations_and_rejects_prompt_plus_spec(tmp_path: Path) -
     spec = tmp_path / "s.json"
     spec.write_text(G1_ELECTRIC_FW.model_dump_json())
     assert main(["a prompt", f"--spec={spec}"]) == EXIT_ERROR
+
+
+# ------------------------------------------------------------ design assumptions ---
+def test_run_uses_and_saves_the_designer_assumptions(tmp_path: Path, db: Path) -> None:
+    a = DesignAssumptions(liion_specific_energy_wh_kg=260)
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW, design_assumptions=a)
+    out = Path(state["out_dir"])
+    assert DesignAssumptions.model_validate_json((out / "assumptions.json").read_text()) == a
+    assert state["sizing_results"].mtow_kg < size_aircraft(G1_ELECTRIC_FW).mtow_kg
+    text = (out / "design_report.md").read_text()
+    assert "## Design assumptions" in text and "catalog battery packs are notional" in text
+    assert json.loads((out / "run_summary.json").read_text())["non_default_assumptions"] == {
+        "liion_specific_energy_wh_kg": [200.0, 260.0]}
+
+
+def test_default_assumptions_report_no_notional_battery_note(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW)
+    out = Path(state["out_dir"])
+    assert "notional" not in (out / "design_report.md").read_text()
+    assert json.loads((out / "run_summary.json").read_text())["non_default_assumptions"] == {}
+
+
+def test_critic_never_lowers_the_reserve_below_the_designer_floor() -> None:
+    a = DesignAssumptions(battery_reserve_fraction=0.20)
+    llm = [Adjustment(knob="reserve_fraction", direction="decrease", reason="x")]
+    overrides, changes = critic.apply_adjustments({}, "electric", llm, [], None, None, a)
+    assert overrides.get("reserve_fraction", 0.20) >= 0.20 and not changes
+
+
+def test_critic_may_still_raise_the_reserve_above_the_floor() -> None:
+    a = DesignAssumptions(battery_reserve_fraction=0.20)
+    llm = [Adjustment(knob="reserve_fraction", direction="increase", reason="x")]
+    overrides, _ = critic.apply_adjustments({}, "electric", llm, [], None, None, a)
+    assert overrides["reserve_fraction"] == pytest.approx(0.25)
+
+
+def test_cli_spec_accepts_an_assumptions_block(tmp_path: Path, db: Path) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({**G1_ELECTRIC_FW.model_dump(mode="json"), "assumptions": {"liion_max_c_rate": 6}}))
+    assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_CONVERGED
+    (saved,) = (tmp_path / "o").glob("*/assumptions.json")
+    assert json.loads(saved.read_text())["liion_max_c_rate"] == 6
+
+
+def test_cli_spec_rejects_unknown_assumption_fields(tmp_path: Path, db: Path) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({**G1_ELECTRIC_FW.model_dump(mode="json"), "assumptions": {"warp_drive": 9}}))
+    assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_ERROR

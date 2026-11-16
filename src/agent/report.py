@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Final, Optional, Sequence
 
 from src.agent.agent_schemas import ReportNarrative
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
@@ -21,6 +22,13 @@ from src.ui import presenters
 POLAR_ALPHAS_DEG: Final[tuple[float, ...]] = (-4.0, 0.0, 4.0, 8.0, 12.0)  # SRS VSPAERO sweep
 NUMBER_PATTERN: Final[re.Pattern[str]] = re.compile(r"\d+(?:\.\d+)?")
 TRIVIAL_NUMBERS: Final[frozenset[str]] = frozenset({"0", "1", "2", "3", "4", "5"})  # counts, list items, "Group 2"
+
+
+BATTERY_DENSITY_FIELDS: Final[frozenset[str]] = frozenset({
+    "liion_specific_energy_wh_kg", "liion_energy_density_wh_l",
+    "lipo_specific_energy_wh_kg", "lipo_energy_density_wh_l"})
+NOTIONAL_BATTERY_NOTE: Final[str] = ("Battery specific energy or energy density differs from the default: catalog "
+                                     "battery packs are notional (their mass and size are derived from these assumptions).")
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,7 @@ class ReportInputs:
     final_gates: Sequence[dict[str, Any]] = ()
     critic_log: Sequence[dict[str, Any]] = ()
     assumptions: Sequence[str] = ()
+    design_assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
     warnings: Sequence[str] = field(default_factory=tuple)
 
 
@@ -94,11 +103,28 @@ def requirement_rows(req: OperationalRequirements) -> list[tuple[str, str]]:
     return [(label, str(values[key])) for key, label in presenters.FIELD_LABELS.items()]
 
 
+def design_assumption_rows(assumptions: DesignAssumptions) -> list[dict[str, Any]]:
+    """All assumption fields with value, default and a marker for the ones the designer changed."""
+    defaults: DesignAssumptions = DesignAssumptions()
+    return [{"Assumption": name, "Value": getattr(assumptions, name), "Default": getattr(defaults, name),
+             "Changed": "yes" if getattr(assumptions, name) != getattr(defaults, name) else ""}
+            for name in DesignAssumptions.model_fields]
+
+
+def design_assumptions_section(assumptions: DesignAssumptions) -> list[str]:
+    section: list[str] = ["## Design assumptions\n", table(design_assumption_rows(assumptions))]
+    if any(name in BATTERY_DENSITY_FIELDS for name in assumptions.non_default()):
+        section.append(NOTIONAL_BATTERY_NOTE + "\n")
+    return section
+
+
 def facts(inputs: ReportInputs) -> str:
     """Compact JSON of the computed results, given to the LLM as the only source of numbers."""
     data: dict[str, Any] = {"requirements": inputs.requirements.model_dump(mode="json"),
                             "converged": inputs.converged, "iterations": inputs.iterations,
                             "gates": list(inputs.final_gates), "assumptions": list(inputs.assumptions),
+                            "non_default_design_assumptions": {k: list(v) for k, v in
+                                                               inputs.design_assumptions.non_default().items()},
                             "warnings": list(inputs.warnings)}
     if inputs.sizing:
         data["sizing"] = dict(presenters.sizing_summary(inputs.sizing))
@@ -128,6 +154,7 @@ def _sections(inputs: ReportInputs) -> list[str]:
     s: list[str] = []
     s += ["## Operational requirements\n", pairs(requirement_rows(inputs.requirements))]
     s += ["### Assumptions\n", "\n".join(f"- {inline(a)}" for a in inputs.assumptions) or "_none_", "\n"]
+    s += design_assumptions_section(inputs.design_assumptions)
     s += ["## Design compliance (critic gates)\n", table(list(inputs.final_gates))]
     s += ["### Critic iterations\n", table([{"Iteration": c["iteration"], "Failed gates": ", ".join(c["failed"]) or "-",
                                              "Changes": "; ".join(c["changes"]) or "-"} for c in inputs.critic_log])]

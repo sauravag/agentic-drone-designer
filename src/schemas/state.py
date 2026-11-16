@@ -4,6 +4,7 @@ from typing import Annotated, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 
@@ -133,6 +134,7 @@ class DesignState(TypedDict):
     run_id: Optional[str]
     out_dir: Optional[str]
     assumptions: list[str]  # defaults the parser applied, reported verbatim
+    design_assumptions: DesignAssumptions  # the designer's technology constants for this run
     gate_results: list[dict]  # latest critic gates: {name, passed, detail}
     critic_log: list[dict]  # one entry per critic pass
     stage_error: Optional[dict[str, str]]  # {stage, message} of a tool node that failed this iteration
