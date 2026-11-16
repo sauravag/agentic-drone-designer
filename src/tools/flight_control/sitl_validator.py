@@ -159,9 +159,11 @@ def score(log: FlightLog, gain_scale: float) -> AttemptResult:
                          trim_throttle_pct=log.trim_throttle_pct)
 
 
-def _report(attempts: list[AttemptResult], final_log: Optional[FlightLog], params: pg.ParamSet) -> dict[str, Any]:
+def _report(attempts: list[AttemptResult], final_log: Optional[FlightLog], params: pg.ParamSet,
+            replay_attempt: Optional[int]) -> dict[str, Any]:
     return {
         "passed": any(a.passed for a in attempts),
+        "replay_attempt": replay_attempt,  # attempt number whose sitl/attempt_N trace is the final flight
         "thresholds": {"max_overshoot": MAX_OVERSHOOT, "max_settling_s": MAX_SETTLING_S,
                        "max_transition_alt_loss_m": MAX_TRANSITION_ALT_LOSS_M},
         "attempts": [asdict(a) for a in attempts],
@@ -199,7 +201,7 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
         raise SitlUnavailableError(f"{config.binary} not found: run inside the ISR-Forge Docker image")
     model: FlightModel = build_flight_model(req, sizing, bom, aero, cad)
     attempts: list[AttemptResult] = []
-    flown: list[tuple[AttemptResult, FlightLog, pg.ParamSet]] = []
+    flown: list[tuple[AttemptResult, FlightLog, pg.ParamSet, int]] = []
     params: pg.ParamSet = {}
     for index in range(max_attempts):
         scale: float = DAMPING_FACTOR**index
@@ -207,16 +209,16 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
         result, log = _attempt(model, params, out_dir / "sitl" / f"attempt_{index + 1}", scale, config)
         attempts.append(result)
         if log is not None:
-            flown.append((result, log, params))
+            flown.append((result, log, params, index + 1))
         if result.passed:
             break
     report_path: Path = out_dir / REPORT_FILE
     if not flown:  # still leave the generated (unverified) parameters and the attempt log behind
-        report_path.write_text(json.dumps(_report(attempts, None, params), indent=2))
+        report_path.write_text(json.dumps(_report(attempts, None, params, None), indent=2))
         pg.write_param_file(params, out_dir / PARAM_FILE, header=_param_header(req, attempts[-1]))
         raise SitlValidationError(f"no SITL flight completed: {attempts[-1].error}")
-    best, best_log, best_params = flown[-1]
-    report_path.write_text(json.dumps(_report(attempts, best_log, best_params), indent=2))
+    best, best_log, best_params, best_number = flown[-1]
+    report_path.write_text(json.dumps(_report(attempts, best_log, best_params, best_number), indent=2))
     param_path: Path = pg.write_param_file(best_params, out_dir / PARAM_FILE, header=_param_header(req, best))
     if best.roll is None or best.pitch is None:  # score() always sets both; guard against future changes
         raise SitlValidationError("a scored SITL attempt is missing its step responses")

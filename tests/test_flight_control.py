@@ -249,6 +249,19 @@ def test_servo_packet_decoding() -> None:
             bridge.decode_servo_packet(bad)
 
 
+def test_north_east_is_zero_at_the_origin_and_grows_with_latitude() -> None:
+    bridge = pytest.importorskip("src.tools.flight_control.sitl_bridge", exc_type=ImportError)
+    assert bridge.north_east_m(0.5, 0.1, 0.5, 0.1) == (0.0, 0.0)
+    north, east = bridge.north_east_m(0.5 + 1e-5, 0.1, 0.5, 0.1)
+    assert north == pytest.approx(1e-5 * bridge.EARTH_RADIUS_M) and east == 0.0
+
+
+def test_truth_samples_carry_heading_and_position() -> None:
+    bridge = pytest.importorskip("src.tools.flight_control.sitl_bridge", exc_type=ImportError)
+    keys = {key for key, *_ in bridge.TRUTH_PROPS} | set(bridge.TRUTH_POSITION_KEYS)
+    assert {"heading_deg", "north_m", "east_m"} <= keys
+
+
 # ----------------------------------------------------------------- step metrics ---
 def _first_order(tau: float, target: float = 15.0, n: int = 400, dt: float = 0.02) -> tuple[list, list, list]:
     times = [i * dt for i in range(n)]
@@ -345,6 +358,7 @@ def test_retry_loop_scales_gains_by_0_75_until_it_passes(monkeypatch: pytest.Mon
     assert fcs.passed and fcs.attempts == 3 and fcs.gain_scale == pytest.approx(0.5625)
     report = json.loads((tmp_path / "sitl_report.json").read_text())
     assert report["passed"] and len(report["attempts"]) == 3
+    assert report["replay_attempt"] == 3
     assert pg.read_param_file(tmp_path / "ardupilot.param")["RLL_RATE_FF"] > 0
 
 
@@ -358,7 +372,8 @@ def test_validator_raises_when_no_flight_completes(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
     with pytest.raises(sv.SitlValidationError, match="crash"):
         sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
-    assert json.loads((tmp_path / "sitl_report.json").read_text())["passed"] is False
+    report = json.loads((tmp_path / "sitl_report.json").read_text())
+    assert report["passed"] is False and report["replay_attempt"] is None
 
 
 def test_validator_requires_arduplane(tmp_path: Path) -> None:
@@ -382,6 +397,9 @@ def test_sitl_acceptance(case: str, tmp_path: Path) -> None:
     assert fcs.roll_overshoot < 0.20 and fcs.pitch_overshoot < 0.20
     assert fcs.roll_settling_s < 3.0 and fcs.pitch_settling_s < 3.0
     assert fcs.max_transition_altitude_loss_m < 15.0
+    report = json.loads(Path(fcs.sitl_report_path).read_text())
+    truth = json.loads((tmp_path / "sitl" / f"attempt_{report['replay_attempt']}" / "jsbsim_truth.json").read_text())
+    assert {"heading_deg", "north_m", "east_m"} <= set(truth[-1])
     params = pg.read_param_file(Path(fcs.param_path))
     assert set(params) <= KNOWN_PARAMS and ("Q_ENABLE" in params) == (case == "g2")
 

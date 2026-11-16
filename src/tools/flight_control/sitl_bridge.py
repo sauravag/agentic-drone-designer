@@ -51,7 +51,16 @@ TRUTH_PROPS: Final[tuple[tuple[str, str, float], ...]] = (  # (key, JSBSim prope
     ("pitch_deg", "attitude/theta-deg", 1.0), ("roll_deg", "attitude/phi-deg", 1.0),
     ("agl_m", "position/h-agl-ft", FT_TO_M), ("elevator_rad", "fcs/elevator-pos-rad", 1.0),
     ("aileron_rad", "fcs/aileron-pos-rad", 1.0), ("throttle", "fcs/cruise-throttle", 1.0),
+    ("heading_deg", "attitude/psi-deg", 1.0),
 )
+TRUTH_POSITION_KEYS: Final[tuple[str, str]] = ("north_m", "east_m")  # metres from the start point
+
+
+def north_east_m(lat_rad: float, lon_rad: float, origin_lat_rad: float, origin_lon_rad: float) -> tuple[float, float]:
+    """Flat-earth north/east offset (m) of a position from the origin."""
+    north: float = (lat_rad - origin_lat_rad) * EARTH_RADIUS_M
+    east: float = (lon_rad - origin_lon_rad) * EARTH_RADIUS_M * math.cos(origin_lat_rad)
+    return north, east
 
 
 @dataclass(frozen=True)
@@ -200,6 +209,9 @@ class JsonPhysicsBridge:
     def _record_truth(self, fdm: jsbsim.FGFDMExec) -> None:
         sample: dict[str, float] = {"t_s": fdm.get_sim_time()}
         sample |= {key: fdm[prop] * scale for key, prop, scale in TRUTH_PROPS}
+        lat0, lon0, _ = self._origin
+        sample |= dict(zip(TRUTH_POSITION_KEYS, north_east_m(
+            fdm["position/lat-geod-rad"], fdm["position/long-gc-rad"], lat0, lon0)))
         self.stats.truth.append(sample)
 
     def _apply(self, pwm: tuple[int, ...]) -> None:
@@ -218,8 +230,7 @@ class JsonPhysicsBridge:
         assert fdm is not None
         lat0, lon0, h0 = self._origin
         mass_slug: float = fdm["inertia/mass-slugs"]
-        north: float = (fdm["position/lat-geod-rad"] - lat0) * EARTH_RADIUS_M
-        east: float = (fdm["position/long-gc-rad"] - lon0) * EARTH_RADIUS_M * math.cos(lat0)
+        north, east = north_east_m(fdm["position/lat-geod-rad"], fdm["position/long-gc-rad"], lat0, lon0)
         return {
             "timestamp": fdm.get_sim_time(),
             "imu": {"gyro": [fdm["velocities/p-rad_sec"], fdm["velocities/q-rad_sec"], fdm["velocities/r-rad_sec"]],
