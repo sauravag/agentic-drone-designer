@@ -5,12 +5,12 @@ import pytest
 
 from src.agent.critic import RESERVE_MIN
 from src.agent.evaluator import evaluate
-from src.agent.explorer import explore_closure, explore_improvement, explorer_mode
+from src.agent.explorer import OUT_OF_RANGE_REASON, explore_closure, explore_improvement, explorer_mode
 from src.agent.graph import initial_state
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import apply_changes
 from src.tools.sizing.mission_solver import size_aircraft
-from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
+from tests.reference_designs import G1_ELECTRIC_FW, G3_HYBRID_VTOL, REQ_FAILED
 
 
 @pytest.fixture(scope="module")
@@ -34,8 +34,8 @@ def test_closure_options_for_the_failed_run(db: Path, closure_options: list) -> 
     # Measured (brief expected endurance to close): the 2 x 100 km transit at 30 m/s alone spirals the electric
     # quadplane, so even the 0.5 h endurance bound does not close; the option says so instead.
     endurance = by_lever["endurance"]
-    assert endurance.change.requirements.endurance_hours < 6.0
-    assert endurance.closes or "does not close within range" in endurance.result.reason
+    assert not endurance.closes and OUT_OF_RANGE_REASON in endurance.result.reason
+    assert endurance.change.requirements.endurance_hours == 0.5
     battery = by_lever["liion_specific_energy"]
     assert (not battery.closes) or battery.change.assumptions.liion_specific_energy_wh_kg > 350  # top of range only
     closing = [o for o in options if o.closes]
@@ -103,3 +103,24 @@ def test_endurance_bisects_to_the_closing_value_nearest_the_request(db: Path) ->
     assert endurance.relative_change == pytest.approx((req.endurance_hours - value) / req.endurance_hours)
     one_step_more = req.model_copy(update={"endurance_hours": round(value + 0.1, 6)})
     assert not evaluate(one_step_more, DEFAULT_ASSUMPTIONS, {}, db).closes
+
+
+def test_group_lever_names_the_group_the_design_closes_in(db: Path) -> None:
+    req = REQ_FAILED.model_copy(update={"propulsion_type": "series_hybrid", "group_constraint": 1})
+    group = {o.lever: o for o in explore_closure(req, DEFAULT_ASSUMPTIONS, db)}["group"]
+    assert group.closes and group.change.requirements.group_constraint == 2
+    new_req, a, knobs = apply_changes(req, DEFAULT_ASSUMPTIONS, group.change)
+    assert evaluate(new_req, a, knobs, db).closes
+
+
+def test_improvement_compares_against_the_evaluated_unchanged_design(db: Path) -> None:
+    baseline = size_aircraft(G3_HYBRID_VTOL)  # unfloored reserve: not the reference for savings
+    by_lever = {o.lever: o for o in explore_improvement(G3_HYBRID_VTOL, DEFAULT_ASSUMPTIONS, baseline, db)}
+    assert by_lever["endurance"].mtow_saved_kg > 0
+    assert "liion_max_c_rate" not in by_lever and "liion_specific_energy" not in by_lever  # no-ops on a hybrid
+
+
+def test_a_no_op_step_saves_nothing(db: Path) -> None:
+    baseline = size_aircraft(G1_ELECTRIC_FW)
+    c_rate = {o.lever: o for o in explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, baseline, db)}["liion_max_c_rate"]
+    assert abs(c_rate.mtow_saved_kg) < 0.01

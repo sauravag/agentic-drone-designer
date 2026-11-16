@@ -42,6 +42,8 @@ AERO_CAD_STAGE: Final[str] = "aero_cad"
 AIRFRAME_GATES: Final[frozenset[str]] = frozenset({"static_margin", "lift_to_drag"})
 COLLISIONS_AND_GROUP_GATE: Final[str] = "collisions_and_group"
 RESERVE_GATE: Final[str] = "reserve"
+REFERENCE_LABEL: Final[str] = "Unchanged design"
+BATTERY_LEVERS: Final[frozenset[str]] = frozenset({"liion_specific_energy", "liion_max_c_rate"})
 
 Section = Literal["requirements", "assumptions"]
 Probe = Callable[[float], Optional[Evaluation]]
@@ -297,25 +299,36 @@ def _improvement_target(search: _Search, lever: Lever) -> Optional[float]:
     return target if (target - current) * lever.improvement_step > 0 else None
 
 
-def _improve_lever(search: _Search, name: str, lever: Lever, baseline: SizingOutput) -> Optional[ExploreOption]:
+def _improve_lever(search: _Search, name: str, lever: Lever,
+                   reference: Optional[Evaluation]) -> Optional[ExploreOption]:
+    """One step of `lever`, compared against `reference` (the unchanged design through the same evaluator)."""
+    is_hybrid = reference is not None and reference.propulsion == SERIES_HYBRID
     target = _improvement_target(search, lever)
-    if target is None:
+    if target is None or (is_hybrid and name in BATTERY_LEVERS):  # battery constants are no-ops on a hybrid
         return None
     change, relative = _lever_change(lever, target), _relative(_current(search, lever), target)
     result = search.probe(change)
     if result is None:
         return _unevaluated(name, change, relative)
-    saved = None if result.mtow_kg is None else baseline.mtow_kg - result.mtow_kg
-    drop = result.dod_group is not None and result.dod_group < baseline.dod_group
-    return replace(_option(search, name, change, result, relative), mtow_saved_kg=saved, group_drop=drop)
+    has_reference = reference is not None and reference.mtow_kg is not None and result.mtow_kg is not None
+    saved = reference.mtow_kg - result.mtow_kg if has_reference else None
+    drop = has_reference and result.dod_group is not None and reference.dod_group is not None \
+        and result.dod_group < reference.dod_group
+    return replace(_option(search, name, change, result, relative), mtow_saved_kg=saved, group_drop=bool(drop))
 
 
 def explore_improvement(req: OperationalRequirements, assumptions: DesignAssumptions, baseline: SizingOutput,
                         db_path: Path, time_budget_s: float = IMPROVEMENT_BUDGET_S) -> list[ExploreOption]:
     """Per-lever sensitivity of a converged design: MTOW saved for one stated step, ranked by MTOW saved per
-    relative change (closing first)."""
+    relative change (closing first).
+
+    Savings and group drops are measured against the unchanged design evaluated once through the same path
+    (reserve floor, default knobs; counts against the budget), not against `baseline`: the run's sizing may use
+    unfloored reserves and critic-adjusted knobs, so comparing to it would mix two different evaluations.
+    `baseline` is kept for callers and is not used in the comparison."""
     search = _Search(req, assumptions, db_path, time.monotonic() + time_budget_s)
-    options = [o for name, lever in LEVERS.items() if (o := _improve_lever(search, name, lever, baseline))]
+    reference = search.probe(_change(REFERENCE_LABEL))
+    options = [o for name, lever in LEVERS.items() if (o := _improve_lever(search, name, lever, reference))]
 
     def rank(option: ExploreOption) -> tuple[bool, float]:
         saved = option.mtow_saved_kg
