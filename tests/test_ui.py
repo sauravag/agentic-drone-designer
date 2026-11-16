@@ -238,3 +238,52 @@ def test_app_shows_validation_errors_instead_of_running(tmp_path: Path, monkeypa
     assert not at.exception
     assert any("Mission name" in e.value for e in at.error)
     assert not (tmp_path / "outputs").exists()
+
+
+def test_assumptions_panel_shows_defaults_and_applies_to_description_runs(tmp_path: Path,
+                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from tests.agent_fakes import SRS_PROMPT, ScriptedLLM
+
+    from src.ui import agent_service
+
+    monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM())
+    at = _llm_app(tmp_path, monkeypatch)
+    if not at.checkbox(key="with_aero_cad").disabled:
+        at.checkbox(key="with_aero_cad").uncheck()
+    assert at.number_input(key="assume_liion_specific_energy_wh_kg").value == 200
+    at.number_input(key="assume_liion_max_c_rate").set_value(6.0)
+    at.text_area(key="prompt").set_value(SRS_PROMPT)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    (saved,) = (tmp_path / "outputs").glob("*/assumptions.json")
+    assert json.loads(saved.read_text())["liion_max_c_rate"] == 6.0
+
+
+def test_reset_restores_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    at.number_input(key="assume_drivetrain_efficiency").set_value(0.9)
+    at.run()
+    at.button(key="reset_assumptions").click()
+    at.run()
+    assert at.number_input(key="assume_drivetrain_efficiency").value == pytest.approx(0.68)
+
+
+def test_assumptions_apply_to_the_structured_form_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import agent_service
+
+    seen: list[object] = []
+
+    def fake_run(*args: object, **kwargs: object) -> object:
+        seen.append(kwargs.get("design_assumptions"))
+        return agent_service.AgentRunView("error", message="stop")
+
+    at = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", fake_run)
+    at.number_input(key="assume_bsfc_kg_per_kwh").set_value(0.4)
+    at.button(key="submit").click()
+    at.run()
+    assert not at.exception
+    assert seen and seen[0].bsfc_kg_per_kwh == pytest.approx(0.4)

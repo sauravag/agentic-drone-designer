@@ -26,8 +26,10 @@ from src.agent.providers import LLMConfigError  # noqa: E402
 from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
+from src.schemas.assumptions import DesignAssumptions  # noqa: E402
 from src.ui import agent_service, presenters  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
+from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -142,13 +144,15 @@ def _status_label(view: AgentRunView) -> str:
     return f"Run {view.run_id} finished: {view.status.replace('_', ' ')}"
 
 
-def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] = None) -> None:
+def _execute(assumptions: DesignAssumptions, prompt: str = "",
+             requirements: Optional[OperationalRequirements] = None) -> None:
     with st.status("Designing…", expanded=True) as status:
         try:
             do_aero: bool = st.session_state["with_aero_cad"]
             view = agent_service.run(OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero,
                                      with_sitl=do_aero and st.session_state["with_sitl"], progress=status.write,
-                                     prompt=prompt, requirements=requirements)
+                                     prompt=prompt, requirements=requirements,
+                                     design_assumptions=assumptions)
         except (pipeline.PipelineError, LLMConfigError) as exc:
             logger.warning("design run rejected: %s", exc)
             _fail(status, "Design not started", defang(str(exc)))
@@ -162,22 +166,38 @@ def _execute(prompt: str = "", requirements: Optional[OperationalRequirements] =
     st.session_state["last_run"] = view
 
 
+def _assumptions_or_stop() -> Optional[DesignAssumptions]:
+    """The panel's validated assumptions; None (messages shown, no run) when a value is out of bounds."""
+    assumptions, errors = current_assumptions()
+    if assumptions is None:
+        for message in errors:
+            st.error(f"Design assumptions: {message}")
+        st.session_state.pop("last_run", None)
+    return assumptions
+
+
 def _run_description(prompt: str) -> None:
+    assumptions = _assumptions_or_stop()
+    if assumptions is None:
+        return
     if not prompt.strip():
         st.error("Describe the mission first.")
         st.session_state.pop("last_run", None)
         return
-    _execute(prompt=prompt)
+    _execute(assumptions, prompt=prompt)
 
 
 def _run_form(values: dict[str, Any]) -> None:
+    assumptions = _assumptions_or_stop()
+    if assumptions is None:
+        return
     req, errors = presenters.parse_form(values)
     if req is None:
         for message in errors:
             st.error(message)
         st.session_state.pop("last_run", None)
         return
-    _execute(requirements=req)
+    _execute(assumptions, requirements=req)
 
 
 # ------------------------------------------------------------------ output ---
@@ -278,6 +298,7 @@ def main() -> None:
     _init_state()
     _stage_options()
     _llm_info()
+    render_assumptions_panel()
     if _description_form():
         _run_description(st.session_state["prompt"])
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)
