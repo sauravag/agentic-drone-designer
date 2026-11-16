@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import ComponentNeeds
 from src.tools.database.matcher import (
     SAFETY_MARGIN,
@@ -17,9 +18,11 @@ from src.tools.database.matcher import (
     match_payload,
     match_propeller,
     match_vtol_motor,
+    rescale_pack,
     select_bom,
 )
 from src.tools.database.seed_data import CATALOG_TABLES, seed_database
+from src.units import WH_TO_J
 
 MIN_ROWS_PER_TABLE: int = 15
 
@@ -228,3 +231,27 @@ def test_mtow_convergence_band(sized: float, actual: float, converged: bool) -> 
 def test_mtow_convergence_rejects_non_positive() -> None:
     with pytest.raises(ValueError):
         check_mtow_convergence(0.0, 5.0)
+
+
+# ------------------------------------------------- assumption-driven packs ---
+
+
+def test_default_assumptions_leave_catalog_packs_unchanged(db_path: Path) -> None:
+    for b in load_catalog(db_path, "batteries"):
+        assert rescale_pack(b, DEFAULT_ASSUMPTIONS) == b
+
+
+def test_higher_specific_energy_makes_the_same_pack_lighter(db_path: Path) -> None:
+    b = next(b for b in load_catalog(db_path, "batteries") if b.chemistry == "li_ion")
+    light = rescale_pack(b, DesignAssumptions(liion_specific_energy_wh_kg=300))
+    assert light.mass_kg == pytest.approx(b.capacity_wh / 300, rel=1e-3)
+    assert light.capacity_wh == b.capacity_wh
+
+
+def test_c_rate_assumption_changes_which_packs_fit(db_path: Path) -> None:
+    # 500 Wh / 60 kW: the largest seeded Li-ion pack (15 kWh at 3C = 45 kW) cannot supply 69 kW.
+    with pytest.raises(ComponentNotFoundError):
+        match_battery(db_path, 500 * WH_TO_J, 60_000, "li_ion")
+    fast = match_battery(db_path, 500 * WH_TO_J, 60_000, "li_ion", DesignAssumptions(liion_max_c_rate=30))
+    assert fast.chemistry == "li_ion"
+    assert fast.max_c_rate == 30

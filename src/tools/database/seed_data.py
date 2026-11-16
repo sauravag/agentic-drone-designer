@@ -161,19 +161,35 @@ PAYLOADS: Final[list[tuple]] = [
 # fmt: on
 
 
+def pack_envelope(
+    capacity_wh: float, specific_energy_wh_kg: float, energy_density_wh_l: float
+) -> tuple[float, float, float, float]:
+    """Pack (mass_kg, length_m, width_m, height_m) from capacity, specific energy and energy density.
+
+    The single source of pack geometry: the seed rows and `rescale_pack` both call it, so a pack
+    rescaled with the default assumptions is bit-identical to its seeded row.
+    """
+    volume_m3: float = capacity_wh / (energy_density_wh_l * 1000.0)
+    unit: float = (volume_m3 / (PACK_ASPECT[0] * PACK_ASPECT[1] * PACK_ASPECT[2])) ** (1.0 / 3.0)
+    return (
+        round(capacity_wh / specific_energy_wh_kg, 3),
+        round(PACK_ASPECT[0] * unit, 4),
+        round(PACK_ASPECT[1] * unit, 4),
+        round(PACK_ASPECT[2] * unit, 4),
+    )
+
+
 def _battery_rows() -> list[Battery]:
     """Derive pack mass and a box envelope from capacity using chemistry constants."""
     rows: list[Battery] = []
     for name, chem, wh, c_rate, volts in BATTERIES:
-        volume_m3: float = wh / (PACK_ENERGY_DENSITY_WH_L[chem] * 1000.0)
-        unit: float = (volume_m3 / (PACK_ASPECT[0] * PACK_ASPECT[1] * PACK_ASPECT[2])) ** (1.0 / 3.0)
+        mass, length, width, height = pack_envelope(
+            wh, PACK_SPECIFIC_ENERGY_WH_KG[chem], PACK_ENERGY_DENSITY_WH_L[chem]
+        )
         rows.append(
             Battery(
                 name=name, chemistry=chem, capacity_wh=wh, max_c_rate=c_rate, voltage_v=volts,
-                mass_kg=round(wh / PACK_SPECIFIC_ENERGY_WH_KG[chem], 3),
-                length_m=round(PACK_ASPECT[0] * unit, 4),
-                width_m=round(PACK_ASPECT[1] * unit, 4),
-                height_m=round(PACK_ASPECT[2] * unit, 4),
+                mass_kg=mass, length_m=length, width_m=width, height_m=height,
             )
         )
     return rows
