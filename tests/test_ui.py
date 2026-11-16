@@ -635,3 +635,47 @@ def test_airframe_chat_opens_with_the_failed_gates_and_the_knobs(tmp_path: Path,
     assert "Aspect ratio (4–25)" in first and "Fuselage length factor (0.6–2.5)" in first
     assert any(note in i.value for i in at.info)
     assert not (tmp_path / "design_chat.json").exists()  # the opening is not an LLM turn and is not saved
+
+
+# ------------------------------------------------------------ 3D viewer tab ---
+def _viewer_view(run: pipeline.DesignRun, out_dir: Optional[Path]) -> Any:
+    from src.ui import agent_service
+
+    return agent_service.AgentRunView("converged", run_id="r1", out_dir=out_dir, requirements=G1_ELECTRIC_FW,
+                                      sizing=run.sizing)
+
+
+def test_3d_tab_offers_the_viewer_download_when_the_file_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                run: pipeline.DesignRun) -> None:
+    (tmp_path / "viewer.html").write_text("<html><body>viewer</body></html>", encoding="utf-8")
+    at = _show(tmp_path, monkeypatch, _viewer_view(run, tmp_path))
+    assert any(b.label == "Download viewer.html" for b in at.get("download_button"))
+    labels = [t.label for t in at.tabs]
+    assert labels[:5] == ["Sizing", "Components", "Aero & CAD", "3D", "Flight test"]
+    assert not any("3D viewer" in i.value for i in at.info)
+
+
+def test_3d_tab_explains_when_there_is_no_output_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                        run: pipeline.DesignRun) -> None:
+    at = _show(tmp_path, monkeypatch, _viewer_view(run, None))
+    assert any("3D viewer" in i.value for i in at.info)
+    assert not any(b.label == "Download viewer.html" for b in at.get("download_button"))
+
+
+def test_3d_tab_explains_when_the_run_folder_has_no_viewer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                           run: pipeline.DesignRun) -> None:
+    at = _show(tmp_path, monkeypatch, _viewer_view(run, tmp_path))
+    assert any("3D viewer" in i.value and "Docker" in i.value for i in at.info)
+    assert not any(b.label == "Download viewer.html" for b in at.get("download_button"))
+
+
+def test_render_viewer_embeds_the_page_at_the_fixed_height(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                           run: pipeline.DesignRun) -> None:
+    from src.ui import viewer_panel
+
+    (tmp_path / "viewer.html").write_text("<html>PAGE</html>", encoding="utf-8")
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(viewer_panel.components, "html", lambda html, height: calls.append((html, height)))
+    viewer_panel.render_viewer(_viewer_view(run, tmp_path))
+    assert calls == [("<html>PAGE</html>", viewer_panel.VIEWER_HEIGHT_PX)]
+    assert viewer_panel.VIEWER_HEIGHT_PX == 640

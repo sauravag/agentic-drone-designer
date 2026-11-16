@@ -59,6 +59,20 @@ The conversation is saved with the run.
 the change (requirements, assumptions, or knobs); **Re-run** starts a new run linked to its parent. The design
 history lists every run of the session with its parent and where the change came from, and Open reloads any of them.
 
+### 3D viewer
+
+Every run that reaches the CAD stage also writes `viewer.html`, shown in the web form's **3D** tab. Three views of
+the same aircraft: **Shape** is the opaque outer skin; **X-ray** makes the skin transparent to show the internal
+structure and every packed component, with a legend (name, colour, mass), a hover tooltip and the centre of
+gravity marked; **Flight replay** plays the ArduPilot SITL flight back on the model (play/pause, 0.5x to 5x speed,
+a time slider, a readout of altitude, airspeed, roll, pitch and heading, a flight-path trail, orbit or chase camera).
+
+The replay is the real SITL flight, not an animation: it follows the logged position and attitude of the last
+flown attempt. `viewer.html` is one self-contained file (Three.js inlined, no network), so it opens offline in
+any browser and can be shared as is; the 3D tab has a download button. Runs made before this feature did not log
+heading or position, so their replay stays in place and only rotates. Mesh export and the viewer build need the
+aero/CAD stage (Docker image, `docker compose up ui`); a failure there is a run warning, not a failed run.
+
 ### Choosing the LLM
 
 The provider and model are configuration. Every adapter returns schema-validated objects, so any model that
@@ -117,6 +131,7 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 | `design_report.md` | requirements and assumptions, critic gates and iterations, sizing, energy budget, BOM, VSPAERO derivatives and polar, CAD/inertia, SITL metrics, warnings |
 | `bom.json` | selected COTS parts and total hardware mass |
 | `oml.step`, `oml.vsp3`, `assembly.step` | outer mould line, and internal structure with packed components |
+| `viewer_model.json`, `viewer.html` | tessellated parts, CG and flight trace for the 3D viewer, and the self-contained page built from them |
 | `ardupilot.param` | ArduPlane / QuadPlane parameters flown in SITL |
 | `sitl_report.json` | take-off, transition and roll/pitch doublet telemetry and metrics |
 | `critic_log.json`, `run_summary.json` | every critic pass and the final status |

@@ -27,7 +27,7 @@ from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
-from src.ui import agent_service, chat_panel, design_loop, presenters  # noqa: E402
+from src.ui import agent_service, chat_panel, design_loop, presenters, viewer_panel  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
@@ -42,7 +42,7 @@ GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
 EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
                               "6-hour endurance, and 80 km datalink radius")
-DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "Flight test")
+DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
 AGENT_TABS: Final[tuple[str, ...]] = ("Critic", "Report", "Files")
 HEADLINE_COLUMNS: Final[int] = 6
 GENERIC_FAILURE: Final[str] = ("The design run failed unexpectedly; details are in the server log and the run "
@@ -217,7 +217,8 @@ def _table(rows: list[tuple[str, str]]) -> None:
     st.dataframe([{"Quantity": k, "Value": v} for k, v in rows], hide_index=True, use_container_width=True)
 
 
-def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: Any, fcs_tab: Any) -> None:
+def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: Any, viewer_tab: Any,
+                  fcs_tab: Any) -> None:
     with sizing_tab:
         _table(presenters.sizing_summary(view.sizing))
         st.subheader("Mission phases")
@@ -234,6 +235,8 @@ def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: 
         else:
             st.dataframe(presenters.aero_rows(view.aero), hide_index=True, use_container_width=True)
             _table(presenters.cad_rows(view.cad))
+    with viewer_tab:
+        viewer_panel.render_viewer(view)
     with fcs_tab:
         if view.fcs is None:
             st.info("The ArduPilot SITL flight test was not run for this design.")
