@@ -8,12 +8,6 @@ import math
 from dataclasses import dataclass
 from typing import Final
 
-from src.schemas.knobs import (  # noqa: F401  (re-exported: the knob defaults live in the leaf module)
-    DEFAULT_ASPECT_RATIO,
-    DEFAULT_FUSELAGE_LENGTH_FACTOR,
-    DEFAULT_TAIL_VOLUME_H,
-    DEFAULT_TAIL_VOLUME_V,
-)
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.topology import Airframe
 from src.units import G0

@@ -30,10 +30,6 @@ from src.tools.sizing.aero_model import (
     select_airfoil,
 )
 from src.tools.sizing.mass_model import (
-    DEFAULT_ASPECT_RATIO,
-    DEFAULT_FUSELAGE_LENGTH_FACTOR,
-    DEFAULT_TAIL_VOLUME_H,
-    DEFAULT_TAIL_VOLUME_V,
     PropulsionLoads,
     empty_mass_breakdown,
     required_wing_area_m2,
@@ -62,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 MU_SEA_LEVEL: Final[float] = air_properties(0.0)[1]
 MTOW_REL_TOL: Final[float] = 1e-9
+ROOT_ABS_TOL_KG: Final[float] = 1e-12  # brentq absolute tolerance on MTOW
 MAX_ITERATIONS: Final[int] = 1_000
 DAMPING: Final[float] = 0.5
 MIN_DAMPING: Final[float] = 0.05
@@ -220,7 +217,7 @@ def _bracket(mtow: float, design: _Design) -> tuple[float, float]:
 def _root_find(mtow: float, design: _Design) -> _Evaluation:
     """Bracketed root find of g(m) = mtow_out(m) - m, used when the damped iteration is too slow."""
     lo, hi = _bracket(mtow, design)
-    root, info = brentq(lambda m: _checked_eval(m, design).mtow_out - m, lo, hi, xtol=1e-12,
+    root, info = brentq(lambda m: _checked_eval(m, design).mtow_out - m, lo, hi, xtol=ROOT_ABS_TOL_KG,
                         rtol=MTOW_REL_TOL, maxiter=MAX_ITERATIONS, full_output=True, disp=False)
     if not info.converged:
         raise SizingDivergenceError(f"MTOW root find did not converge: {info.flag}")

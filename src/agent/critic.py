@@ -16,10 +16,11 @@ from typing import Final, Literal, Optional
 from src.agent.agent_schemas import Adjustment, Knob
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
+from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN
-from src.tools.sizing.mission_solver import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS, reserve_fraction
+from src.tools.sizing.mission_solver import reserve_fraction
 from src.tools.sizing.topology import GROUP1_UPPER_KG, GROUP2_UPPER_KG, GROUP3_UPPER_KG
 from src.units import WH_TO_J
 
