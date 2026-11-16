@@ -27,7 +27,7 @@ from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
-from src.ui import agent_service, design_loop, presenters  # noqa: E402
+from src.ui import agent_service, chat_panel, design_loop, presenters  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
@@ -287,6 +287,7 @@ def _render(view: AgentRunView) -> None:
         _headline(view)
     design_loop.render_options(view, DB_PATH)
     design_loop.render_review_panel(view, OUTPUTS_ROOT, DB_PATH)
+    chat_panel.render_chat(view, DB_PATH)
     tabs = st.tabs([*DESIGN_TABS, *AGENT_TABS])
     if view.sizing is not None:
         _design_tabs(view, *tabs[:len(DESIGN_TABS)])

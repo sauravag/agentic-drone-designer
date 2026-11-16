@@ -61,7 +61,7 @@ def _empty_change(label: str) -> dict[str, Any]:
     return {"label": label, "requirements": {}, "assumptions": {}, "knobs": {}}
 
 
-def _select(change: ChangeSet, source: Source) -> None:
+def select_change(change: ChangeSet, source: Source) -> None:
     """on_click: load `change` into the review panel, seeding its editable widgets with the proposed values."""
     for key in [k for k in st.session_state if str(k).startswith(REVIEW_PREFIX)]:
         del st.session_state[key]
@@ -81,7 +81,7 @@ def _open(view: AgentRunView) -> None:
 
 
 # ------------------------------------------------------------- options ---
-def _change_text(change: ChangeSet, view: AgentRunView) -> str:
+def change_text(change: ChangeSet, view: AgentRunView) -> str:
     """'Endurance (h) 6 → 3.2' for every field the change actually moves."""
     rows = change.describe(view.requirements, view.design_assumptions) if view.requirements else []
     return "; ".join(f"{label} {old} → {new}" for label, old, new in rows) or inline(change.label)
@@ -126,14 +126,14 @@ def saving_text(mtow_saved_kg: float) -> str:
 def _closing_card(index: int, option: dict[str, Any], view: AgentRunView, saving: bool) -> None:
     change = ChangeSet.model_validate(option["change"])
     with st.container(border=True):
-        text = _change_text(change, view)
+        text = change_text(change, view)
         if saving and option.get("mtow_saved_kg") is not None:
             drop = ", drops a DoD group" if option.get("group_drop") else ""
             st.markdown(f"**{text}**: {saving_text(option['mtow_saved_kg'])}{drop}")
         else:
             st.markdown(f"**{text}**")
         st.caption(f"{_outcome_text(option['result'])} — {CHECKED_NOTE}")
-        st.button("Select", key=f"select_option_{index}", on_click=_select, args=(change, "option"))
+        st.button("Select", key=f"select_option_{index}", on_click=select_change, args=(change, "option"))
 
 
 def _option_cards(options: tuple[dict[str, Any], ...], view: AgentRunView, saving: bool) -> None:

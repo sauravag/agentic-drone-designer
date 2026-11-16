@@ -501,3 +501,61 @@ def test_options_explanation_and_non_closing_options_render_safely(tmp_path: Pat
     assert any("!\\[x\\]" in t for t in texts)
     assert not any("![x](" in t or "[this](" in t for t in texts)
     assert any("Endurance (h): tried down to 0.5 — mass spiral" in t for t in texts)
+
+
+def test_chat_tests_a_what_if_and_hands_a_proposal_to_the_review_panel(tmp_path: Path,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.agent.agent_schemas import DesignerTurn
+    from src.agent.design_chat import to_change_set
+    from tests.agent_fakes import ScriptedLLM
+    from tests.test_design_chat import _endurance
+
+    turns = [DesignerTurn(message="3 h closes", what_ifs=[_endurance(3.0)], proposal=_endurance(3.0), done=True)]
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED, llm=ScriptedLLM(designer_turns=turns))
+    at.chat_input(key="design_chat").set_value("Keep electric?").run()
+    assert not at.exception
+    assert any("3 h closes" in m.markdown[0].value for m in at.chat_message if m.name == "assistant")
+    assert any("Keep electric?" in m.markdown[0].value for m in at.chat_message if m.name == "user")
+    assert any("1 LLM round" in c.value for c in at.caption)
+    assert any("What-if" in d.value.columns for d in at.dataframe)  # the what-if table under the answer
+    at.button(key="use_proposal_0").click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["pending_change"][1] == "chat"
+    assert at.session_state["pending_change"][0] == to_change_set(_endurance(3.0))
+    assert at.number_input(key="review_requirements_endurance_hours").value == pytest.approx(3.0)
+    saved = json.loads(next((tmp_path / "outputs").glob("*/design_chat.json")).read_text())
+    assert [m["role"] for m in saved["messages"]] == ["designer", "agent"]
+    agent = saved["messages"][1]
+    assert agent["rounds"] == 1 and agent["proposal"]["requirements"]["endurance_hours"] == 3.0
+    what_if = agent["what_if_results"][0]
+    assert what_if["error"] is None and what_if["result"]["reason"]  # the solver's verdict, saved verbatim
+    assert what_if["change"]["requirements"]["endurance_hours"] == 3.0
+
+
+def test_chat_is_disabled_without_a_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED, llm=None)
+    assert not [c for c in at.chat_input if c.key == "design_chat"] or at.chat_input(key="design_chat").disabled
+    assert any("design chat needs an LLM" in c.value for c in at.caption)
+    assert any(b.key.startswith("select_option_") for b in at.button)  # option cards still work
+
+
+def test_chat_llm_error_shows_a_short_error_and_keeps_the_history(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.agent.agent_schemas import DesignerTurn
+    from tests.agent_fakes import ScriptedLLM
+
+    turns = [DesignerTurn(message="Ask me about [x](http://evil.example) margins", what_ifs=[], proposal=None,
+                          done=True)]
+    llm = ScriptedLLM(designer_turns=turns)
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED, llm=llm)
+    at.chat_input(key="design_chat").set_value("Hello").run()
+    assistant = [m.markdown[0].value for m in at.chat_message if m.name == "assistant"]
+    assert assistant and "\\[x\\]" in assistant[0] and "[x](" not in assistant[0]
+    assert not [b for b in at.button if b.key.startswith("use_proposal_")]  # no proposal, no button
+    llm.fail_on = (DesignerTurn,)
+    at.chat_input(key="design_chat").set_value("Again").run()
+    assert not at.exception
+    assert any("scripted failure" in e.value for e in at.error)
+    assert len([m for m in at.chat_message if m.name == "assistant"]) == 1
+    assert any(b.key.startswith("select_option_") for b in at.button)
