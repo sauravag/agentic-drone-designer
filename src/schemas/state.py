@@ -1,12 +1,15 @@
 """LangGraph DesignState and the tool-output schemas each node writes into it (all SI)."""
 
-from typing import Annotated, Literal, Optional, TypedDict
+from typing import TYPE_CHECKING, Annotated, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
+
+if TYPE_CHECKING:  # src.schemas.changes imports the solver, which imports this module: resolved by model_rebuild there
+    from src.schemas.changes import ChangeSet
 
 Positive = Annotated[float, Field(gt=0)]
 NonNegative = Annotated[float, Field(ge=0)]
@@ -117,6 +120,14 @@ class FCSArtifacts(_Frozen):
     attempts: int = Field(default=1, ge=1)
 
 
+class RunLineage(_Frozen):
+    """Which run a re-run was derived from, and the change that was applied to it."""
+
+    parent_run_id: str
+    change_set: "ChangeSet"
+    change_source: Literal["option", "chat", "manual"]
+
+
 class DesignState(TypedDict):
     user_prompt: str
     requirements: Optional[OperationalRequirements]
@@ -145,3 +156,4 @@ class DesignState(TypedDict):
     explorer_mode: str  # closure | airframe | improvement | none, set when the report is compiled
     explore_options: list[dict]  # ExploreOption.to_json() of the closure options (empty otherwise)
     options_explanation: Optional[str]  # LLM prose about the options (audited, defanged in the report)
+    lineage: Optional[RunLineage]  # set on a linked re-run

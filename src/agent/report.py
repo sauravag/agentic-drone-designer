@@ -17,7 +17,7 @@ from src.agent.explorer import ExploreOption
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, RunLineage, SizingOutput
 from src.ui import presenters
 
 POLAR_ALPHAS_DEG: Final[tuple[float, ...]] = (-4.0, 0.0, 4.0, 8.0, 12.0)  # SRS VSPAERO sweep
@@ -51,6 +51,7 @@ class ReportInputs:
     warnings: Sequence[str] = field(default_factory=tuple)
     options: Sequence[ExploreOption] = ()
     options_explanation: Optional[OptionsExplanation] = None
+    lineage: Optional[RunLineage] = None
     options_facts: str = ""  # what the explanation was given (its numbers are audited against this)
 
 
@@ -220,12 +221,19 @@ def _sections(inputs: ReportInputs) -> list[str]:
     return s
 
 
+def _lineage_line(inputs: ReportInputs) -> list[str]:
+    lineage = inputs.lineage
+    if lineage is None:
+        return []
+    return [f"Derived from run {lineage.parent_run_id} ({lineage.change_source}): {inline(lineage.change_set.label)}\n"]
+
+
 def render(inputs: ReportInputs, narrative: ReportNarrative) -> str:
     status: str = "CONVERGED" if inputs.converged else "NOT CONVERGED"
     stamp: str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     head: list[str] = [f"# Design report: {inline(inputs.requirements.mission_name)}\n",
                        f"Run `{inputs.run_id}` · {stamp} · status **{status}** after {inputs.iterations} critic "
-                       f"iteration(s)\n", "## Executive summary\n",
+                       f"iteration(s)\n", *_lineage_line(inputs), "## Executive summary\n",
                        "_Narrative written by the LLM from the computed results; the tables are authoritative._\n",
                        defang(narrative.executive_summary) + "\n"]
     tail: list[str] = options_section(inputs) + ["## Trade-offs\n", defang(narrative.trade_offs) + "\n",

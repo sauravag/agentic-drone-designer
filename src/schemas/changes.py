@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
+from src.schemas.state import RunLineage
 from src.tools.sizing.mission_solver import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 
 LABEL_MAX_LEN: Final[int] = 120
@@ -143,3 +144,6 @@ def apply_changes(
         if not low <= value <= high:
             raise ValueError(f"{FIELD_LABELS[name]} {value} is outside the allowed range {low}-{high}")
     return new_req, new_assumptions, knobs
+
+
+RunLineage.model_rebuild(_types_namespace={"ChangeSet": ChangeSet})  # resolves the forward reference in state.py

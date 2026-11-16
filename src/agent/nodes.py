@@ -260,7 +260,7 @@ def _report_inputs(state: DesignState) -> report.ReportInputs:
         aero=aero, cad=cad, fcs=fcs, converged=bool(state.get("converged")),
         iterations=state.get("iteration_count", 0), final_gates=state.get("gate_results", []),
         critic_log=state.get("critic_log", []), assumptions=state.get("assumptions", []), design_assumptions=_assumptions(state),
-        warnings=tuple(warnings))
+        warnings=tuple(warnings), lineage=state.get("lineage"))
 
 
 def _options_facts(options: list[ExploreOption], state: DesignState) -> str:
@@ -301,11 +301,13 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
         except LLMError as exc:
             narrative = report.fallback_narrative(inputs, str(exc))
     path: Path = report.write_report(inputs, narrative)
+    lineage = state.get("lineage")
     _write(state, "run_summary.json", {
         "run_id": inputs.run_id, "status": run_status(state), "converged": inputs.converged,
         "sitl_passed": sitl_passed(state), "iterations": inputs.iterations,
         "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
-        "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()}})
+        "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()},
+        "lineage": lineage.model_dump(mode="json") if lineage else None})
     return {"final_report_path": str(path), "explorer_mode": mode,
             "explore_options": [option.to_json() for option in options],
             "options_explanation": None if explanation is None else
