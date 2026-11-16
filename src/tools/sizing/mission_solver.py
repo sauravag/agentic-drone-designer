@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass, replace
 from typing import Final, Optional
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import ComponentNeeds
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import SizingOutput
@@ -36,9 +37,7 @@ from src.tools.sizing.mass_model import (
     size_geometry,
 )
 from src.tools.sizing.mission_profile import (
-    FUEL_RESERVE,
     GENERATOR_MARGIN,
-    MIN_SOC_RESERVE,
     SPEED_MARGIN_OVER_STALL,
     VTOL_THRUST_TO_WEIGHT,
     AeroState,
@@ -94,6 +93,7 @@ class _Design:
     airframe: Airframe
     propulsion: Propulsion
     params: dict[str, float]  # validated overrides merged over defaults
+    assumptions: DesignAssumptions  # technology constants (efficiencies, specific energy, reserves)
     cruise_polar: AirfoilPolar  # profile drag + high-altitude CLmax, at cruise Re
     stall_polar: AirfoilPolar  # sea-level CLmax for the stall constraint, at stall Re (same airfoil)
 
@@ -112,10 +112,11 @@ class _Evaluation:
     stall_reynolds: float
 
 
-def reserve_fraction(params: dict[str, float], propulsion: Propulsion) -> float:
-    """Critic override if given, else the SRS default (20% SoC electric, 10% fuel series-hybrid)."""
-    default: float = FUEL_RESERVE if propulsion == "series_hybrid" else MIN_SOC_RESERVE
-    return params.get("reserve_fraction", default)
+def reserve_fraction(
+    params: dict[str, float], propulsion: Propulsion, assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
+) -> float:
+    """Critic override if given, else the assumption (default 20% SoC electric, 10% fuel series-hybrid)."""
+    return params.get("reserve_fraction", assumptions.reserve_for(propulsion))
 
 
 def _validate_overrides(overrides: dict[str, float]) -> dict[str, float]:
@@ -156,15 +157,15 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
 
 
 def _evaluate(mtow: float, design: _Design) -> _Evaluation:
-    req = design.req
+    req, a = design.req, design.assumptions
     aero, mu_c = _aero_state(mtow, design)
     hotel: float = hotel_power_w(req, mtow)
-    cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero) + hotel
+    cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, a.drivetrain_efficiency) + hotel
     is_hybrid: bool = design.propulsion == "series_hybrid"
     gen_w: float = GENERATOR_MARGIN * cruise_total if is_hybrid else 0.0
-    trace = simulate(phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w)
-    reserve: float = reserve_fraction(design.params, design.propulsion)
-    storage = hybrid_storage(trace, gen_w, reserve) if is_hybrid else electric_storage(trace, reserve)
+    trace = simulate(phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w, a)
+    reserve: float = reserve_fraction(design.params, design.propulsion, a)
+    storage = hybrid_storage(trace, gen_w, reserve, a) if is_hybrid else electric_storage(trace, reserve, a)
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
     loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
     empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads).values())
@@ -205,12 +206,12 @@ def _is_self_consistent(ev: _Evaluation, name: str) -> bool:
 
 
 def _size_powertrain(req: OperationalRequirements, airframe: Airframe, propulsion: Propulsion,
-                     params: dict[str, float]) -> _Evaluation:
+                     params: dict[str, float], assumptions: DesignAssumptions) -> _Evaluation:
     """Outer loop: re-pick the Reynolds-matched airfoil and re-evaluate its cruise/stall polars until
     airfoil and Re are self-consistent. If it never settles (e.g. flip-flopping across the Re = 3e5
     boundary), fall back to the visited design with the lowest stall CLmax - the conservative wing."""
     initial: AirfoilPolar = airfoil_polar(*INITIAL_AIRFOIL)
-    design = _Design(req, airframe, propulsion, params, initial, initial)
+    design = _Design(req, airframe, propulsion, params, assumptions, initial, initial)
     visited: list[_Design] = []
     for _ in range(MAX_AIRFOIL_PASSES):
         visited.append(design)
@@ -257,21 +258,25 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         generator_power_w=ev.generator_power_w, cruise_motor_power_w=ev.trace.max_forward_propulsive_w,
         vtol_thrust_per_motor_n=VTOL_THRUST_TO_WEIGHT * weight / VTOL_ROTOR_COUNT if is_quad else 0.0,
         rotor_diameter_m=math.sqrt(4.0 * aero.disk_area_m2 / VTOL_ROTOR_COUNT / math.pi) if is_quad else 0.0,
-        energy_reserve_fraction=reserve_fraction(design.params, design.propulsion),
+        energy_reserve_fraction=reserve_fraction(design.params, design.propulsion, design.assumptions),
         phases=ev.trace.phases,
     )
 
 
-def size_aircraft(req: OperationalRequirements, overrides: Optional[dict[str, float]] = None) -> SizingOutput:
+def size_aircraft(
+    req: OperationalRequirements,
+    overrides: Optional[dict[str, float]] = None,
+    assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS,
+) -> SizingOutput:
     """Converge a design for `req`. With propulsion "auto", size battery-electric first and fall back
     to series-hybrid when electric diverges or breaks the SRS electric envelope (MTOW/endurance)."""
     params: dict[str, float] = _validate_overrides(overrides or {})
     airframe: Airframe = select_airframe(req)
     if req.propulsion_type != "auto":
-        return _to_output(_size_powertrain(req, airframe, req.propulsion_type, params))
+        return _to_output(_size_powertrain(req, airframe, req.propulsion_type, params, assumptions))
     electric_failure: Optional[SizingDivergenceError] = None
     try:
-        electric = _to_output(_size_powertrain(req, airframe, "electric", params))
+        electric = _to_output(_size_powertrain(req, airframe, "electric", params, assumptions))
         if select_propulsion(req, electric.mtow_kg) == "electric":
             return electric
         logger.info("Electric design (%.1f kg) is outside the electric envelope; sizing series-hybrid",
@@ -280,7 +285,7 @@ def size_aircraft(req: OperationalRequirements, overrides: Optional[dict[str, fl
         electric_failure = exc
         logger.info("electric sizing failed (%s); falling back to series-hybrid", exc)
     try:
-        return _to_output(_size_powertrain(req, airframe, "series_hybrid", params))
+        return _to_output(_size_powertrain(req, airframe, "series_hybrid", params, assumptions))
     except SizingDivergenceError as exc:
         raise SizingDivergenceError(f"Neither powertrain closes the mission: {exc}") from (electric_failure or exc)
 

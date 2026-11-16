@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import SizingOutput
 from src.tools.database.matcher import select_bom
@@ -16,10 +17,11 @@ from src.units import G0
 from src.tools.sizing.mission_solver import (
     SizingDivergenceError,
     component_needs,
+    reserve_fraction,
     size_aircraft,
 )
 from src.tools.sizing.topology import classify_group, select_airframe, select_propulsion
-from tests.reference_designs import CASES, G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL
+from tests.reference_designs import CASES, G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL, REQ_FAILED
 
 GROUP1_MAX_KG: float = 9.07
 GROUP2_MAX_KG: float = 24.95
@@ -251,3 +253,32 @@ def test_reserve_fraction_override_resizes_the_energy_store() -> None:
         assert store(tight) > store(base)
     with pytest.raises(ValueError, match="reserve_fraction"):
         size_aircraft(G1_ELECTRIC_FW, {"reserve_fraction": 0.9})
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_default_assumptions_reproduce_the_reference_designs(name: str) -> None:
+    req = CASES[name]
+    assert size_aircraft(req).mtow_kg == size_aircraft(req, None, DEFAULT_ASSUMPTIONS).mtow_kg
+
+
+def test_c_rate_drives_electric_vtol_battery_mass() -> None:
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 1.0, "combat_radius_km": 20.0, "cruise_speed_ms": 22.0})
+    base = size_aircraft(req)
+    fast = size_aircraft(req, None, DesignAssumptions(liion_max_c_rate=5))
+    assert base.mtow_kg == pytest.approx(46.7, rel=0.02)
+    assert fast.mtow_kg == pytest.approx(15.9, rel=0.05)
+
+
+def test_specific_energy_and_efficiency_change_the_design() -> None:
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 3.0, "combat_radius_km": 50.0, "cruise_speed_ms": 22.0})
+    better = size_aircraft(req, None, DesignAssumptions(liion_specific_energy_wh_kg=300))
+    assert better.mtow_kg == pytest.approx(23.1, rel=0.03)
+    with pytest.raises(SizingDivergenceError):
+        size_aircraft(req)  # 200 Wh/kg spirals
+
+
+def test_reserve_comes_from_assumptions_unless_overridden() -> None:
+    a = DesignAssumptions(battery_reserve_fraction=0.30)
+    assert reserve_fraction({}, "electric", a) == 0.30
+    assert reserve_fraction({"reserve_fraction": 0.25}, "electric", a) == 0.25
+    assert reserve_fraction({}, "series_hybrid", a) == 0.10
