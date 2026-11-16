@@ -79,6 +79,7 @@ def initial_state(user_prompt: str, requirements: Optional[OperationalRequiremen
         out_dir=None, assumptions=[], design_assumptions=design_assumptions or DEFAULT_ASSUMPTIONS,
         gate_results=[], critic_log=[], stage_error=None, converged=False,
         critic_exhausted=False, fatal_error=None, sitl_error=None,
+        explorer_mode="none", explore_options=[], options_explanation=None,
     )
 
 

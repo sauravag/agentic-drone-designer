@@ -4,7 +4,7 @@ from typing import Any, Callable, Optional
 
 from pydantic import BaseModel
 
-from src.agent.agent_schemas import (CriticDecision, Distance, Duration, Mass, ReportNarrative,
+from src.agent.agent_schemas import (CriticDecision, Distance, Duration, Mass, OptionsExplanation, ReportNarrative,
                                      RequirementsDraft)
 from src.agent.llm import LLMError
 
@@ -22,7 +22,10 @@ class ScriptedLLM:
 
     def __init__(self, draft: Optional[RequirementsDraft] = SRS_DRAFT,
                  critic: Callable[[str], CriticDecision] | CriticDecision | None = None,
-                 fail_on: tuple[type[BaseModel], ...] = ()) -> None:
+                 fail_on: tuple[type[BaseModel], ...] = (),
+                 options: Optional[OptionsExplanation] = None) -> None:
+        self.options = options or OptionsExplanation(why_it_failed="Scripted failure reason.",
+                                                     trade_offs="Scripted option trade-offs.")
         self.draft = draft
         self.critic = critic or CriticDecision(summary="defer to the rule table")
         self.fail_on = fail_on
@@ -39,4 +42,6 @@ class ScriptedLLM:
         if schema is ReportNarrative:
             return ReportNarrative(executive_summary="Scripted summary.", trade_offs="Scripted trade-offs.",
                                    risks_and_next_steps="Scripted next steps.")
+        if schema is OptionsExplanation:
+            return self.options
         raise AssertionError(f"unexpected schema {schema}")

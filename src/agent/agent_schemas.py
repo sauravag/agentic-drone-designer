@@ -87,3 +87,8 @@ class ReportNarrative(BaseModel):
     executive_summary: str = Field(description="One paragraph: what was designed and whether it meets the mission")
     trade_offs: str = Field(description="Key design trade-offs and their consequences, as prose")
     risks_and_next_steps: str = Field(description="Open issues and recommended next steps, as prose")
+
+
+class OptionsExplanation(BaseModel):
+    why_it_failed: str = Field(description="Why the requested design does not close, in plain words")
+    trade_offs: str = Field(description="How the listed options compare and what each costs the designer")

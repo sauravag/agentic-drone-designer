@@ -25,7 +25,9 @@ from src.agent.graph import run_agent
 from src.agent.llm import StructuredLLM
 from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status
 from src.agent.providers import LLMConfigError, make_llm
-from src.schemas.assumptions import DesignAssumptions
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.schemas.changes import ChangeSet
+from src.schemas.state import DesignState
 from src.schemas.requirements import OperationalRequirements
 from src.tools.database.seed_data import DEFAULT_DB_PATH
 
@@ -74,6 +76,19 @@ def _context(args: argparse.Namespace) -> AgentContext:
                         progress=lambda message: None if args.quiet else print(f"[Tool] {message}", flush=True))
 
 
+def _print_options(state: DesignState) -> None:
+    options: list[dict] = state.get("explore_options") or []
+    if not options:
+        return
+    req, assumptions = state["requirements"], state.get("design_assumptions") or DEFAULT_ASSUMPTIONS
+    print("Options that close the design (checked with sizing + catalog only):")
+    for option in options:
+        change = ChangeSet.model_validate(option["change"])
+        text = "; ".join(f"{label}: {old} -> {new}" for label, old, new in change.describe(req, assumptions))
+        verdict = "closes" if option["closes"] else f"does not close ({option['result']['reason']})"
+        print(f"  - {text or change.label}: {verdict}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
@@ -93,6 +108,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Clarification needed: {state['clarification_needed']}")
         return EXIT_CLARIFY
     status: str = run_status(state)
+    _print_options(state)
     print(f"Run {state['run_id']}: {status.replace('_', ' ')} after {state['iteration_count']} critic "
           f"iteration(s). Report: {state['final_report_path']}")
     return EXIT_CONVERGED if status == "converged" else EXIT_NOT_CONVERGED

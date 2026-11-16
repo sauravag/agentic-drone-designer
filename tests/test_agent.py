@@ -11,16 +11,16 @@ import pytest
 
 from src.agent import critic, report
 from src.agent.agent_schemas import (Adjustment, CriticDecision, Distance, Duration, Mass, Power, ReportNarrative,
-                                     RequirementsDraft, Speed)
+                                     OptionsExplanation, RequirementsDraft, Speed)
 from src.agent.graph import run_agent
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
 from src.schemas.assumptions import DesignAssumptions
-from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, main
+from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
-from tests.reference_designs import G1_ELECTRIC_FW
+from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 from tests.test_flight_control import load_design
 
 
@@ -385,3 +385,45 @@ def test_cli_spec_rejects_unknown_assumption_fields(tmp_path: Path, db: Path) ->
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({**G1_ELECTRIC_FW.model_dump(mode="json"), "assumptions": {"warp_drive": 9}}))
     assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_ERROR
+
+
+# --------------------------------------------------------------- options (task 8) ---
+def test_a_non_converged_sizing_failure_offers_options(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, ScriptedLLM()), requirements=REQ_FAILED)
+    assert state["explorer_mode"] == "closure" and any(o["closes"] for o in state["explore_options"])
+    out = Path(state["out_dir"])
+    assert (out / "options.json").is_file()
+    assert "## Options that close the design" in (out / "design_report.md").read_text()
+    assert state["options_explanation"]
+
+
+def test_a_closure_option_that_fails_an_airframe_gate_comes_back_in_airframe_mode(
+        tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # Review Focus 3
+    monkeypatch.setattr("src.agent.nodes._gates", lambda state: [critic.GateResult("static_margin", False, "SM 3 %")])
+    state = run_agent(_ctx(tmp_path, db, None, max_iterations=0),
+                      requirements=REQ_FAILED.model_copy(update={"propulsion_type": "series_hybrid"}))
+    assert state["explorer_mode"] == "airframe" and state["explore_options"] == []
+    assert not (Path(state["out_dir"]) / "options.json").exists()
+
+
+def test_an_options_llm_outage_costs_only_the_explanation(tmp_path: Path, db: Path) -> None:
+    llm = ScriptedLLM(fail_on=(OptionsExplanation,))
+    state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)
+    assert state["explore_options"] and state["options_explanation"] is None and state["final_report_path"]
+
+
+def test_numbers_the_options_explanation_invents_are_flagged(tmp_path: Path, db: Path) -> None:
+    llm = ScriptedLLM(options=OptionsExplanation(why_it_failed="Needs 987.6 kg of battery.", trade_offs="None."))
+    state = run_agent(_ctx(tmp_path, db, llm), requirements=REQ_FAILED)
+    assert "987.6" in Path(state["final_report_path"]).read_text().split("## Warnings")[1]
+
+
+def test_stray_numbers_ignores_known_and_trivial_figures() -> None:
+    assert report.stray_numbers("13.43 kg, 42.7 kg and 2 more", '{"m": 13.43}') == ["42.7"]
+
+
+def test_cli_prints_options_after_a_failed_run(tmp_path: Path, db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(REQ_FAILED.model_dump_json())
+    assert main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]) == EXIT_NOT_CONVERGED
+    assert "Options that close the design" in capsys.readouterr().out

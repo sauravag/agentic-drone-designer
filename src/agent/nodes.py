@@ -5,7 +5,7 @@ not crash the run: it is recorded as `stage_error` and handed to the critic, lik
 
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Final, Optional
 
@@ -13,10 +13,11 @@ from pydantic import BaseModel
 
 from src import pipeline
 from src.agent import critic, report
-from src.agent.agent_schemas import CriticDecision, ReportNarrative, RequirementsDraft
+from src.agent.agent_schemas import CriticDecision, OptionsExplanation, ReportNarrative, RequirementsDraft
 from src.agent.llm import LLMError, StructuredLLM
 from src.agent.parsing import to_requirements
-from src.agent.prompts import CRITIC_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
+from src.agent.explorer import ExploreOption, explore_closure, explorer_mode
+from src.agent.prompts import CRITIC_SYSTEM, OPTIONS_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState
@@ -262,8 +263,34 @@ def _report_inputs(state: DesignState) -> report.ReportInputs:
         warnings=tuple(warnings))
 
 
+def _options_facts(options: list[ExploreOption], state: DesignState) -> str:
+    return json.dumps({"failure": state.get("validation_errors", []),
+                       "options": [option.to_json() for option in options]}, indent=1)
+
+
+def _explain_options(ctx: AgentContext, facts: str) -> Optional[OptionsExplanation]:
+    """The optional LLM prose; an outage costs the explanation, never the run."""
+    if ctx.llm is None:
+        return None
+    try:
+        return ctx.llm.parse(OPTIONS_SYSTEM, facts, OptionsExplanation)
+    except LLMError as exc:
+        logger.warning("options explanation unavailable: %s", exc)
+        return None
+
+
 def compile_report(state: DesignState, ctx: AgentContext) -> Update:
     inputs = _report_inputs(state)
+    mode = explorer_mode(state)
+    options: list[ExploreOption] = []
+    explanation: Optional[OptionsExplanation] = None
+    if mode == "closure":
+        _tool(ctx, "compile_report: exploring options that close the design")
+        options = explore_closure(inputs.requirements, inputs.design_assumptions, ctx.db_path)
+        _write(state, "options.json", [option.to_json() for option in options])
+        facts = _options_facts(options, state)
+        explanation = _explain_options(ctx, facts) if options else None
+        inputs = replace(inputs, options=tuple(options), options_explanation=explanation, options_facts=facts)
     _tool(ctx, "compile_report: writing design_report.md")
     narrative: ReportNarrative
     if ctx.llm is None:
@@ -279,4 +306,7 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
         "sitl_passed": sitl_passed(state), "iterations": inputs.iterations,
         "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
         "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()}})
-    return {"final_report_path": str(path)}
+    return {"final_report_path": str(path), "explorer_mode": mode,
+            "explore_options": [option.to_json() for option in options],
+            "options_explanation": None if explanation is None else
+            f"{explanation.why_it_failed}\n\n{explanation.trade_offs}"}

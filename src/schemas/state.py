@@ -142,3 +142,6 @@ class DesignState(TypedDict):
     critic_exhausted: bool  # iteration cap reached, or no knob could move
     fatal_error: Optional[str]  # the run cannot continue (e.g. the LLM parser is unavailable)
     sitl_error: Optional[str]  # the SITL stage could not complete (distinct from completed-but-failed)
+    explorer_mode: str  # closure | airframe | improvement | none, set when the report is compiled
+    explore_options: list[dict]  # ExploreOption.to_json() of the closure options (empty otherwise)
+    options_explanation: Optional[str]  # LLM prose about the options (audited, defanged in the report)
