@@ -1,9 +1,12 @@
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from src.agent.evaluator import evaluate
+from src.agent.critic import RESERVE_MIN
+from src.agent.evaluator import Evaluation, evaluate, round_fact, with_reserve_floor
+from src.agent.report import citable, stray_numbers
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges, apply_changes
 from tests.reference_designs import REQ_FAILED
@@ -35,6 +38,38 @@ def test_an_option_over_the_requested_group_is_not_closing(db: Path) -> None:  #
     assert not result.closes and "Group 1" in result.reason
 
 
+def test_a_requested_reserve_below_the_floor_is_recorded_not_silently_raised(db: Path) -> None:  # spec 7.3
+    hybrid = REQ_FAILED.model_copy(update={"propulsion_type": "series_hybrid"})
+    low = DEFAULT_ASSUMPTIONS.model_copy(update={"fuel_reserve_fraction": 0.12})
+    result = evaluate(hybrid, low, {}, db)
+    assert result.reserve_floor_applied == 0.12
+    assert result.floor_note == "sized with the 15 % reserve floor (requested 12 %)"
+    assert result.as_facts()["reserve_floor_applied"] == 0.12
+    electric = evaluate(REQ_FAILED, DEFAULT_ASSUMPTIONS, {}, db)  # battery reserve 0.20 is above the floor
+    assert electric.reserve_floor_applied is None and electric.floor_note == ""
+
+
+def test_the_reserve_floor_is_carried_into_a_change_set_for_the_powertrain_it_was_sized_with() -> None:
+    result = Evaluation(True, 10.0, 2, "series_hybrid", 0.5, 1.0, "")
+    carried = with_reserve_floor(_cs(r=RequirementChanges(propulsion_type="series_hybrid")), result,
+                                 DEFAULT_ASSUMPTIONS)
+    assert carried.assumptions.fuel_reserve_fraction == RESERVE_MIN
+    assert carried.assumptions.battery_reserve_fraction is None
+    above = _cs(a=AssumptionChanges(fuel_reserve_fraction=0.3))
+    assert with_reserve_floor(above, result, DEFAULT_ASSUMPTIONS) == above
+    below = _cs(a=AssumptionChanges(fuel_reserve_fraction=0.12))
+    assert with_reserve_floor(below, result, DEFAULT_ASSUMPTIONS).assumptions.fuel_reserve_fraction == RESERVE_MIN
+
+
+def test_solver_facts_are_rounded_so_display_precision_citations_are_not_flagged() -> None:  # finding 3
+    facts = Evaluation(True, 16.623456789, 2, "series_hybrid", 0.81234567, 3.4567891, "").as_facts()
+    assert facts["mtow_kg"] == 16.62 and facts["fuel_mass_kg"] == 3.46 and round_fact(None) is None
+    known = citable(json.dumps(facts))
+    assert stray_numbers("closes at 16.6 kg with 3.5 kg of fuel", known) == []
+    assert stray_numbers("closes at 16.62 kg with 3.46 kg of fuel", known) == []
+    assert stray_numbers("closes at 16.7 kg", known) == ["16.7"]
+
+
 def test_change_sets_apply_validate_and_describe() -> None:
     cs = ChangeSet(label="runway", requirements=RequirementChanges(runway_available=True, airframe_topology="fixed_wing"),
                    assumptions=AssumptionChanges(liion_max_c_rate=5), knobs=KnobChanges())
@@ -60,7 +95,7 @@ def test_requirement_changes_run_model_validation() -> None:
 
 
 def test_describe_skips_no_op_changes() -> None:
-    from src.tools.sizing.mission_solver import OVERRIDE_DEFAULTS
+    from src.schemas.knobs import OVERRIDE_DEFAULTS
 
     default_ar = OVERRIDE_DEFAULTS["aspect_ratio"]
     assert _cs(k=KnobChanges(aspect_ratio=default_ar)).describe(REQ_FAILED, DEFAULT_ASSUMPTIONS) == []

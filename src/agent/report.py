@@ -23,6 +23,7 @@ from src.ui import presenters
 POLAR_ALPHAS_DEG: Final[tuple[float, ...]] = (-4.0, 0.0, 4.0, 8.0, 12.0)  # SRS VSPAERO sweep
 NUMBER_PATTERN: Final[re.Pattern[str]] = re.compile(r"\d+(?:\.\d+)?")
 TRIVIAL_NUMBERS: Final[frozenset[str]] = frozenset({"0", "1", "2", "3", "4", "5"})  # counts, list items, "Group 2"
+CITATION_DECIMALS: Final[int] = 1  # prose often cites a 2-decimal fact at one decimal (16.62 kg -> 16.6 kg)
 
 
 BATTERY_DENSITY_FIELDS: Final[frozenset[str]] = frozenset({
@@ -53,6 +54,7 @@ class ReportInputs:
     options_explanation: Optional[OptionsExplanation] = None
     lineage: Optional[RunLineage] = None
     options_facts: str = ""  # what the explanation was given (its numbers are audited against this)
+    explorer_note: Optional[str] = None  # why a failed design gets no closure options
 
 
 def cell(value: Any) -> str:
@@ -85,6 +87,13 @@ def stray_numbers(text: str, facts_text: str) -> list[str]:
     """Numbers in LLM prose that do not appear in the facts it was given (Zero-LLM-Math audit)."""
     known: set[str] = set(NUMBER_PATTERN.findall(facts_text))
     return sorted({n for n in NUMBER_PATTERN.findall(text) if n not in known and n not in TRIVIAL_NUMBERS})
+
+
+def citable(facts_text: str) -> str:
+    """`facts_text` plus each finer-grained number rounded to CITATION_DECIMALS, for `stray_numbers`: citing a
+    fact at that coarser precision is still citing the fact, not inventing one."""
+    finer = [n for n in NUMBER_PATTERN.findall(facts_text) if len(n.partition(".")[2]) > CITATION_DECIMALS]
+    return " ".join([facts_text, *sorted({str(round(float(n), CITATION_DECIMALS)) for n in finer})])
 
 
 def unsupported_numbers(narrative: ReportNarrative, facts_text: str) -> list[str]:
@@ -186,6 +195,8 @@ def _energy_mass(battery_kg: Optional[float], fuel_kg: Optional[float]) -> str:
 
 
 def options_section(inputs: ReportInputs) -> list[str]:
+    if inputs.explorer_note:
+        return ["## Design options\n", inline(inputs.explorer_note) + "\n"]
     if not inputs.options:
         return []
     s: list[str] = ["## Options that close the design\n", OPTIONS_NOTE + "\n", table(option_rows(inputs.options, inputs))]
@@ -249,7 +260,8 @@ def write_report(inputs: ReportInputs, narrative: ReportNarrative) -> Path:
                                            f"results (treat as unverified): {', '.join(stray)}"))
     expl = inputs.options_explanation
     if expl:
-        stray_options: list[str] = stray_numbers(f"{expl.why_it_failed} {expl.trade_offs}", inputs.options_facts)
+        stray_options: list[str] = stray_numbers(f"{expl.why_it_failed} {expl.trade_offs}",
+                                                     citable(inputs.options_facts))
         if stray_options:
             inputs = replace(inputs, warnings=(*inputs.warnings, "The LLM explanation of the options mentions figures "
                                                f"not in the computed results (treat as unverified): {', '.join(stray_options)}"))
