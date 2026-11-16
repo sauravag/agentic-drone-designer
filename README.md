@@ -1,4 +1,4 @@
-# ISR-Forge
+# agentic-drone-designer
 
 An agent that designs DoD Group 1–3 ISR UAVs from mission requirements: conceptual sizing (battery-electric
 or series-hybrid, fixed-wing or quadplane VTOL), a COTS bill of materials, OpenVSP/VSPAERO aerodynamics,
