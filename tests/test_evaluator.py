@@ -57,3 +57,23 @@ def test_knob_changes_are_bounded_and_returned() -> None:
 def test_requirement_changes_run_model_validation() -> None:
     with pytest.raises(ValidationError):
         apply_changes(REQ_FAILED, DEFAULT_ASSUMPTIONS, _cs(r=RequirementChanges(payload_mass_kg=-1)))
+
+
+def test_describe_skips_no_op_changes() -> None:
+    from src.tools.sizing.mission_solver import OVERRIDE_DEFAULTS
+
+    default_ar = OVERRIDE_DEFAULTS["aspect_ratio"]
+    assert _cs(k=KnobChanges(aspect_ratio=default_ar)).describe(REQ_FAILED, DEFAULT_ASSUMPTIONS) == []
+    same = _cs(k=KnobChanges(aspect_ratio=12.0))
+    assert same.describe(REQ_FAILED, DEFAULT_ASSUMPTIONS, {"aspect_ratio": 12.0}) == []
+    assert same.describe(REQ_FAILED, DEFAULT_ASSUMPTIONS, {"aspect_ratio": 10.0}) == [("Aspect ratio", "10", "12")]
+    noop = _cs(r=RequirementChanges(payload_mass_kg=REQ_FAILED.payload_mass_kg),
+               a=AssumptionChanges(liion_max_c_rate=DEFAULT_ASSUMPTIONS.liion_max_c_rate))
+    assert noop.describe(REQ_FAILED, DEFAULT_ASSUMPTIONS) == []
+
+
+def test_describe_never_uses_exponent_notation() -> None:
+    cs = _cs(r=RequirementChanges(service_ceiling_m=12000), a=AssumptionChanges(battery_reserve_fraction=0.15))
+    rows = dict((label, (old, new)) for label, old, new in cs.describe(REQ_FAILED, DEFAULT_ASSUMPTIONS))
+    assert rows["Service ceiling (m)"][1] == "12000"
+    assert rows["Battery reserve"] == ("0.2", "0.15")

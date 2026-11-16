@@ -5,16 +5,16 @@ is an allow-list; `None` means "leave unchanged". Applying a change set never mu
 re-validates through the target models, so bounds and cross-field validators always run.
 """
 
-from typing import Final, Literal, Optional
+from typing import Final, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
-from src.tools.sizing.mission_solver import OVERRIDE_BOUNDS
+from src.tools.sizing.mission_solver import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 
 LABEL_MAX_LEN: Final[int] = 120
-FLOAT_SIG_DIGITS: Final[str] = ".4g"
+FLOAT_DECIMALS: Final[int] = 6  # fixed-point, trailing zeros stripped; never exponent notation
 
 FIELD_LABELS: Final[dict[str, str]] = {
     # requirements
@@ -91,7 +91,7 @@ def _format(value: object) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, float):
-        return format(value, FLOAT_SIG_DIGITS)
+        return f"{value:.{FLOAT_DECIMALS}f}".rstrip("0").rstrip(".")
     return str(value)
 
 
@@ -106,8 +106,11 @@ class ChangeSet(BaseModel):
     def is_empty(self) -> bool:
         return not (_set_fields(self.requirements) or _set_fields(self.assumptions) or _set_fields(self.knobs))
 
-    def describe(self, req: OperationalRequirements, assumptions: DesignAssumptions) -> list[tuple[str, str, str]]:
-        """(field label, old, new) for every changed field whose value actually differs."""
+    def describe(self, req: OperationalRequirements, assumptions: DesignAssumptions,
+                 current_knobs: Optional[Mapping[str, float]] = None) -> list[tuple[str, str, str]]:
+        """(field label, old, new) for every changed field whose value actually differs.
+
+        A knob's baseline is `current_knobs[name]` if given, else the solver's constant default."""
         rows: list[tuple[str, str, str]] = []
         sources: list[tuple[BaseModel, BaseModel]] = [(self.requirements, req), (self.assumptions, assumptions)]
         for changes, current in sources:
@@ -116,7 +119,9 @@ class ChangeSet(BaseModel):
                 if old != new:
                     rows.append((FIELD_LABELS[name], _format(old), _format(new)))
         for name, new in _set_fields(self.knobs).items():
-            rows.append((FIELD_LABELS[name], "default", _format(new)))
+            old_knob = (current_knobs or {}).get(name, OVERRIDE_DEFAULTS[name])
+            if old_knob != new:
+                rows.append((FIELD_LABELS[name], _format(float(old_knob)), _format(new)))
         return rows
 
 
