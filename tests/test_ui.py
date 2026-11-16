@@ -1,13 +1,17 @@
 """Local web form: form parsing, result presenters, and a headless Streamlit smoke test."""
 
+import json
 from pathlib import Path
+from typing import Any, Optional
 
 import pytest
 
 from src import pipeline
 from src.ui import presenters
 from src.ui.examples import EXAMPLE_MISSIONS
-from tests.reference_designs import G1_ELECTRIC_FW
+from src.agent.llm import StructuredLLM
+from src.schemas.requirements import OperationalRequirements
+from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "ui" / "app.py"
 
@@ -287,3 +291,116 @@ def test_assumptions_apply_to_the_structured_form_too(tmp_path: Path, monkeypatc
     at.run()
     assert not at.exception
     assert seen and seen[0].bsfc_kg_per_kwh == pytest.approx(0.4)
+
+
+SELECT_FIELDS = ("airframe_topology", "propulsion_type", "group_constraint")
+NO_LLM_PROBLEM = "no LLM in this test"
+
+
+def _fill_form_widget(at: Any, key: str, value: object) -> None:
+    if isinstance(value, bool):
+        box = at.checkbox(key=key)
+        box.check() if value else box.uncheck()
+    elif key in SELECT_FIELDS:
+        at.selectbox(key=key).set_value(value)
+    elif isinstance(value, str):
+        at.text_input(key=key).set_value(value)
+    else:
+        at.number_input(key=key).set_value(value)
+
+
+def _form_app_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, req: OperationalRequirements,
+                   llm: Optional[StructuredLLM] = None) -> Any:
+    """Fill the structured form from `req`, aero/CAD off, (optionally) a scripted LLM; submit and return the app."""
+    from streamlit.testing.v1 import AppTest
+
+    from src.ui import agent_service
+
+    monkeypatch.setattr(agent_service, "llm_problem", lambda: None if llm is not None else NO_LLM_PROBLEM)
+    monkeypatch.setattr(agent_service, "make_llm", lambda: llm)
+    monkeypatch.setenv("ISR_FORGE_OUTPUTS", str(tmp_path / "outputs"))
+    monkeypatch.setenv("ISR_FORGE_DB", str(tmp_path / "catalog.db"))
+    at = AppTest.from_file(str(APP_PATH), default_timeout=300)
+    at.run()
+    if not at.checkbox(key="with_aero_cad").disabled:
+        at.checkbox(key="with_aero_cad").uncheck()
+    for key, value in presenters.form_defaults(req).items():
+        if key in presenters.FIELD_LABELS:
+            _fill_form_widget(at, key, value)
+    at.button(key="submit").click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def test_failed_design_offers_cards_and_a_linked_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    assert any(b.key.startswith("select_option_") for b in at.button)
+    assert any("checked with sizing + catalog only" in c.value for c in at.caption)
+    at.button(key="select_option_0").click()
+    at.run()
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    summaries = sorted((tmp_path / "outputs").glob("*/run_summary.json"))
+    assert json.loads(summaries[-1].read_text())["lineage"]["change_source"] == "option"
+    assert len([b for b in at.button if b.key.startswith("open_run_")]) == 2
+    assert at.session_state["pending_change"] is None
+
+
+def test_reopening_a_run_shows_its_own_assumptions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, G1_ELECTRIC_FW)
+    first = at.session_state["last_run"].run_id
+    at.number_input(key="assume_liion_specific_energy_wh_kg").set_value(300.0)
+    at.button(key="submit").click()
+    at.run()
+    at.button(key=f"open_run_{first}").click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["last_run"].design_assumptions.liion_specific_energy_wh_kg == 200
+    assert at.number_input(key="assume_liion_specific_energy_wh_kg").value == 300  # the panel keeps the designer's
+
+
+def test_converged_design_can_explore_improvements(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, G1_ELECTRIC_FW)
+    at.button(key="explore_alternatives").click()
+    at.run()
+    assert not at.exception
+    assert any("kg" in m.value for m in at.markdown if "−" in m.value or "-" in m.value)
+
+
+def test_a_change_that_alters_nothing_shows_an_error_and_does_not_run(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    at.button(key="select_option_0").click()
+    at.run()
+    view = at.session_state["last_run"]
+    widgets = [w for w in [*at.number_input, *at.selectbox, *at.checkbox] if (w.key or "").startswith("review_")]
+    assert widgets
+    for widget in widgets:  # put every proposed value back to the run's own value
+        _, section, field = widget.key.split("_", 2)
+        source = view.requirements if section == "requirements" else view.design_assumptions
+        widget.set_value(getattr(source, field))
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    assert any("does not change anything" in e.value for e in at.error)
+    assert len(list((tmp_path / "outputs").glob("*/run_summary.json"))) == 1
+
+
+def test_cancel_clears_the_pending_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
+    at.button(key="select_option_0").click()
+    at.run()
+    assert any(b.key == "rerun" for b in at.button)
+    at.button(key="cancel_change").click()
+    at.run()
+    assert at.session_state["pending_change"] is None
+    assert not any(b.key == "rerun" for b in at.button)
+
+
+def test_improvement_savings_read_with_a_true_minus_and_gains_with_a_plus() -> None:
+    from src.ui.design_loop import saving_text
+
+    assert saving_text(3.14) == "MTOW − 3.1 kg"
+    assert saving_text(-0.12) == "MTOW + 0.1 kg"

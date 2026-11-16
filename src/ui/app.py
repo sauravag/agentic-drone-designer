@@ -27,7 +27,7 @@ from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
-from src.ui import agent_service, presenters  # noqa: E402
+from src.ui import agent_service, design_loop, presenters  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
@@ -163,7 +163,7 @@ def _execute(assumptions: DesignAssumptions, prompt: str = "",
             return
         failed: bool = view.status == agent_service.STATUS_ERROR
         status.update(label=_status_label(view), state="error" if failed else "complete", expanded=False)
-    st.session_state["last_run"] = view
+    design_loop.record_run(view)
 
 
 def _assumptions_or_stop() -> Optional[DesignAssumptions]:
@@ -275,6 +275,7 @@ def _render(view: AgentRunView) -> None:
     (st.success if view.status == agent_service.STATUS_CONVERGED else st.warning)(
         STATUS_TEXT.get(view.status, view.status))
     st.caption(f"Run `{view.run_id}` · files in `{view.out_dir}`")
+    design_loop.render_assumptions_used(view)
     for note in view.warnings:
         st.warning(note)
     if view.assumptions:
@@ -284,6 +285,8 @@ def _render(view: AgentRunView) -> None:
         st.error("Sizing did not converge for the final iteration; see the Critic and Report tabs.")
     else:
         _headline(view)
+    design_loop.render_options(view, DB_PATH)
+    design_loop.render_review_panel(view, OUTPUTS_ROOT, DB_PATH)
     tabs = st.tabs([*DESIGN_TABS, *AGENT_TABS])
     if view.sizing is not None:
         _design_tabs(view, *tabs[:len(DESIGN_TABS)])
@@ -304,6 +307,7 @@ def main() -> None:
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)
     if _requirements_form():
         _run_form({key: st.session_state[key] for key in presenters.FIELD_LABELS})
+    design_loop.render_history()
     if "last_run" in st.session_state:
         _render(st.session_state["last_run"])
 
