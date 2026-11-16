@@ -213,22 +213,30 @@ def _bracket(mtow: float, design: _Design) -> tuple[float, float]:
     lo: float = mtow
     for _ in range(MAX_BRACKET_STEPS):
         hi: float = lo * factor
-        if hi > DIVERGENCE_MTOW_KG or hi < MIN_MTOW_KG:
-            break
+        if hi > DIVERGENCE_MTOW_KG:
+            raise SizingDivergenceError(
+                f"{design.propulsion} {design.airframe} mass spiral: no MTOW root below {DIVERGENCE_MTOW_KG:.0f} kg"
+            )
+        if hi < MIN_MTOW_KG:
+            raise SizingDivergenceError(
+                f"{design.propulsion} {design.airframe} mass collapse: no MTOW root above {MIN_MTOW_KG} kg"
+            )
         g1: float = _checked_eval(hi, design).mtow_out - hi
         if g0 * g1 <= 0.0:
             return (min(lo, hi), max(lo, hi))
         lo = hi
     raise SizingDivergenceError(
-        f"{design.propulsion} {design.airframe} mass spiral: no MTOW root bracketed below {DIVERGENCE_MTOW_KG:.0f} kg"
+        f"{design.propulsion} {design.airframe} no MTOW root bracketed in {MAX_BRACKET_STEPS} steps"
     )
 
 
 def _root_find(mtow: float, design: _Design) -> _Evaluation:
     """Bracketed root find of g(m) = mtow_out(m) - m, used when the damped iteration is too slow."""
     lo, hi = _bracket(mtow, design)
-    root: float = brentq(lambda m: _checked_eval(m, design).mtow_out - m, lo, hi, xtol=1e-12,
-                         rtol=MTOW_REL_TOL, maxiter=MAX_ITERATIONS)
+    root, info = brentq(lambda m: _checked_eval(m, design).mtow_out - m, lo, hi, xtol=1e-12,
+                        rtol=MTOW_REL_TOL, maxiter=MAX_ITERATIONS, full_output=True, disp=False)
+    if not info.converged:
+        raise SizingDivergenceError(f"MTOW root find did not converge: {info.flag}")
     return _checked_eval(root, design)
 
 
