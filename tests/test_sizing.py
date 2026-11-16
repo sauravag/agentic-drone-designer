@@ -282,3 +282,14 @@ def test_reserve_comes_from_assumptions_unless_overridden() -> None:
     assert reserve_fraction({}, "electric", a) == 0.30
     assert reserve_fraction({"reserve_fraction": 0.25}, "electric", a) == 0.25
     assert reserve_fraction({}, "series_hybrid", a) == 0.10
+
+
+def test_slow_or_oscillating_fixed_point_now_converges() -> None:
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 1.0, "combat_radius_km": 20.0})  # 30 m/s: oscillated
+    sizing = size_aircraft(req)
+    assert 10.0 < sizing.mtow_kg < 150.0
+
+
+def test_genuine_spirals_still_raise() -> None:
+    with pytest.raises(SizingDivergenceError, match="mass spiral"):
+        size_aircraft(REQ_FAILED)

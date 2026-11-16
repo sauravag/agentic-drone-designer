@@ -11,6 +11,8 @@ import math
 from dataclasses import dataclass, replace
 from typing import Final, Optional
 
+from scipy.optimize import brentq
+
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import ComponentNeeds
 from src.schemas.requirements import OperationalRequirements
@@ -61,6 +63,11 @@ MU_SEA_LEVEL: Final[float] = air_properties(0.0)[1]
 MTOW_REL_TOL: Final[float] = 1e-9
 MAX_ITERATIONS: Final[int] = 1_000
 DAMPING: Final[float] = 0.5
+MIN_DAMPING: Final[float] = 0.05
+OSCILLATION_WINDOW: Final[int] = 6
+BRACKET_FACTOR: Final[float] = 1.5
+MIN_MTOW_KG: Final[float] = 0.1
+MAX_BRACKET_STEPS: Final[int] = 60
 DIVERGENCE_MTOW_KG: Final[float] = 3 * 599.0
 MAX_AIRFOIL_PASSES: Final[int] = 5
 RE_REFRESH_TOL: Final[float] = 0.10
@@ -184,19 +191,65 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     )
 
 
+def _is_oscillating(signs: list[int]) -> bool:
+    """True when the last OSCILLATION_WINDOW residual signs strictly alternate."""
+    return len(signs) == OSCILLATION_WINDOW and all(a != b for a, b in zip(signs, signs[1:]))
+
+
+def _checked_eval(mtow: float, design: _Design) -> _Evaluation:
+    """Evaluate at `mtow`, raising the mass-spiral error when the result is non-finite or runaway."""
+    ev = _evaluate(mtow, design)
+    if not math.isfinite(ev.mtow_out) or ev.mtow_out > DIVERGENCE_MTOW_KG:
+        raise SizingDivergenceError(
+            f"{design.propulsion} {design.airframe} mass spiral: MTOW exceeded {DIVERGENCE_MTOW_KG:.0f} kg"
+        )
+    return ev
+
+
+def _bracket(mtow: float, design: _Design) -> tuple[float, float]:
+    """Step geometrically from `mtow` in the direction of g = mtow_out - mtow until g changes sign."""
+    g0: float = _checked_eval(mtow, design).mtow_out - mtow
+    factor: float = BRACKET_FACTOR if g0 > 0 else 1.0 / BRACKET_FACTOR
+    lo: float = mtow
+    for _ in range(MAX_BRACKET_STEPS):
+        hi: float = lo * factor
+        if hi > DIVERGENCE_MTOW_KG or hi < MIN_MTOW_KG:
+            break
+        g1: float = _checked_eval(hi, design).mtow_out - hi
+        if g0 * g1 <= 0.0:
+            return (min(lo, hi), max(lo, hi))
+        lo = hi
+    raise SizingDivergenceError(
+        f"{design.propulsion} {design.airframe} mass spiral: no MTOW root bracketed below {DIVERGENCE_MTOW_KG:.0f} kg"
+    )
+
+
+def _root_find(mtow: float, design: _Design) -> _Evaluation:
+    """Bracketed root find of g(m) = mtow_out(m) - m, used when the damped iteration is too slow."""
+    lo, hi = _bracket(mtow, design)
+    root: float = brentq(lambda m: _checked_eval(m, design).mtow_out - m, lo, hi, xtol=1e-12,
+                         rtol=MTOW_REL_TOL, maxiter=MAX_ITERATIONS)
+    return _checked_eval(root, design)
+
+
 def _converge(design: _Design) -> _Evaluation:
-    """Damped fixed point MTOW_{k+1} = MTOW_k + DAMPING * (f(MTOW_k) - MTOW_k)."""
+    """Damped fixed point MTOW_{k+1} = MTOW_k + damping * (f(MTOW_k) - MTOW_k). If the residual sign
+    alternates over a whole window the iteration is overshooting, so damping is halved (floor MIN_DAMPING).
+    If it still has not converged after MAX_ITERATIONS (slow contraction), fall back to a bracketed root find."""
     mtow: float = 4.0 * design.req.payload_mass_kg + 1.0
+    damping: float = DAMPING
+    signs: list[int] = []
     for _ in range(MAX_ITERATIONS):
-        ev = _evaluate(mtow, design)
-        if not math.isfinite(ev.mtow_out) or ev.mtow_out > DIVERGENCE_MTOW_KG:
-            raise SizingDivergenceError(
-                f"{design.propulsion} {design.airframe} mass spiral: MTOW exceeded {DIVERGENCE_MTOW_KG:.0f} kg"
-            )
-        if abs(ev.mtow_out - mtow) <= MTOW_REL_TOL * mtow:
+        ev = _checked_eval(mtow, design)
+        residual: float = ev.mtow_out - mtow
+        if abs(residual) <= MTOW_REL_TOL * mtow:
             return ev
-        mtow += DAMPING * (ev.mtow_out - mtow)
-    raise SizingDivergenceError(f"MTOW did not converge in {MAX_ITERATIONS} iterations")
+        signs = [*signs, 1 if residual > 0 else -1][-OSCILLATION_WINDOW:]
+        if _is_oscillating(signs):
+            damping = max(MIN_DAMPING, damping / 2.0)
+            signs = []
+        mtow += damping * residual
+    return _root_find(mtow, design)
 
 
 def _polar_at(name: str, reynolds: float) -> AirfoilPolar:
