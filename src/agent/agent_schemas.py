@@ -61,6 +61,9 @@ class RequirementsDraft(BaseModel):
     payload_mass: Optional[Mass] = Field(default=None, description="Mass of the sensor payload")
     payload_power: Optional[Power] = Field(default=None, description="Continuous electrical power of the payload")
     payload_sensor: Optional[SensorType] = Field(default=None, description="Sensor class, e.g. eo_ir for an EO/IR gimbal")
+    payload_model: Optional[str] = Field(
+        default=None, description="The payload's model name if the user names a specific product "
+                                  "(e.g. 'SIYI ZT30', 'NextVision Raptor')")
     endurance: Optional[Duration] = Field(default=None, description="Time on station / loiter endurance")
     radius: Optional[Distance] = Field(
         default=None, description="One-way distance to the operating area (combat, mission or datalink radius)")

@@ -2,7 +2,7 @@
 
 Deterministic I/O boundary (SRS rule 3): unit conversion, documented defaults for unstated values
 (each recorded as an assumption for the report), and the SRS clarification rule - payload mass and
-endurance must come from the user.
+endurance must come from the user (a named catalogue payload supplies its own mass).
 """
 
 from dataclasses import dataclass
@@ -12,7 +12,8 @@ from typing import Final, Optional
 from pydantic import ValidationError
 
 from src.agent.agent_schemas import Altitude, Distance, Duration, Mass, Power, RequirementsDraft, Speed
-from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
+from src.schemas.payload_catalog import payload_spec, resolve_payload_name
+from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, OperationalRequirements
 from src.tools.database.matcher import ComponentNotFoundError, match_payload
 from src.units import (DAY_TO_S, FT_TO_M, G_TO_KG, HOUR_TO_S, KM_TO_M, KMH_TO_MS, KNOT_TO_MS, KW_TO_W, LB_TO_KG,
                        MILE_TO_M, MIN_TO_S, MPH_TO_MS, NMI_TO_M, OZ_TO_KG)
@@ -88,6 +89,27 @@ def _payload_power_w(draft: RequirementsDraft, payload_kg: float, db_path: Path,
     return part.power_w
 
 
+def _payload_fields(draft: RequirementsDraft, db_path: Path, notes: list[str]) -> Optional[dict[str, object]]:
+    """Payload model, mass and power. A named catalogue model supplies its datasheet mass and power unless the user
+    stated them; otherwise (Custom) the mass must be stated. None when neither a mass nor a known model was given."""
+    model: Optional[str] = resolve_payload_name(draft.payload_model) if draft.payload_model else None
+    if draft.payload_model and model is None:
+        notes.append(f"Payload '{draft.payload_model}' is not in the catalogue; treated as a custom payload.")
+    spec = payload_spec(model) if model is not None else None
+    if spec is None:
+        if draft.payload_mass is None:
+            return None
+        mass: float = kg(draft.payload_mass)
+        return {"payload_model": CUSTOM_PAYLOAD, "payload_mass_kg": mass,
+                "payload_power_w": _payload_power_w(draft, mass, db_path, notes)}
+    if draft.payload_mass is None or draft.payload_power is None:
+        notes.append(f"Payload {spec.name}: unstated mass/power taken from its datasheet "
+                     f"({spec.mass_kg:g} kg, {spec.power_w:g} W).")
+    return {"payload_model": spec.name,
+            "payload_mass_kg": spec.mass_kg if draft.payload_mass is None else kg(draft.payload_mass),
+            "payload_power_w": spec.power_w if draft.payload_power is None else watts(draft.payload_power)}
+
+
 def _speed_ms(draft: RequirementsDraft, notes: list[str]) -> float:
     if draft.cruise_speed is not None:
         return ms(draft.cruise_speed)
@@ -129,14 +151,14 @@ def _optional_fields(draft: RequirementsDraft) -> dict[str, float]:
 def to_requirements(draft: RequirementsDraft, db_path: Path) -> ParseOutcome:
     """Convert a draft; returns a clarification question instead if the SRS-required facts are missing
     or the stated values are outside the supported envelope."""
-    if draft.payload_mass is None or draft.endurance is None:
-        missing: list[str] = [label for name, label in REQUIRED_FIELDS.items() if getattr(draft, name) is None]
-        return ParseOutcome(None, f"Please specify the {' and '.join(missing)} for this mission.")
     notes: list[str] = []
-    payload_kg: float = kg(draft.payload_mass)
+    payload: Optional[dict[str, object]] = _payload_fields(draft, db_path, notes)
+    missing: list[str] = [REQUIRED_FIELDS[name] for name, absent in
+                          (("payload_mass", payload is None), ("endurance", draft.endurance is None)) if absent]
+    if missing:
+        return ParseOutcome(None, f"Please specify the {' and '.join(missing)} for this mission.")
     fields: dict[str, object] = {
-        "mission_name": draft.mission_name, "payload_mass_kg": payload_kg, "endurance_hours": hours(draft.endurance),
-        "payload_power_w": _payload_power_w(draft, payload_kg, db_path, notes),
+        "mission_name": draft.mission_name, **payload, "endurance_hours": hours(draft.endurance),
         "combat_radius_km": _radius_km(draft, notes), "cruise_speed_ms": _speed_ms(draft, notes),
         "propulsion_type": draft.propulsion, "group_constraint": draft.dod_group,
         **_airframe_fields(draft, notes), **_avionics_fields(draft, notes), **_optional_fields(draft),

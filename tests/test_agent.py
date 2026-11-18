@@ -538,3 +538,39 @@ def test_parser_reads_ark(db: Path) -> None:
 def test_parser_respects_explicit_no_companion(db: Path) -> None:
     req = to_requirements(SRS_DRAFT.model_copy(update={"companion_computer": False}), db).requirements
     assert req is not None and req.companion_computer is False and not req.jetson_fitted
+
+
+# ----------------------------------------------------------- payload model parsing ---
+def test_named_model_without_mass_uses_catalogue(db: Path) -> None:
+    outcome = to_requirements(SRS_DRAFT.model_copy(update={"payload_model": "zt30", "payload_mass": None,
+                                                           "payload_power": None}), db)
+    req = outcome.requirements
+    assert outcome.clarification is None and req is not None
+    assert (req.payload_model, req.payload_mass_kg, req.payload_power_w) == ("SIYI ZT30", 0.854, 9.0)
+    assert not req.payload_edited
+
+
+def test_named_model_with_stated_mass_is_edited(db: Path) -> None:
+    req = to_requirements(SRS_DRAFT.model_copy(update={"payload_model": "SIYI ZT30", "payload_mass": Mass(value=1.2, unit="kg"),
+                                                       "payload_power": None}), db).requirements
+    assert req is not None and (req.payload_mass_kg, req.payload_power_w, req.payload_edited) == (1.2, 9.0, True)
+
+
+def test_unknown_model_note_and_mass_required(db: Path) -> None:
+    unknown = SRS_DRAFT.model_copy(update={"payload_model": "Foo 9000"})
+    assert "payload mass" in to_requirements(unknown.model_copy(update={"payload_mass": None}), db).clarification
+    outcome = to_requirements(unknown, db)
+    assert outcome.requirements is not None and outcome.requirements.payload_model == "custom"
+    assert "Payload 'Foo 9000' is not in the catalogue; treated as a custom payload." in outcome.assumptions
+
+
+def test_no_model_stays_custom(db: Path) -> None:
+    req = to_requirements(SRS_DRAFT, db).requirements
+    assert req is not None and req.payload_model == "custom"
+
+
+def test_parser_prompt_lists_gimbals() -> None:
+    from src.agent.prompts import PARSER_SYSTEM
+    from src.schemas.payload_catalog import PAYLOADS
+
+    assert all(p.name in PARSER_SYSTEM for p in PAYLOADS if p.vendor is not None)

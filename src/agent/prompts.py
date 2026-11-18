@@ -3,6 +3,7 @@
 from typing import Final
 
 from src.agent.agent_schemas import MAX_WHAT_IFS
+from src.schemas.payload_catalog import PAYLOADS
 
 PARSER_SYSTEM: Final[str] = """\
 You extract operational requirements for a DoD Group 1-3 ISR (intelligence, surveillance, \
@@ -16,7 +17,11 @@ use total_range when the user gives a round-trip or total distance. "Runway-inde
 group. Set flight_controller to ark_jetson_pab when the user names ARK, PAB or a Jetson carrier with an \
 autopilot, to cube_orange_plus when they name a Cube, otherwise leave it null. Set companion_computer=true \
 for autonomous operation, onboard AI or a named Jetson / companion computer, false only if the user \
-explicitly excludes one, otherwise leave it null. List anything ambiguous or contradictory in ambiguities. Give the mission a short name."""
+explicitly excludes one, otherwise leave it null. List anything ambiguous or contradictory in ambiguities. Give the mission a short name.
+""" + ("Set payload_model to the product name when the user names a specific payload (catalogue gimbals: "
+       + ", ".join(p.name for p in PAYLOADS if p.vendor is not None)
+       + "); otherwise leave it null. Do not fill payload_mass or payload_power from your own knowledge of the "
+         "product: leave them null unless the user states them.")
 
 CRITIC_SYSTEM: Final[str] = """\
 You are the design critic in an aircraft sizing loop. Deterministic tools have evaluated four hard \
