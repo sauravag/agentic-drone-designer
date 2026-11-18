@@ -118,6 +118,7 @@ def test_bom_accepts_complete_vtol_set() -> None:
 def _sizing_kwargs(**overrides: object) -> dict:
     base: dict = dict(
         mtow_kg=10.0, empty_mass_kg=5.0, payload_mass_kg=1.0, fuel_mass_kg=0.0, battery_mass_kg=4.0,
+        avionics_mass_kg=0.4, avionics_power_w=14.0,
         wing_area_m2=0.8, wingspan_m=3.0, mean_chord_m=0.27, aspect_ratio=11.25,
         fuselage_length_m=1.5, fuselage_diameter_m=0.2, cruise_power_w=300.0,
         hover_power_w=0.0, v_stall_ms=14.0, v_loiter_ms=18.0, assumed_ld_cruise=15.0,

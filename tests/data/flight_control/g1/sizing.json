@@ -3,6 +3,8 @@
  "airframe_topology": "fixed_wing",
  "aspect_ratio": 12.0,
  "assumed_ld_cruise": 18.69051934502226,
+ "avionics_mass_kg": 0.3407343920285767,
+ "avionics_power_w": 11.62937568114307,
  "battery_energy_j": 953070.6287415264,
  "battery_mass_kg": 1.3237092065854534,
  "battery_peak_power_w": 223.39559578832677,

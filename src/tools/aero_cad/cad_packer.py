@@ -179,7 +179,7 @@ def sized_airframe_mass_kg(sizing: SizingOutput) -> float:
         generator_power_w=sizing.generator_power_w,
         fuel_mass_kg=sizing.fuel_mass_kg,
     )
-    return airframe_mass_kg(sizing.mtow_kg, sizing.empty_mass_kg, loads)
+    return airframe_mass_kg(sizing.mtow_kg, sizing.empty_mass_kg, loads, sizing.avionics_mass_kg)
 
 
 def _shell_areal_density(airframe_kg: float, wing: WingStructure, oml: bd.Shape) -> float:

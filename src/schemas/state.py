@@ -68,6 +68,8 @@ class SizingOutput(_Frozen):
     rotor_diameter_m: NonNegative
     energy_reserve_fraction: NonNegative  # electric: SoC reserve; hybrid: reserve fuel fraction
     phases: tuple[PhaseResult, ...]
+    avionics_mass_kg: Positive  # what sizing used: shared allowance + flight-controller stack (+ Jetson)
+    avionics_power_w: Positive  # whole-flight avionics draw incl. a fitted Jetson (excludes payload)
 
     @model_validator(mode="after")
     def _mass_closure(self) -> "SizingOutput":

@@ -12,6 +12,7 @@ import pytest
 
 build123d = pytest.importorskip("build123d")
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS  # noqa: E402
 from src.schemas.components import SelectedBOM  # noqa: E402
 from src.schemas.state import AeroStabilityOutput, SizingOutput  # noqa: E402
 from src.tools.aero_cad import build, cad_packer, components, mass_properties, stability, structure  # noqa: E402
@@ -319,9 +320,10 @@ def test_airframe_mass_round_trips_the_sizing_breakdown() -> None:
     mtow: float = 20.0
     geom = mm.size_geometry(mtow, 1.0, 12.0, 0.5, 0.04, 1.0)
     loads = mm.PropulsionLoads(cruise_motor_power_w=800.0, vtol_total_thrust_n=280.0, generator_power_w=0.0)
-    parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads)
+    avionics: float = DEFAULT_ASSUMPTIONS.avionics_mass_kg(mtow, "cube_orange_plus", False)
+    parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads, avionics)
     structural: float = parts["wing"] + parts["tail"] + parts["fuselage"] + parts["landing_gear"] + mm.BOOM_FRACTION * mtow
-    assert mm.airframe_mass_kg(mtow, sum(parts.values()), loads) == pytest.approx(structural)
+    assert mm.airframe_mass_kg(mtow, sum(parts.values()), loads, avionics) == pytest.approx(structural)
 
 
 def test_as_built_mass_counts_every_part(designs: dict, tmp_path: Path) -> None:
@@ -476,3 +478,16 @@ def test_e2e_balanced_collision_free_and_inertia(built) -> None:
     assert cad.collision_count == 0
     tensor = np.array([[cad.ixx_kgm2, 0, -cad.ixz_kgm2], [0, cad.iyy_kgm2, 0], [-cad.ixz_kgm2, 0, cad.izz_kgm2]])
     assert mass_properties.is_positive_definite(tensor)
+
+
+def test_tray_mass_follows_sized_avionics(designs: dict) -> None:
+    sizing, bom = designs["g1"]
+    tray = components.sliders(sizing, bom)[1]
+    assert tray.mass_kg == pytest.approx(sizing.avionics_mass_kg + mm_systems_fraction() * sizing.mtow_kg)
+    heavier = sizing.model_copy(update={"avionics_mass_kg": sizing.avionics_mass_kg + 1.0})
+    assert components.sliders(heavier, bom)[1].mass_kg == pytest.approx(tray.mass_kg + 1.0)
+
+
+def mm_systems_fraction() -> float:
+    from src.tools.sizing.mass_model import SYSTEMS_FRACTION
+    return SYSTEMS_FRACTION

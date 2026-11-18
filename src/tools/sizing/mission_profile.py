@@ -17,8 +17,6 @@ CLIMB_RATE_MS: Final[float] = 2.5
 VTOL_PHASE_S: Final[float] = 60.0
 VTOL_THRUST_TO_WEIGHT: Final[float] = 1.45
 SPEED_MARGIN_OVER_STALL: Final[float] = 1.2
-AVIONICS_POWER_BASE_W: Final[float] = 10.0
-AVIONICS_POWER_PER_KG: Final[float] = 0.4
 
 HYBRID_BUFFER_SOC_FLOOR: Final[float] = 0.20  # hybrid buffer-pack SoC floor (internal, not a designer assumption)
 GENERATOR_MARGIN: Final[float] = 1.15
@@ -77,8 +75,9 @@ def disk_loading_n_m2(mtow_kg: float) -> float:
     return min(max(60.0 * mtow_kg**0.35, 80.0), 600.0)
 
 
-def hotel_power_w(req: OperationalRequirements, mtow_kg: float) -> float:
-    return req.payload_power_w + AVIONICS_POWER_BASE_W + AVIONICS_POWER_PER_KG * mtow_kg
+def hotel_power_w(req: OperationalRequirements, mtow_kg: float, assumptions: DesignAssumptions) -> float:
+    """Payload + avionics (incl. a fitted Jetson), drawn for the whole flight."""
+    return req.payload_power_w + assumptions.avionics_power_w(mtow_kg, req.jetson_fitted)
 
 
 def forward_power_w(

@@ -3,6 +3,8 @@
  "airframe_topology": "quadplane_vtol",
  "aspect_ratio": 12.0,
  "assumed_ld_cruise": 17.10611324064332,
+ "avionics_mass_kg": 0.493602630782656,
+ "avionics_power_w": 17.74410523130624,
  "battery_energy_j": 6029854.978622372,
  "battery_mass_kg": 8.374798581419961,
  "battery_peak_power_w": 4550.0470403131085,

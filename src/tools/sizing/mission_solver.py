@@ -151,7 +151,7 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     req, assumptions = design.req, design.assumptions
     eta: float = assumptions.drivetrain_efficiency
     aero, mu_c = _aero_state(mtow, design)
-    hotel: float = hotel_power_w(req, mtow)
+    hotel: float = hotel_power_w(req, mtow, assumptions)
     cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, eta) + hotel
     is_hybrid: bool = design.propulsion == "series_hybrid"
     gen_w: float = GENERATOR_MARGIN * cruise_total if is_hybrid else 0.0
@@ -165,7 +165,8 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
                else electric_storage(trace, reserve, assumptions))
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
     loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
-    empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads).values())
+    avionics: float = assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer)
+    empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads, avionics).values())
     return _Evaluation(
         mtow_in=mtow, mtow_out=empty + req.payload_mass_kg + storage.battery_mass_kg + storage.fuel_mass_kg,
         design=design, aero=aero, trace=trace, storage=storage, generator_power_w=gen_w,
@@ -311,6 +312,8 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         rotor_diameter_m=math.sqrt(4.0 * aero.disk_area_m2 / VTOL_ROTOR_COUNT / math.pi) if is_quad else 0.0,
         energy_reserve_fraction=reserve_fraction(design.params, design.propulsion, design.assumptions),
         phases=ev.trace.phases,
+        avionics_mass_kg=design.assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer),
+        avionics_power_w=design.assumptions.avionics_power_w(mtow, req.jetson_fitted),
     )
 
 

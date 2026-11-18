@@ -97,3 +97,34 @@ def test_change_sets_carry_avionics_fields() -> None:
         assert name in FIELD_LABELS
     assert set(AssumptionChanges.model_fields) >= {"jetson_power_w", "avionics_base_mass_kg"}
 
+
+# ------------------------------------------------------------------- sizing ---
+from src.tools.sizing.mass_model import PropulsionLoads, empty_mass_breakdown, size_geometry  # noqa: E402
+from src.tools.sizing.mission_profile import hotel_power_w  # noqa: E402
+
+JETSON_W: Final[float] = 25.0
+
+
+def test_hotel_power_adds_jetson_watts() -> None:
+    cube, cube_jetson = _req(), _req(companion_computer=True)
+    extra = hotel_power_w(cube_jetson, MTOW_KG, DEFAULT_ASSUMPTIONS) - hotel_power_w(cube, MTOW_KG, DEFAULT_ASSUMPTIONS)
+    assert extra == pytest.approx(JETSON_W)
+
+
+def test_breakdown_avionics_entry_is_the_argument() -> None:
+    geom = size_geometry(MTOW_KG, 1.0, 10.0, 0.5, 0.04, 1.0)
+    parts = empty_mass_breakdown(MTOW_KG, geom, "fixed_wing", PropulsionLoads(500.0), avionics_mass_kg=0.5)
+    assert parts["avionics"] == 0.5
+
+
+def test_sizing_records_avionics_and_grows_with_jetson() -> None:
+    cube = size_aircraft(_req())
+    cube_jetson = size_aircraft(_req(companion_computer=True))
+    ark = size_aircraft(_req(flight_controller="ark_jetson_pab"))
+    assert cube_jetson.mtow_kg > ark.mtow_kg > cube.mtow_kg
+    for sizing, req in ((cube, _req()), (cube_jetson, _req(companion_computer=True))):
+        expected = DEFAULT_ASSUMPTIONS.avionics_mass_kg(sizing.mtow_kg, req.flight_controller, req.companion_computer)
+        assert sizing.avionics_mass_kg == pytest.approx(expected)
+        assert sizing.avionics_power_w == pytest.approx(DEFAULT_ASSUMPTIONS.avionics_power_w(sizing.mtow_kg,
+                                                                                            req.jetson_fitted))
+    assert ark.avionics_power_w - DEFAULT_ASSUMPTIONS.avionics_power_w(ark.mtow_kg, False) == pytest.approx(JETSON_W)

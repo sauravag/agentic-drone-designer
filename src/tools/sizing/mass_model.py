@@ -27,8 +27,6 @@ FUSELAGE_AREAL_DENSITY_BASE: Final[float] = 1.0  # kg/m^2 of wetted area
 FUSELAGE_AREAL_DENSITY_PER_KG: Final[float] = 0.002
 
 GEAR_FRACTION: Final[dict[str, float]] = {"fixed_wing": 0.04, "quadplane_vtol": 0.015}
-AVIONICS_BASE_KG: Final[float] = 0.3
-AVIONICS_PER_MTOW: Final[float] = 0.01
 SYSTEMS_FRACTION: Final[float] = 0.05  # wiring, servos, harness, fasteners
 
 MATCH_MARGIN: Final[float] = 1.15
@@ -118,25 +116,27 @@ def _propulsion_mass(mtow_kg: float, loads: PropulsionLoads) -> dict[str, float]
     }
 
 
-def airframe_mass_kg(mtow_kg: float, empty_mass_kg: float, loads: PropulsionLoads) -> float:
+def airframe_mass_kg(mtow_kg: float, empty_mass_kg: float, loads: PropulsionLoads, avionics_mass_kg: float) -> float:
     """Structure (incl. VTOL booms) + landing gear of a converged design: empty mass minus
     propulsion hardware, avionics and systems. The CAD shell carries this mass; booms are part of
     the OML, so their share stays in the airframe."""
     non_structural: float = (
         sum(_propulsion_mass(mtow_kg, loads).values())
-        + AVIONICS_BASE_KG + AVIONICS_PER_MTOW * mtow_kg
+        + avionics_mass_kg
         + SYSTEMS_FRACTION * mtow_kg
     )
     booms: float = BOOM_FRACTION * mtow_kg if loads.vtol_total_thrust_n > 0 else 0.0
     return empty_mass_kg - non_structural + booms
 
 
-def empty_mass_breakdown(mtow_kg: float, geom: Geometry, airframe: Airframe, loads: PropulsionLoads) -> dict[str, float]:
-    """Itemised empty mass [kg]."""
+def empty_mass_breakdown(
+    mtow_kg: float, geom: Geometry, airframe: Airframe, loads: PropulsionLoads, avionics_mass_kg: float
+) -> dict[str, float]:
+    """Itemised empty mass [kg]. `avionics_mass_kg` comes from DesignAssumptions.avionics_mass_kg."""
     return {
         **_structure_mass(mtow_kg, geom),
         **_propulsion_mass(mtow_kg, loads),
         "landing_gear": GEAR_FRACTION[airframe] * mtow_kg,
-        "avionics": AVIONICS_BASE_KG + AVIONICS_PER_MTOW * mtow_kg,
+        "avionics": avionics_mass_kg,
         "systems": SYSTEMS_FRACTION * mtow_kg,
     }

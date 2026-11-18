@@ -18,8 +18,6 @@ from src.schemas.state import SizingOutput
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.layout import CONSTANT_SECTION_FRACTION, AircraftLayout, fuselage_radius_at
 from src.tools.sizing.mass_model import (
-    AVIONICS_BASE_KG,
-    AVIONICS_PER_MTOW,
     FUEL_SYSTEM_FRACTION,
     SYSTEMS_FRACTION,
     VTOL_INSTALL_FACTOR,
@@ -167,7 +165,7 @@ def sliders(sizing: SizingOutput, bom: SelectedBOM) -> tuple[PlacedComponent, Pl
     """Battery and avionics tray on the fuselage axis; the packer solves their x positions."""
     b = bom.battery
     battery = PlacedComponent("battery", "box", b.mass_kg, (b.length_m, b.width_m, b.height_m), (0.0, 0.0, 0.0))
-    tray_mass: float = AVIONICS_BASE_KG + (AVIONICS_PER_MTOW + SYSTEMS_FRACTION) * sizing.mtow_kg
+    tray_mass: float = sizing.avionics_mass_kg + SYSTEMS_FRACTION * sizing.mtow_kg  # the stack sizing used
     unit: float = (tray_mass / AVIONICS_TRAY_DENSITY_KG_M3 / float(np.prod(AVIONICS_TRAY_ASPECT))) ** (1 / 3)
     lx, ly, lz = (a * unit for a in AVIONICS_TRAY_ASPECT)
     return battery, PlacedComponent("avionics_tray", "box", tray_mass, (lx, ly, lz), (0.0, 0.0, 0.0))
