@@ -62,8 +62,8 @@ history lists every run of the session with its parent and where the change came
 
 ### Avionics stack
 
-The aircraft are designed for autonomous operation, so an **Avionics** section above the requirements form picks
-the stack:
+The aircraft are designed for autonomous operation, so the **Avionics** column of the requirements box picks the
+stack:
 
 - **Cube Orange+**: the flight controller alone (73 g); a **Jetson Orin NX companion** on its own carrier board
   (0.2 kg, 25 W) is optional and ticked by default.
@@ -77,6 +77,42 @@ prices move). The masses, watts and the shared allowance are editable under Avio
 Figures researched 2026-11-18 from arkelectron.com, docs.px4.io, retailer listings (GetFPV, RobotShop, Lumenier)
 and NVIDIA's Jetson announcements; the design spec lists them in full. Runs made before this feature read as a
 Cube Orange+ without a Jetson, which is exactly what they sized.
+
+### Payload catalogue
+
+The **Payload** column of the requirements box picks the payload: a researched NextVision or SIYI gimbal, one of the
+generic sensor classes (SAR, LiDAR, relay, heavy turrets…), or **Custom payload**. Choosing a model fills in its
+datasheet mass and typical power; both stay editable, and an edited unit is listed as "(edited)" in the parts list
+and the report. Sizing always uses the two numbers in the box. A description can name a model ("carry a SIYI ZT30");
+its datasheet values are used unless the request states others.
+
+| Gimbal | Type | Mass (kg) | Power (W, typical) | Reference price |
+|---|---|---|---|---|
+| NextVision DragonEye2 | EO/IR | 0.125 | 3.5 | quote only |
+| NextVision X80 | EO | 0.145 | 4.5 | quote only |
+| NextVision Starling | EO/IR | 0.18 | 6 | quote only |
+| NextVision Starling-LRF | EO/IR | 0.23 | 6 | quote only |
+| NextVision Stinger | EO/IR | 0.23 | 7 | quote only |
+| NextVision NightHawk2 | EO/IR | 0.25 | 8 | quote only |
+| NextVision Swift | EO/IR | 0.29 | 6 | quote only |
+| NextVision NightHawk2-V | EO/IR | 0.32 | 5 | quote only |
+| NextVision NightHawk2-UZ | EO/IR | 0.32 | 6 | quote only |
+| NextVision Raptor | EO/IR | 0.64 | 7 | quote only |
+| NextVision Condor | EO/IR | 1.5 | 12 | quote only |
+| NextVision Raven 2.5 | EO/IR | 2.15 | 20 | quote only |
+| SIYI A8 mini | EO | 0.095 | 5 | ≈ $251 |
+| SIYI ZT6 | EO/IR | 0.197 | 6.5 | ≈ $2,940–3,700 |
+| SIYI ZR10 | EO | 0.381 | 4 | ≈ $532 |
+| SIYI UniPod MT11 | EO/IR | 0.5335 | 11.4 | not public |
+| SIYI UniPod NV10 | EO | 0.628 | 15 | not public |
+| SIYI ZR30 | EO | 0.668 | 5 | ≈ $1,181 |
+| SIYI ZT30 | EO/IR | 0.854 | 9 | ≈ $7,000 |
+
+Researched 2026-11-18 from nextvision-sys.com (compare page and camera pages), siyi.biz spec pages and Reebot's
+MT11 page; prices are display only. NextVision does not say what its masses include (probably the bare camera, so
+add your mount); SIYI's ZT6, ZR30, ZT30 and MT11 figures include their plate, mount or board. Peak draw (12-26 W
+where published) is not modelled. Custom payloads, and every run made before this feature, are matched to the
+lightest generic sensor class at or above their mass in the parts list, exactly as before.
 
 ### 3D viewer
 
@@ -173,7 +209,7 @@ reserve fails gate 4 and the critic raises it to 15 %.
 
 ## Known limitations
 
-- The COTS catalog is representative, not vendor-verified. The matcher snaps to the next sensor up, which
+- The COTS catalog is representative, not vendor-verified. For a Custom payload the matcher snaps to the next sensor up, which
   can draw more power or weigh more than requested; the run warns when that makes the energy budget
   optimistic (set the payload power to the sensor's draw and re-run).
 - As-built mass outside ±3 % of the sized MTOW is reported as a warning, not a gate (the SRS does not gate it).
