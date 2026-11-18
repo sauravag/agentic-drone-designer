@@ -53,6 +53,8 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
 SECONDS_PER_MINUTE: Final[float] = 60.0
 IN_AVIONICS_ALLOWANCE: Final[str] = "in avionics allowance"
+PAYLOAD_CAPTION: Final[str] = ("Masses and powers are datasheet values (typical power). NextVision masses are "
+                                "probably the bare camera, so add your mount if it's separate.")
 NO_PRICE: Final[str] = "—"  # generic and Custom payload rows have no reference price
 
 

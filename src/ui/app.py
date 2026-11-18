@@ -27,6 +27,7 @@ from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import ARK_JETSON_PAB, OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
+from src.schemas.payload_catalog import payload_choices, payload_label, payload_spec  # noqa: E402
 from src.ui import agent_service, chat_panel, design_loop, presenters, viewer_panel  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
@@ -45,6 +46,7 @@ EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR dron
 DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
 COMPANION_CUBE_KEY: Final[str] = "companion_computer_cube"  # editable box (Cube); writes "companion_computer"
 COMPANION_ARK_KEY: Final[str] = "companion_computer_ark"  # greyed, ticked box shown for the ARK stack
+PENDING_DESIGN_KEY: Final[str] = "pending_design"  # set by Design aircraft inside the box; main() runs it
 AGENT_TABS: Final[tuple[str, ...]] = ("Critic", "Report", "Files")
 HEADLINE_COLUMNS: Final[int] = 6
 GENERIC_FAILURE: Final[str] = ("The design run failed unexpectedly; details are in the server log and the run "
@@ -105,12 +107,25 @@ def _description_form() -> bool:
         return st.form_submit_button("Design from description", key="submit_prompt", disabled=problem is not None)
 
 
-def _number_inputs() -> None:
-    for column, (title, fields) in zip(st.columns(len(presenters.NUMBER_FIELDS)), presenters.NUMBER_FIELDS.items()):
-        with column:
-            st.subheader(title)
-            for key, lo, hi, step, fmt in fields:
-                st.number_input(presenters.FIELD_LABELS[key], min_value=lo, max_value=hi, step=step, format=fmt, key=key)
+def _number_inputs(title: str) -> None:
+    for key, lo, hi, step, fmt in presenters.NUMBER_FIELDS[title]:
+        st.number_input(presenters.FIELD_LABELS[key], min_value=lo, max_value=hi, step=step, format=fmt, key=key)
+
+
+def _fill_payload() -> None:
+    """on_change: a catalogue model brings its datasheet mass and power; Custom keeps the current numbers."""
+    spec = payload_spec(st.session_state["payload_model"])
+    if spec is not None:
+        st.session_state["payload_mass_kg"] = spec.mass_kg
+        st.session_state["payload_power_w"] = spec.power_w
+
+
+def _payload_inputs() -> None:
+    st.subheader("Payload")
+    st.selectbox(presenters.FIELD_LABELS["payload_model"], payload_choices(), key="payload_model",
+                 format_func=payload_label, on_change=_fill_payload)
+    _number_inputs("Payload")
+    st.caption(presenters.PAYLOAD_CAPTION)
 
 
 def _configuration_inputs() -> None:
@@ -131,33 +146,42 @@ def _store_companion() -> None:
 
 
 def _avionics_inputs() -> None:
-    """Outside the requirements form so the Jetson box greys out the moment the ARK stack is chosen."""
+    """The Avionics column: the Jetson box greys out the moment the ARK stack is chosen (the box is a fragment)."""
     st.subheader("Avionics")
-    st.caption("Used by **Design aircraft** below. A description sets its own avionics: Cube Orange+ with a "
-               "Jetson unless it names ARK or rules the Jetson out.")
-    fc, jetson = st.columns(2)
-    fc.selectbox(presenters.FIELD_LABELS["flight_controller"], tuple(presenters.FLIGHT_CONTROLLER_NAMES),
+    st.selectbox(presenters.FIELD_LABELS["flight_controller"], tuple(presenters.FLIGHT_CONTROLLER_NAMES),
                  key="flight_controller", format_func=presenters.FLIGHT_CONTROLLER_NAMES.get,
                  help="Cube Orange+: flight controller only, Jetson optional. ARK Jetson PAB: flight controller and "
                       "Jetson Orin NX 16 GB on one board stack.")
     label: str = presenters.FIELD_LABELS["companion_computer"]
-    with jetson:
-        if st.session_state["flight_controller"] == ARK_JETSON_PAB:
-            st.checkbox(label, value=True, disabled=True, key=COMPANION_ARK_KEY)
-            st.caption("Built into the ARK stack.")
-        else:
-            st.checkbox(label, value=st.session_state["companion_computer"], key=COMPANION_CUBE_KEY,
-                        on_change=_store_companion, help="Jetson Orin NX on its own carrier board (see Avionics "
-                                                         "in Design assumptions for its mass and power).")
+    if st.session_state["flight_controller"] == ARK_JETSON_PAB:
+        st.checkbox(label, value=True, disabled=True, key=COMPANION_ARK_KEY)
+        st.caption("Built into the ARK stack.")
+    else:
+        st.checkbox(label, value=st.session_state["companion_computer"], key=COMPANION_CUBE_KEY,
+                    on_change=_store_companion, help="Jetson Orin NX on its own carrier board (see Avionics "
+                                                     "in Design assumptions for its mass and power).")
+    st.caption("A description sets its own avionics.")
 
 
-def _requirements_form() -> bool:
-    with st.form("requirements"):
-        st.subheader("…or enter the requirements")
+@st.fragment
+def _requirements_box() -> None:
+    """A fragment, not a form: each edit reruns only this box, so the payload prefill and the ARK greying are live.
+    Design aircraft flags a run and reruns the whole app, where main() starts it below the box."""
+    with st.container(border=True):
         st.text_input(presenters.FIELD_LABELS["mission_name"], key="mission_name", max_chars=200)
-        _number_inputs()
+        payload, mission, envelope, avionics = st.columns(4)
+        with payload:
+            _payload_inputs()
+        for column, title in ((mission, "Mission"), (envelope, "Envelope")):
+            with column:
+                st.subheader(title)
+                _number_inputs(title)
+        with avionics:
+            _avionics_inputs()
         _configuration_inputs()
-        return st.form_submit_button("Design aircraft", type="primary", key="submit")
+        if st.button("Design aircraft", type="primary", key="submit"):
+            st.session_state[PENDING_DESIGN_KEY] = True
+            st.rerun(scope="app")
 
 
 # --------------------------------------------------------------------- run ---
@@ -342,9 +366,12 @@ def main() -> None:
     render_assumptions_panel()
     if _description_form():
         _run_description(st.session_state["prompt"])
-    st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)
-    _avionics_inputs()
-    if _requirements_form():
+    st.subheader("Start from an example")
+    st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset,
+                 label_visibility="collapsed")
+    st.subheader("…or enter the requirements")
+    _requirements_box()
+    if st.session_state.pop(PENDING_DESIGN_KEY, False):
         _run_form({key: st.session_state[key] for key in presenters.FIELD_LABELS})
     design_loop.render_history()
     if "last_run" in st.session_state:

@@ -298,7 +298,7 @@ NO_LLM_PROBLEM = "no LLM in this test"
 
 
 def _fill_form_widget(at: Any, key: str, value: object) -> None:
-    if key == "flight_controller":  # avionics inputs live above the form; the Jetson box key depends on the stack
+    if key in ("flight_controller", "payload_model"):  # these redraw (Jetson box) or refill (mass, power) others
         at.selectbox(key=key).set_value(value)
         at.run()
     elif key == "companion_computer":
@@ -332,8 +332,9 @@ def _form_app_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, req: Operati
     at.run()
     if not at.checkbox(key="with_aero_cad").disabled:
         at.checkbox(key="with_aero_cad").uncheck()
-    # Avionics inputs first: they sit outside the form and rerun the app, which would drop unsubmitted form values.
-    values = sorted(presenters.form_defaults(req).items(), key=lambda kv: kv[0] not in presenters.HARDWARE_KEYS)
+    # Payload model and avionics first: choosing a model refills mass/power; the stack decides the Jetson box key.
+    first = ("payload_model", *presenters.HARDWARE_KEYS)
+    values = sorted(presenters.form_defaults(req).items(), key=lambda kv: kv[0] not in first)
     for key, value in values:
         if key in presenters.FIELD_LABELS:
             _fill_form_widget(at, key, value)
@@ -764,7 +765,6 @@ def test_report_requirements_list_avionics() -> None:
     assert rows["Jetson companion computer"] == "built into the ARK stack"
 
 
-def test_avionics_section_says_it_applies_to_the_requirements_form(tmp_path: Path,
-                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+def test_avionics_column_caption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     at = _llm_app(tmp_path, monkeypatch)
-    assert any("Design aircraft" in c.value and "description" in c.value for c in at.caption)
+    assert any(c.value == "A description sets its own avionics." for c in at.caption)
