@@ -115,13 +115,14 @@ def _requirement_values(req: OperationalRequirements, changes: RequirementChange
         values["companion_computer"] = True
     if values["flight_controller"] == ARK_JETSON_PAB:
         values["companion_computer"] = False
-    return {**values, **_model_payload_values(changes)}
+    return {**values, **_model_payload_values(req, changes)}
 
 
-def _model_payload_values(changes: RequirementChanges) -> dict[str, float]:
-    """Choosing a catalogue model brings its datasheet mass and power, unless the change states them itself.
-    Switching to Custom (or an unknown name, rejected on apply) brings nothing: the current numbers stay."""
-    spec = payload_spec(changes.payload_model) if changes.payload_model is not None else None
+def _model_payload_values(req: OperationalRequirements, changes: RequirementChanges) -> dict[str, float]:
+    """Choosing a different catalogue model brings its datasheet mass and power, unless the change states them.
+    Re-stating the current model, switching to Custom (or an unknown name, rejected on apply) brings nothing."""
+    switching: bool = changes.payload_model not in (None, req.payload_model)
+    spec = payload_spec(changes.payload_model) if switching else None
     if spec is None:
         return {}
     implied: dict[str, float] = {"payload_mass_kg": spec.mass_kg, "payload_power_w": spec.power_w}

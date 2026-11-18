@@ -98,15 +98,27 @@ def payload_spec(name: str) -> Optional[Payload]:
     return _BY_NAME.get(ALIASES.get(name, name))
 
 
+# Words people add around a model name ("ZT30 gimbal", "SIYI ZT30 EO/IR"); SIYI's "UniPod" is a family prefix.
+FILLER_WORDS: Final[frozenset[str]] = frozenset({"gimbal", "camera", "pod", "payload", "eo", "ir", "eoir", "unipod"})
+
+
 def _key(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def _model_key(text: str) -> str:
+    """Case-, punctuation- and filler-insensitive key: 'SIYI UniPod MT11' and 'siyi mt11 gimbal' -> 'siyimt11'."""
+    return "".join(k for word in text.split() if (k := _key(word)) not in FILLER_WORDS)
+
+
 def resolve_payload_name(text: str) -> Optional[str]:
-    """A catalogue gimbal named loosely: any case or punctuation, vendor optional (e.g. 'Siyi ZT-30', 'raptor')."""
-    wanted: str = _key(text)
+    """A catalogue gimbal named loosely: any case, punctuation or filler word, vendor optional
+    (e.g. 'Siyi ZT-30', 'raptor', 'MT11', 'ZT30 gimbal')."""
+    wanted: str = _model_key(text)
+    if not wanted:
+        return None
     for p in PAYLOADS:
-        if p.vendor is not None and wanted in (_key(p.name), _key(p.name.removeprefix(f"{p.vendor} "))):
+        if p.vendor is not None and wanted in (_model_key(p.name), _model_key(p.name.removeprefix(f"{p.vendor} "))):
             return p.name
     return None
 

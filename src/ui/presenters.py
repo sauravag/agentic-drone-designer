@@ -45,7 +45,8 @@ AUTO: Final[str] = "auto"
 # Form sections -> (field, min, max, step, format). Bounds sit inside OperationalRequirements'
 # constraints; tests/test_ui.py pins that, and that every preset fits.
 NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]] = {
-    "Payload": (("payload_mass_kg", 0.01, 200.0, 0.1, "%.2f"), ("payload_power_w", 0.0, 5000.0, 5.0, "%.0f")),
+    # Payload formats keep every catalogue value exact (0.5335 kg, 3.5 W): the box rounds what it holds.
+    "Payload": (("payload_mass_kg", 0.01, 200.0, 0.1, "%.4f"), ("payload_power_w", 0.0, 5000.0, 5.0, "%.1f")),
     "Mission": (("endurance_hours", 0.2, 48.0, 0.5, "%.1f"), ("combat_radius_km", 1.5, 1000.0, 5.0, "%.0f"),
                 ("cruise_speed_ms", 8.5, 120.0, 1.0, "%.1f")),
     "Envelope": (("service_ceiling_m", 150.0, 10000.0, 100.0, "%.0f"), ("max_stall_speed_ms", 5.5, 45.0, 0.5, "%.1f")),

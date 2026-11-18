@@ -26,6 +26,7 @@ from src.schemas.assumptions import DesignAssumptions
 from src.schemas.changes import FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges, \
     RequirementChanges, apply_changes
 from src.schemas.knobs import OVERRIDE_BOUNDS
+from src.schemas.payload_catalog import payload_choices, resolve_payload_name
 from src.schemas.requirements import OperationalRequirements
 
 MAX_ROUNDS: Final[int] = 3
@@ -129,6 +130,8 @@ def _label(text: str) -> str:
 
 def _value(name: str, value: str) -> object:
     text = value.strip()
+    if name == "payload_model":  # 'zt30' -> 'SIYI ZT30'; Custom and unknown names pass through to validation
+        return resolve_payload_name(text) or text
     return int(text) if name in INT_CHOICE_FIELDS and text.isdigit() else text
 
 
@@ -161,7 +164,9 @@ def _model_bounds(model: type[BaseModel], names: Sequence[str]) -> dict[str, dic
 
 
 def _allowed_fields(allow_knobs: bool) -> dict[str, dict[str, dict[str, Any]]]:
-    allowed = {"requirements": _model_bounds(OperationalRequirements, list(RequirementChanges.model_fields)),
+    requirements = _model_bounds(OperationalRequirements, list(RequirementChanges.model_fields))
+    requirements["payload_model"] = {"enum": list(payload_choices())}  # the catalogue, so the LLM can pick a name
+    allowed = {"requirements": requirements,
                "assumptions": _model_bounds(DesignAssumptions, list(AssumptionChanges.model_fields))}
     if allow_knobs:
         allowed["knobs"] = {name: {"minimum": OVERRIDE_BOUNDS[name][0], "maximum": OVERRIDE_BOUNDS[name][1]}

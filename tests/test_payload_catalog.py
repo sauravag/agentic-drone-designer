@@ -286,3 +286,43 @@ def test_payload_summary() -> None:
     assert payload_summary(_named()) == "SIYI ZT30 (0.854 kg, 9 W)"
     assert payload_summary(_named(mass=0.9)) == "SIYI ZT30 (edited) (0.9 kg, 9 W)"
     assert payload_summary(G1) == "Custom payload (1 kg, 15 W)"
+
+
+# ------------------------------------------------------------- final-review fixes ---
+def _form_format(field: str) -> str:
+    from src.ui.presenters import NUMBER_FIELDS
+
+    return next(fmt for name, *_, fmt in NUMBER_FIELDS["Payload"] if name == field)
+
+
+@pytest.mark.parametrize("part", [p for p in PAYLOADS if p.vendor is not None], ids=lambda p: p.name)
+def test_form_shows_catalogue_values_exactly(part) -> None:
+    """The number boxes round to their format; a datasheet value must survive it or the unit reads as edited."""
+    assert float(_form_format("payload_mass_kg") % part.mass_kg) == part.mass_kg
+    assert float(_form_format("payload_power_w") % part.power_w) == part.power_w
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("SIYI MT11", "SIYI UniPod MT11"), ("MT11", "SIYI UniPod MT11"), ("NV10", "SIYI UniPod NV10"),
+    ("ZT30 gimbal", ZT30), ("siyi zt30 eo/ir", ZT30), ("NextVision Raptor camera", "NextVision Raptor"),
+    ("gimbal", None),
+])
+def test_resolve_common_phrasings(text: str, expected: object) -> None:
+    assert resolve_payload_name(text) == expected
+
+
+def test_chat_offers_catalogue_names_and_resolves_loosely() -> None:
+    from src.agent.agent_schemas import ProposedChange
+    from src.agent.design_chat import _allowed_fields, to_change_set
+
+    assert _allowed_fields(False)["requirements"]["payload_model"]["enum"] == list(payload_choices())
+    proposed = ProposedChange.model_validate({"label": "lighter gimbal",
+                                             "changes": [{"field": "payload_model", "value": "zt30"}]})
+    assert to_change_set(proposed).requirements.payload_model == ZT30
+
+
+def test_restating_the_current_model_keeps_edited_values() -> None:
+    edited = _named(mass=1.0)
+    new_req, _, _ = apply_changes(edited, DEFAULT_ASSUMPTIONS,
+                                  _payload_change(payload_model=ZT30, cruise_speed_ms=25.0))
+    assert (new_req.payload_mass_kg, new_req.payload_power_w) == (1.0, 9.0)
