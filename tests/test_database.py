@@ -200,7 +200,9 @@ def test_electric_fixed_wing_bom(db_path: Path) -> None:
     )
     bom = select_bom(db_path, needs)
     assert bom.vtol_motor is None and bom.ice_generator is None
-    expected = bom.cruise_motor.mass_kg + bom.cruise_propeller.mass_kg + bom.battery.mass_kg + bom.payload.mass_kg
+    assert bom.flight_controller is not None and bom.companion_computer is None  # default: Cube, no Jetson
+    expected = (bom.cruise_motor.mass_kg + bom.cruise_propeller.mass_kg + bom.battery.mass_kg + bom.payload.mass_kg
+                + bom.flight_controller.mass_kg)
     assert bom.total_hardware_mass_kg == pytest.approx(expected)
 
 

@@ -9,14 +9,16 @@ import math
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Callable, Literal, Optional, TypeVar
+from typing import Callable, Final, Literal, Optional, TypeVar
 
 from pydantic import BaseModel
 
 from src.schemas.components import (
     Battery,
+    CompanionComputer,
     ComponentNeeds,
     CruiseMotor,
+    FlightController,
     IceGenerator,
     Payload,
     Propeller,
@@ -25,11 +27,23 @@ from src.schemas.components import (
     VtolMotor,
 )
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS
 from src.tools.database.seed_data import CATALOG_TABLES, pack_envelope
 from src.units import WH_TO_J
 
 SAFETY_MARGIN: float = 1.15
 MTOW_TOLERANCE: float = 0.03
+
+# Avionics names and reference prices (display only; masses and watts are DesignAssumptions).
+# Sources: arkelectron.com, docs.px4.io, GetFPV/RobotShop/Lumenier, NVIDIA developer forum.
+AVIONICS_RESEARCH_DATE: Final[str] = "2026-11-18"
+COMPANION: Final[str] = "companion"
+AVIONICS_REFERENCE: Final[dict[str, tuple[str, str]]] = {
+    CUBE_ORANGE_PLUS: ("CubePilot Cube Orange+ (ADS-B carrier)", "≈ $450–546"),
+    ARK_JETSON_PAB: ("ARK Jetson PAB Carrier + ARKV6X + Jetson Orin NX 16 GB",
+                     "≈ $1,750–2,600 (carrier $800, ARKV6X $400, Orin NX 16 GB $599 1KU–$1,400 retail)"),
+    COMPANION: ("NVIDIA Jetson Orin NX + carrier + heatsink", "≈ $1,000–1,400 (Orin NX 16 GB retail) + carrier"),
+}
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -152,6 +166,24 @@ def match_payload(
     return min(candidates, key=lambda p: (p.mass_kg, p.power_w))
 
 
+def avionics_parts(
+    needs: ComponentNeeds, assumptions: DesignAssumptions
+) -> tuple[FlightController, Optional[CompanionComputer]]:
+    """The chosen flight-controller stack and (Cube only) the separate Jetson, from the design assumptions.
+    The Cube's own power sits inside the shared avionics allowance; the ARK line carries the Jetson's power."""
+    if needs.flight_controller == ARK_JETSON_PAB:
+        name, price = AVIONICS_REFERENCE[ARK_JETSON_PAB]
+        return FlightController(name=name, mass_kg=assumptions.ark_pab_stack_mass_kg,
+                                power_w=assumptions.jetson_power_w, reference_price_usd=price), None
+    name, price = AVIONICS_REFERENCE[CUBE_ORANGE_PLUS]
+    cube = FlightController(name=name, mass_kg=assumptions.cube_orange_plus_mass_kg, reference_price_usd=price)
+    if not needs.companion_computer:
+        return cube, None
+    name, price = AVIONICS_REFERENCE[COMPANION]
+    return cube, CompanionComputer(name=name, mass_kg=assumptions.companion_computer_mass_kg,
+                                   power_w=assumptions.jetson_power_w, reference_price_usd=price)
+
+
 def select_bom(
     db_path: Path, needs: ComponentNeeds, assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
 ) -> SelectedBOM:
@@ -166,6 +198,7 @@ def select_bom(
     generator: Optional[IceGenerator] = (
         match_ice_generator(db_path, needs.generator_power_w) if needs.generator_power_w is not None else None
     )
+    flight_controller, companion = avionics_parts(needs, assumptions)
     return SelectedBOM(
         cruise_motor=cruise_motor,
         cruise_propeller=match_propeller(db_path, cruise_motor.max_power_w, "cruise"),
@@ -176,6 +209,8 @@ def select_bom(
         vtol_propeller=vtol_prop,
         vtol_motor_count=needs.vtol_motor_count if vtol_motor is not None else 0,
         ice_generator=generator,
+        flight_controller=flight_controller,
+        companion_computer=companion,
     )
 
 

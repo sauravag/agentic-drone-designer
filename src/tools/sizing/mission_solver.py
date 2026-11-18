@@ -357,4 +357,6 @@ def component_needs(sizing: SizingOutput, req: OperationalRequirements) -> Compo
         vtol_thrust_per_motor_n=sizing.vtol_thrust_per_motor_n if is_quad else None,
         vtol_motor_count=VTOL_ROTOR_COUNT,
         generator_power_w=sizing.generator_power_w if is_hybrid else None,
+        flight_controller=req.flight_controller,
+        companion_computer=req.companion_computer,
     )

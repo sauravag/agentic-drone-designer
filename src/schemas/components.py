@@ -5,6 +5,7 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from src.schemas.requirements import CUBE_ORANGE_PLUS, FlightControllerId
 from src.units import KWH_TO_J, WH_TO_J
 
 # Any length >= 3 m on a single component almost certainly means a mm/inch unit leak.
@@ -109,6 +110,21 @@ class Payload(_Component):
     height_m: Length
 
 
+class _Avionics(_Component):
+    """Not a catalog lookup: built from DesignAssumptions; the price is reference text, never a design input."""
+
+    power_w: Optional[float] = Field(default=None, ge=0, le=1_000.0)  # None: inside the shared avionics allowance
+    reference_price_usd: str = Field(..., min_length=1, max_length=120)
+
+
+class FlightController(_Avionics):
+    pass
+
+
+class CompanionComputer(_Avionics):
+    pass
+
+
 class ComponentNeeds(BaseModel):
     """SI requirements emitted by the sizing engine and consumed by the matcher."""
 
@@ -124,6 +140,8 @@ class ComponentNeeds(BaseModel):
     vtol_thrust_per_motor_n: Optional[float] = Field(default=None, gt=0)
     vtol_motor_count: int = Field(default=MIN_VTOL_ROTORS, ge=MIN_VTOL_ROTORS, le=8)
     generator_power_w: Optional[float] = Field(default=None, gt=0)
+    flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
+    companion_computer: bool = False
 
 
 class SelectedBOM(BaseModel):
@@ -139,6 +157,8 @@ class SelectedBOM(BaseModel):
     vtol_propeller: Optional[Propeller] = None
     vtol_motor_count: int = 0
     ice_generator: Optional[IceGenerator] = None
+    flight_controller: Optional[FlightController] = None  # None only in bom.json written before the avionics choice
+    companion_computer: Optional[CompanionComputer] = None
 
     @model_validator(mode="after")
     def _consistent_vtol_set(self) -> "SelectedBOM":
@@ -159,7 +179,8 @@ class SelectedBOM(BaseModel):
     def total_hardware_mass_kg(self) -> float:
         single: float = sum(
             part.mass_kg
-            for part in (self.cruise_motor, self.cruise_propeller, self.battery, self.payload, self.ice_generator)
+            for part in (self.cruise_motor, self.cruise_propeller, self.battery, self.payload, self.ice_generator,
+                         self.flight_controller, self.companion_computer)
             if part is not None
         )
         rotor_set: float = sum(p.mass_kg for p in (self.vtol_motor, self.vtol_propeller) if p is not None)

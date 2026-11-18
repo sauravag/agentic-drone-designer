@@ -39,6 +39,7 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
 }
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
 SECONDS_PER_MINUTE: Final[float] = 60.0
+IN_AVIONICS_ALLOWANCE: Final[str] = "in avionics allowance"
 
 
 def parse_form(values: dict[str, Any]) -> tuple[Optional[OperationalRequirements], list[str]]:
@@ -106,12 +107,21 @@ def bom_rows(bom: SelectedBOM) -> list[dict[str, Any]]:
     ]
     rows = [
         {"Part": label, "Item": part.name, "Qty": qty, "Unit mass (kg)": round(part.mass_kg, 3),
-         "Mass (kg)": round(qty * part.mass_kg, 3)}
+         "Mass (kg)": round(qty * part.mass_kg, 3), "Power (W)": None, "Ref. price": ""}
         for label, part, qty in parts if part is not None
     ]
+    rows += [_avionics_row(label, part) for label, part in
+             (("Flight controller", bom.flight_controller), ("Companion computer", bom.companion_computer))
+             if part is not None]
     rows.append({"Part": "Total", "Item": "", "Qty": None, "Unit mass (kg)": None,
-                 "Mass (kg)": round(bom.total_hardware_mass_kg, 3)})
+                 "Mass (kg)": round(bom.total_hardware_mass_kg, 3), "Power (W)": None, "Ref. price": ""})
     return rows
+
+
+def _avionics_row(label: str, part: Any) -> dict[str, Any]:
+    power: Any = IN_AVIONICS_ALLOWANCE if part.power_w is None else part.power_w
+    return {"Part": label, "Item": part.name, "Qty": 1, "Unit mass (kg)": round(part.mass_kg, 3),
+            "Mass (kg)": round(part.mass_kg, 3), "Power (W)": power, "Ref. price": part.reference_price_usd}
 
 
 def aero_rows(aero: AeroStabilityOutput) -> list[dict[str, str]]:

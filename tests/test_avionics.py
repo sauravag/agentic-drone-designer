@@ -128,3 +128,73 @@ def test_sizing_records_avionics_and_grows_with_jetson() -> None:
         assert sizing.avionics_power_w == pytest.approx(DEFAULT_ASSUMPTIONS.avionics_power_w(sizing.mtow_kg,
                                                                                             req.jetson_fitted))
     assert ark.avionics_power_w - DEFAULT_ASSUMPTIONS.avionics_power_w(ark.mtow_kg, False) == pytest.approx(JETSON_W)
+
+
+# ---------------------------------------------------------------- parts list ---
+from src.schemas.components import CompanionComputer, ComponentNeeds, FlightController  # noqa: E402
+from src.tools.database.matcher import avionics_parts  # noqa: E402
+from src.tools.sizing.mission_solver import component_needs  # noqa: E402
+from src.ui.presenters import bom_rows  # noqa: E402
+
+CUBE_KG, ARK_KG, COMPANION_KG = 0.073, 0.166, 0.2
+
+
+def _needs(flight_controller: str = "cube_orange_plus", companion: bool = False) -> ComponentNeeds:
+    return ComponentNeeds(cruise_power_w=100.0, battery_energy_j=1e6, battery_peak_power_w=500.0, payload_mass_kg=1.0,
+                          flight_controller=flight_controller, companion_computer=companion)
+
+
+def test_cube_bom_has_flight_controller_only() -> None:
+    fc, companion = avionics_parts(_needs(), DEFAULT_ASSUMPTIONS)
+    assert "Cube Orange+" in fc.name and fc.mass_kg == CUBE_KG and fc.power_w is None and companion is None
+
+
+def test_cube_with_jetson_adds_companion() -> None:
+    _, companion = avionics_parts(_needs(companion=True), DEFAULT_ASSUMPTIONS)
+    assert companion is not None and companion.mass_kg == COMPANION_KG and companion.power_w == JETSON_W
+
+
+def test_ark_bom_has_stack_and_no_companion() -> None:
+    fc, companion = avionics_parts(_needs("ark_jetson_pab", companion=True), DEFAULT_ASSUMPTIONS)
+    assert "ARK" in fc.name and fc.mass_kg == ARK_KG and fc.power_w == JETSON_W and companion is None
+
+
+def test_avionics_lines_follow_edited_assumptions() -> None:
+    edited = DEFAULT_ASSUMPTIONS.model_copy(update={"jetson_power_w": 15.0, "cube_orange_plus_mass_kg": 0.08})
+    fc, companion = avionics_parts(_needs(companion=True), edited)
+    assert fc.mass_kg == 0.08 and companion is not None and companion.power_w == 15.0
+
+
+def _bom(db_path: Path, req: OperationalRequirements):
+    from src.tools.database.matcher import select_bom
+    return select_bom(db_path, component_needs(size_aircraft(req), req), DEFAULT_ASSUMPTIONS)
+
+
+@pytest.fixture(scope="module")
+def catalog(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from src.tools.database.seed_data import seed_database
+    path = tmp_path_factory.mktemp("db") / "catalog.db"
+    seed_database(path)
+    return path
+
+
+def test_total_hardware_mass_counts_avionics_lines(catalog: Path) -> None:
+    bom = _bom(catalog, _req(companion_computer=True))
+    without = bom.model_copy(update={"flight_controller": None, "companion_computer": None})
+    assert bom.total_hardware_mass_kg == pytest.approx(without.total_hardware_mass_kg + CUBE_KG + COMPANION_KG)
+
+
+def test_bom_rows_show_avionics_rows(catalog: Path) -> None:
+    rows = {r["Part"]: r for r in bom_rows(_bom(catalog, _req(companion_computer=True)))}
+    assert rows["Flight controller"]["Power (W)"] == "in avionics allowance"
+    assert rows["Companion computer"]["Power (W)"] == JETSON_W
+    assert rows["Flight controller"]["Ref. price"].startswith("≈ $")
+    assert rows["Total"]["Mass (kg)"] == pytest.approx(round(_bom(catalog, _req(companion_computer=True))
+                                                            .total_hardware_mass_kg, 3))
+
+
+def test_component_needs_copies_avionics_choice() -> None:
+    req = _req(flight_controller="ark_jetson_pab")
+    needs = component_needs(size_aircraft(req), req)
+    assert needs.flight_controller == "ark_jetson_pab" and needs.companion_computer is False
+    assert FlightController and CompanionComputer  # exported for the BOM schema
