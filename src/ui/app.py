@@ -133,6 +133,8 @@ def _store_companion() -> None:
 def _avionics_inputs() -> None:
     """Outside the requirements form so the Jetson box greys out the moment the ARK stack is chosen."""
     st.subheader("Avionics")
+    st.caption("Used by **Design aircraft** below. A description sets its own avionics: Cube Orange+ with a "
+               "Jetson unless it names ARK or rules the Jetson out.")
     fc, jetson = st.columns(2)
     fc.selectbox(presenters.FIELD_LABELS["flight_controller"], tuple(presenters.FLIGHT_CONTROLLER_NAMES),
                  key="flight_controller", format_func=presenters.FLIGHT_CONTROLLER_NAMES.get,

@@ -37,6 +37,7 @@ FLIGHT_CONTROLLER_NAMES: Final[dict[str, str]] = {
 # Hardware choices are the designer's, not the mission's: presets never overwrite them.
 HARDWARE_KEYS: Final[tuple[str, ...]] = ("flight_controller", "companion_computer")
 NEW_DESIGN_HARDWARE: Final[dict[str, Any]] = {"flight_controller": CUBE_ORANGE_PLUS, "companion_computer": True}
+ARK_BUILT_IN: Final[str] = "built into the ARK stack"
 AUTO: Final[str] = "auto"
 # Form sections -> (field, min, max, step, format). Bounds sit inside OperationalRequirements'
 # constraints; tests/test_ui.py pins that, and that every preset fits.
@@ -71,6 +72,13 @@ def form_defaults(req: OperationalRequirements) -> dict[str, Any]:
     values: dict[str, Any] = req.model_dump()
     values["group_constraint"] = AUTO if req.group_constraint is None else req.group_constraint
     return values
+
+
+def avionics_values(req: OperationalRequirements) -> dict[str, str]:
+    """Display values for the two avionics requirement rows (names, and whether a Jetson is fitted)."""
+    is_ark: bool = req.flight_controller == ARK_JETSON_PAB
+    return {"flight_controller": FLIGHT_CONTROLLER_NAMES[req.flight_controller],
+            "companion_computer": ARK_BUILT_IN if is_ark else ("yes" if req.companion_computer else "no")}
 
 
 def avionics_summary(req: OperationalRequirements, assumptions: DesignAssumptions) -> str:

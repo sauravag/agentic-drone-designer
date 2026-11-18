@@ -172,7 +172,7 @@ def _allowed_fields(allow_knobs: bool) -> dict[str, dict[str, dict[str, Any]]]:
 def _design_data(ctx: ChatContext) -> dict[str, object]:
     """The deterministic design context (tool output and configuration only)."""
     return {
-        "requirements": ctx.requirements.model_dump(mode="json"), "assumptions": ctx.assumptions.model_dump(),
+        "requirements": ctx.requirements.to_context_json(), "assumptions": ctx.assumptions.model_dump(),
         "failed_gates": list(ctx.failed_gates), "critic_summary": list(ctx.critic_summary),
         "options": list(ctx.options), "allowed_fields": _allowed_fields(ctx.allow_knobs), "rules": list(RULES),
     }

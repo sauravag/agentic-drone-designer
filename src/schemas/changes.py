@@ -11,7 +11,7 @@ from typing import Final, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
-from src.schemas.requirements import FlightControllerId, OperationalRequirements
+from src.schemas.requirements import ARK_JETSON_PAB, FlightControllerId, OperationalRequirements
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 
 LABEL_MAX_LEN: Final[int] = 120
@@ -102,6 +102,20 @@ def _set_fields(model: BaseModel) -> dict[str, object]:
     return {name: value for name, value in model.model_dump().items() if value is not None}
 
 
+def _requirement_values(req: OperationalRequirements, changes: RequirementChanges) -> dict[str, object]:
+    """Merged requirement values as they will be after re-validation, so `describe` and `apply_changes` agree.
+
+    Moving off the ARK stack keeps its Jetson (as a separate companion) unless the change says otherwise; on the
+    ARK stack a separate companion never applies (the schema normalises it away)."""
+    values: dict[str, object] = {**req.model_dump(), **_set_fields(changes)}
+    leaving_ark = req.flight_controller == ARK_JETSON_PAB and values["flight_controller"] != ARK_JETSON_PAB
+    if leaving_ark and changes.companion_computer is None:
+        values["companion_computer"] = True
+    if values["flight_controller"] == ARK_JETSON_PAB:
+        values["companion_computer"] = False
+    return values
+
+
 def _format(value: object) -> str:
     """Compact display: '3' not '3.0'; booleans as yes/no."""
     if isinstance(value, bool):
@@ -131,12 +145,17 @@ class ChangeSet(BaseModel):
 
         A knob's baseline is `current_knobs[name]` if given, else the solver's constant default."""
         rows: list[tuple[str, str, str]] = []
-        sources: list[tuple[BaseModel, BaseModel]] = [(self.requirements, req), (self.assumptions, assumptions)]
-        for changes, current in sources:
-            for name, new in _set_fields(changes).items():
-                old = getattr(current, name)
-                if old != new:
-                    rows.append((FIELD_LABELS[name], _format(old), _format(new)))
+        merged = _requirement_values(req, self.requirements)
+        # Requirement rows compare the effective result, so implied avionics changes show and no-ops do not.
+        names = [n for n in RequirementChanges.model_fields if n in _set_fields(self.requirements)
+                 or (n == "companion_computer" and merged[n] != req.companion_computer)]
+        for name in names:
+            if getattr(req, name) != merged[name]:
+                rows.append((FIELD_LABELS[name], _format(getattr(req, name)), _format(merged[name])))
+        for name, new in _set_fields(self.assumptions).items():
+            old = getattr(assumptions, name)
+            if old != new:
+                rows.append((FIELD_LABELS[name], _format(old), _format(new)))
         for name, new in _set_fields(self.knobs).items():
             old_knob = (current_knobs or {}).get(name, OVERRIDE_DEFAULTS[name])
             if old_knob != new:
@@ -151,7 +170,7 @@ def apply_changes(
 
     Raises `pydantic.ValidationError` for out-of-bounds requirements/assumptions and `ValueError` for knobs.
     """
-    new_req = OperationalRequirements.model_validate({**req.model_dump(), **_set_fields(change.requirements)})
+    new_req = OperationalRequirements.model_validate(_requirement_values(req, change.requirements))
     new_assumptions = DesignAssumptions.model_validate({**assumptions.model_dump(), **_set_fields(change.assumptions)})
     knobs: dict[str, float] = {name: float(value) for name, value in _set_fields(change.knobs).items()}
     for name, value in knobs.items():

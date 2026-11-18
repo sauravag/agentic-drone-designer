@@ -760,4 +760,11 @@ def test_avionics_summary_texts() -> None:
 def test_report_requirements_list_avionics() -> None:
     from src.agent import report
     rows = dict(report.requirement_rows(_avionics_req(flight_controller="ark_jetson_pab")))
-    assert rows["Flight controller"] == "ark_jetson_pab" and rows["Jetson companion computer"] == "False"
+    assert rows["Flight controller"] == "ARK Jetson PAB (Orin NX 16 GB)"
+    assert rows["Jetson companion computer"] == "built into the ARK stack"
+
+
+def test_avionics_section_says_it_applies_to_the_requirements_form(tmp_path: Path,
+                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    assert any("Design aircraft" in c.value and "description" in c.value for c in at.caption)

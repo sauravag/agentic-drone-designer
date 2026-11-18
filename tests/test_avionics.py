@@ -198,3 +198,53 @@ def test_component_needs_copies_avionics_choice() -> None:
     needs = component_needs(size_aircraft(req), req)
     assert needs.flight_controller == "ark_jetson_pab" and needs.companion_computer is False
     assert FlightController and CompanionComputer  # exported for the BOM schema
+
+
+# ------------------------------------------------- final-review fixes (RED first) ---
+def _change(**requirements: object) -> ChangeSet:
+    return ChangeSet(label="avionics", requirements=RequirementChanges(**requirements),
+                     assumptions=AssumptionChanges(), knobs=KnobChanges())
+
+
+def test_switching_ark_to_cube_keeps_the_jetson() -> None:
+    ark = _req(flight_controller="ark_jetson_pab")
+    req, _, _ = apply_changes(ark, DEFAULT_ASSUMPTIONS, _change(flight_controller="cube_orange_plus"))
+    assert req.flight_controller == "cube_orange_plus" and req.companion_computer is True
+    rows = _change(flight_controller="cube_orange_plus").describe(ark, DEFAULT_ASSUMPTIONS)
+    assert ("Jetson companion computer", "no", "yes") in rows  # the implied change is shown, not hidden
+
+
+def test_switching_ark_to_cube_can_drop_the_jetson_explicitly() -> None:
+    ark = _req(flight_controller="ark_jetson_pab")
+    change = _change(flight_controller="cube_orange_plus", companion_computer=False)
+    req, _, _ = apply_changes(ark, DEFAULT_ASSUMPTIONS, change)
+    assert req.companion_computer is False
+
+
+def test_companion_on_ark_is_shown_as_no_change() -> None:
+    ark = _req(flight_controller="ark_jetson_pab")
+    assert _change(companion_computer=True).describe(ark, DEFAULT_ASSUMPTIONS) == []
+
+
+def test_report_rows_say_ark_has_a_jetson() -> None:
+    from src.agent import report
+    rows = dict(report.requirement_rows(_req(flight_controller="ark_jetson_pab")))
+    assert rows["Flight controller"] == "ARK Jetson PAB (Orin NX 16 GB)"
+    assert rows["Jetson companion computer"] == "built into the ARK stack"
+    cube_rows = dict(report.requirement_rows(_req(companion_computer=True)))
+    assert cube_rows["Flight controller"] == "Cube Orange+" and cube_rows["Jetson companion computer"] == "yes"
+
+
+def test_report_facts_and_chat_context_state_jetson_fitted() -> None:
+    from src.agent import report
+    from src.agent.design_chat import _design_data
+    from types import SimpleNamespace
+    ark = _req(flight_controller="ark_jetson_pab")
+    facts = json.loads(report.facts(report.ReportInputs(run_id="r", out_dir=Path("."), requirements=ark, sizing=None,
+                                                        bom=None, aero=None, cad=None, fcs=None, converged=True,
+                                                        iterations=0)))
+    assert facts["requirements"]["jetson_fitted"] is True
+    assert facts["avionics"] == "ARK Jetson PAB + Orin NX 16 GB (25 W, 0.166 kg)"
+    ctx = SimpleNamespace(requirements=ark, assumptions=DEFAULT_ASSUMPTIONS, failed_gates=(), critic_summary=(),
+                          options=(), allow_knobs=False)
+    assert _design_data(ctx)["requirements"]["jetson_fitted"] is True

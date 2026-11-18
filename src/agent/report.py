@@ -118,7 +118,7 @@ def polar_rows(aero: AeroStabilityOutput, sizing: SizingOutput) -> list[dict[str
 
 
 def requirement_rows(req: OperationalRequirements) -> list[tuple[str, str]]:
-    values: dict[str, Any] = presenters.form_defaults(req)
+    values: dict[str, Any] = {**presenters.form_defaults(req), **presenters.avionics_values(req)}
     return [(label, str(values[key])) for key, label in presenters.FIELD_LABELS.items()]
 
 
@@ -139,7 +139,8 @@ def design_assumptions_section(assumptions: DesignAssumptions) -> list[str]:
 
 def facts(inputs: ReportInputs) -> str:
     """Compact JSON of the computed results, given to the LLM as the only source of numbers."""
-    data: dict[str, Any] = {"requirements": inputs.requirements.model_dump(mode="json"),
+    data: dict[str, Any] = {"requirements": inputs.requirements.to_context_json(),
+                            "avionics": presenters.avionics_summary(inputs.requirements, inputs.design_assumptions),
                             "converged": inputs.converged, "iterations": inputs.iterations,
                             "gates": list(inputs.final_gates), "assumptions": list(inputs.assumptions),
                             "non_default_design_assumptions": {k: list(v) for k, v in

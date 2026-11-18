@@ -45,6 +45,11 @@ class OperationalRequirements(BaseModel):
     def jetson_fitted(self) -> bool:
         return self.flight_controller == ARK_JETSON_PAB or self.companion_computer
 
+    def to_context_json(self) -> dict[str, Any]:
+        """JSON for LLM context (report facts, design chat): adds `jetson_fitted`, since `companion_computer` alone
+        reads as "no Jetson" on an ARK design. Not for re-validation (`extra="forbid"` rejects the added key)."""
+        return {**self.model_dump(mode="json"), "jetson_fitted": self.jetson_fitted}
+
     @property
     def endurance_s(self) -> float:
         return self.endurance_hours * HOUR_TO_S
