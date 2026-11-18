@@ -9,6 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from src import pipeline
+from src.agent import explorer
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
+from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges, apply_changes
 from src.schemas.components import ComponentNeeds
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.payload_catalog import (
@@ -209,3 +212,50 @@ def test_named_model_reaches_cad_payload_box(catalog: Path) -> None:
     bom = select_bom(catalog, component_needs(sizing, req))
     assert bom.payload.name == ZT30
     assert cad_components.payload(bom, _fitted_layout(sizing, bom)).mass_kg == 0.854
+
+
+# ----------------------------------------------------- changes, explorer, review panel ---
+def _payload_change(**requirements: object) -> ChangeSet:
+    return ChangeSet(label="payload", requirements=RequirementChanges(**requirements),
+                     assumptions=AssumptionChanges(), knobs=KnobChanges())
+
+
+def test_model_change_fills_mass_and_power() -> None:
+    change = _payload_change(payload_model=ZT30)
+    new_req, _, _ = apply_changes(G1, DEFAULT_ASSUMPTIONS, change)
+    assert (new_req.payload_model, new_req.payload_mass_kg, new_req.payload_power_w) == (ZT30, 0.854, 9.0)
+    labels = [row[0] for row in change.describe(G1, DEFAULT_ASSUMPTIONS)]
+    assert labels == ["Payload mass (kg)", "Payload power (W)", "Payload"]
+
+
+def test_model_change_keeps_stated_mass() -> None:
+    new_req, _, _ = apply_changes(G1, DEFAULT_ASSUMPTIONS, _payload_change(payload_model=ZT30, payload_mass_kg=1.0))
+    assert (new_req.payload_mass_kg, new_req.payload_power_w, new_req.payload_edited) == (1.0, 9.0, True)
+
+
+def test_switch_to_custom_keeps_numbers() -> None:
+    new_req, _, _ = apply_changes(_named(), DEFAULT_ASSUMPTIONS, _payload_change(payload_model=CUSTOM_PAYLOAD))
+    assert (new_req.payload_model, new_req.payload_mass_kg, new_req.payload_power_w) == (CUSTOM_PAYLOAD, 0.854, 9.0)
+
+
+def test_unknown_model_change_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="Foo 9000"):
+        apply_changes(G1, DEFAULT_ASSUMPTIONS, _payload_change(payload_model="Foo 9000"))
+
+
+def test_explorer_payload_lever_switches_named_model_to_custom() -> None:
+    lever = explorer.LEVERS["payload_mass"]
+    named = explorer._lever_change(lever, 0.5, _named()).requirements
+    assert (named.payload_mass_kg, named.payload_model) == (0.5, CUSTOM_PAYLOAD)
+    custom = explorer._lever_change(lever, 0.5, G1).requirements
+    assert (custom.payload_mass_kg, custom.payload_model) == (0.5, None)
+    endurance = explorer._lever_change(explorer.LEVERS["endurance"], 1.5, _named()).requirements
+    assert endurance.payload_model is None
+
+
+def test_review_panel_payload_model_choices() -> None:
+    from src.ui import design_loop
+
+    assert design_loop._field_choices("requirements", "payload_model") == payload_choices()
+    assert design_loop._field_choices("requirements", "propulsion_type") == ("electric", "series_hybrid", "auto")
+    assert design_loop._field_choices("requirements", "payload_mass_kg") is None

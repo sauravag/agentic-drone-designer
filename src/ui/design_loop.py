@@ -18,6 +18,7 @@ from src.agent.providers import LLMConfigError
 from src.agent.report import defang, inline
 from src.schemas.changes import (FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges,
                                  RequirementChanges)
+from src.schemas.payload_catalog import payload_choices, payload_label
 from src.ui import agent_service
 from src.ui.agent_service import AgentRunView, NoChangeError
 
@@ -202,11 +203,20 @@ def _choices(section: str, field: str) -> Optional[tuple[Any, ...]]:
     return get_args(literal) if literal is not None else None
 
 
+def _field_choices(section: str, field: str) -> Optional[tuple[Any, ...]]:
+    """Selectable values: the payload catalogue for the payload model, else a Literal field's values (or None)."""
+    if section == "requirements" and field == "payload_model":
+        return payload_choices()
+    return _choices(section, field)
+
+
 def _edit_widget(section: str, field: str, value: Any) -> None:
     key, label = _review_key(section, field), FIELD_LABELS[field]
-    choices = _choices(section, field)
+    choices = _field_choices(section, field)
     if isinstance(value, bool):
         st.checkbox(label, key=key)
+    elif field == "payload_model":
+        st.selectbox(label, choices, key=key, format_func=payload_label)
     elif choices is not None:
         st.selectbox(label, choices, key=key)
     else:

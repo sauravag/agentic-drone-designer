@@ -20,7 +20,7 @@ from src.agent.evaluator import Evaluation, evaluate, round_fact, with_reserve_f
 from src.schemas.assumptions import SERIES_HYBRID, DesignAssumptions
 from src.schemas.changes import (FIELD_LABELS, AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges,
                                  apply_changes)
-from src.schemas.requirements import OperationalRequirements
+from src.schemas.requirements import CUSTOM_PAYLOAD, OperationalRequirements
 from src.schemas.state import DesignState
 
 ExplorerMode = Literal["closure", "airframe", "improvement", "none"]
@@ -154,12 +154,15 @@ def _change(label: str, requirements: Optional[dict] = None, assumptions: Option
                      assumptions=AssumptionChanges(**(assumptions or {})), knobs=KnobChanges())
 
 
-def _lever_change(lever: Lever, value: float) -> ChangeSet:
-    return _change(f"{FIELD_LABELS[lever.field]} → {value:g}", **{lever.section: {lever.field: value}})
+def _lever_change(lever: Lever, value: float, req: OperationalRequirements) -> ChangeSet:
+    fields: dict[str, object] = {lever.field: value}
+    if lever.field == "payload_mass_kg" and req.payload_model != CUSTOM_PAYLOAD:
+        fields["payload_model"] = CUSTOM_PAYLOAD  # a lighter payload is a different unit, not an edited catalogue one
+    return _change(f"{FIELD_LABELS[lever.field]} → {value:g}", **{lever.section: fields})
 
 
 def _lever_probe(search: _Search, lever: Lever) -> Probe:
-    return lambda value: search.probe(_lever_change(lever, value))
+    return lambda value: search.probe(_lever_change(lever, value, search.req))
 
 
 def _current(search: _Search, lever: Lever) -> float:
@@ -248,11 +251,11 @@ def _search_monotone(search: _Search, name: str, lever: Lever) -> Optional[Explo
     probe = _lever_probe(search, lever)
     at_bound = probe(bound)
     if at_bound is None:
-        return _unevaluated(name, _lever_change(lever, bound), _relative(requested, bound))
+        return _unevaluated(name, _lever_change(lever, bound, search.req), _relative(requested, bound))
     if not at_bound.closes:
-        return _option(search, name, _lever_change(lever, bound), _out_of_range(at_bound), _relative(requested, bound))
+        return _option(search, name, _lever_change(lever, bound, search.req), _out_of_range(at_bound), _relative(requested, bound))
     value, result = _bisect(probe, bound, at_bound, requested, lever.resolution)
-    return _option(search, name, _lever_change(lever, value), result, _relative(requested, value))
+    return _option(search, name, _lever_change(lever, value, search.req), result, _relative(requested, value))
 
 
 def _cruise_floor(req: OperationalRequirements) -> float:
@@ -277,17 +280,17 @@ def _search_cruise(search: _Search, name: str, lever: Lever) -> ExploreOption:
             break
         scanned.append((value, result))
     if not scanned:
-        return _unevaluated(name, _lever_change(lever, points[0]), _relative(requested, points[0]))
+        return _unevaluated(name, _lever_change(lever, points[0], search.req), _relative(requested, points[0]))
     closing = [(value, result) for value, result in scanned if result.closes]
     if not closing:
         value, result = min(scanned, key=lambda pair: abs(pair[0] - requested))
-        return _option(search, name, _lever_change(lever, value), _out_of_range(result), _relative(requested, value))
+        return _option(search, name, _lever_change(lever, value, search.req), _out_of_range(result), _relative(requested, value))
     value, result = min(closing, key=lambda pair: abs(pair[0] - requested))
     # the failing end: the request, or a nearer non-closing scan point between it and the closing point
     between = [v for v, r in scanned if not r.closes and min(value, requested) < v < max(value, requested)]
     failing = min([requested, *between], key=lambda v: abs(v - value))
     value, result = _bisect(probe, value, result, failing, lever.resolution)
-    return _option(search, name, _lever_change(lever, value), result, _relative(requested, value))
+    return _option(search, name, _lever_change(lever, value, search.req), result, _relative(requested, value))
 
 
 def explore_closure(req: OperationalRequirements, assumptions: DesignAssumptions, db_path: Path,
@@ -324,7 +327,7 @@ def _improve_lever(search: _Search, name: str, lever: Lever,
     target = _improvement_target(search, lever)
     if target is None or (is_hybrid and name in BATTERY_LEVERS):  # battery constants are no-ops on a hybrid
         return None
-    change, relative = _lever_change(lever, target), _relative(_current(search, lever), target)
+    change, relative = _lever_change(lever, target, search.req), _relative(_current(search, lever), target)
     result = search.probe(change)
     if result is None:
         return _unevaluated(name, change, relative)

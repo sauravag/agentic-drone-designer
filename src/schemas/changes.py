@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.requirements import ARK_JETSON_PAB, FlightControllerId, OperationalRequirements
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
+from src.schemas.payload_catalog import payload_spec
 
 LABEL_MAX_LEN: Final[int] = 120
 
@@ -23,7 +24,7 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "endurance_hours": "Endurance (h)", "combat_radius_km": "Combat radius (km)",
     "cruise_speed_ms": "Cruise speed (m/s)", "service_ceiling_m": "Service ceiling (m)",
     "max_stall_speed_ms": "Max stall speed (m/s)", "flight_controller": "Flight controller",
-    "companion_computer": "Jetson companion computer",
+    "companion_computer": "Jetson companion computer", "payload_model": "Payload",
     # assumptions
     "liion_specific_energy_wh_kg": "Specific energy (Li-ion, Wh/kg)",
     "liion_energy_density_wh_l": "Energy density (Li-ion, Wh/L)",
@@ -61,6 +62,7 @@ class RequirementChanges(BaseModel):
     max_stall_speed_ms: Optional[float] = None
     flight_controller: Optional[FlightControllerId] = None
     companion_computer: Optional[bool] = None
+    payload_model: Optional[str] = None  # a catalogue payload name or "custom"; checked when the change is applied
 
 
 class AssumptionChanges(BaseModel):
@@ -113,7 +115,17 @@ def _requirement_values(req: OperationalRequirements, changes: RequirementChange
         values["companion_computer"] = True
     if values["flight_controller"] == ARK_JETSON_PAB:
         values["companion_computer"] = False
-    return values
+    return {**values, **_model_payload_values(changes)}
+
+
+def _model_payload_values(changes: RequirementChanges) -> dict[str, float]:
+    """Choosing a catalogue model brings its datasheet mass and power, unless the change states them itself.
+    Switching to Custom (or an unknown name, rejected on apply) brings nothing: the current numbers stay."""
+    spec = payload_spec(changes.payload_model) if changes.payload_model is not None else None
+    if spec is None:
+        return {}
+    implied: dict[str, float] = {"payload_mass_kg": spec.mass_kg, "payload_power_w": spec.power_w}
+    return {name: value for name, value in implied.items() if getattr(changes, name) is None}
 
 
 def _format(value: object) -> str:
@@ -146,10 +158,9 @@ class ChangeSet(BaseModel):
         A knob's baseline is `current_knobs[name]` if given, else the solver's constant default."""
         rows: list[tuple[str, str, str]] = []
         merged = _requirement_values(req, self.requirements)
-        # Requirement rows compare the effective result, so implied avionics changes show and no-ops do not.
-        names = [n for n in RequirementChanges.model_fields if n in _set_fields(self.requirements)
-                 or (n == "companion_computer" and merged[n] != req.companion_computer)]
-        for name in names:
+        # Requirement rows compare the effective result, so implied changes (the Jetson kept off ARK, a model's
+        # datasheet mass and power) show and no-ops do not.
+        for name in RequirementChanges.model_fields:
             if getattr(req, name) != merged[name]:
                 rows.append((FIELD_LABELS[name], _format(getattr(req, name)), _format(merged[name])))
         for name, new in _set_fields(self.assumptions).items():
