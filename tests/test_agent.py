@@ -522,3 +522,19 @@ def test_the_report_lists_the_viewer_file_only_when_it_was_built(tmp_path: Path)
     assert "viewer.html" not in "\n".join(report._sections(no_mesh))  # no mesh exported: nothing to list
     (tmp_path / "viewer.html").write_text("<html></html>")
     assert "`viewer.html` (3D viewer)" in "\n".join(report._sections(inputs))
+
+
+# ---------------------------------------------------------- avionics parsing ---
+def test_parser_defaults_to_cube_with_jetson(db: Path) -> None:
+    req = to_requirements(SRS_DRAFT, db).requirements
+    assert req is not None and req.flight_controller == "cube_orange_plus" and req.companion_computer is True
+
+
+def test_parser_reads_ark(db: Path) -> None:
+    req = to_requirements(SRS_DRAFT.model_copy(update={"flight_controller": "ark_jetson_pab"}), db).requirements
+    assert req is not None and req.flight_controller == "ark_jetson_pab" and req.jetson_fitted
+
+
+def test_parser_respects_explicit_no_companion(db: Path) -> None:
+    req = to_requirements(SRS_DRAFT.model_copy(update={"companion_computer": False}), db).requirements
+    assert req is not None and req.companion_computer is False and not req.jetson_fitted

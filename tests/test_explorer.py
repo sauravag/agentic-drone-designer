@@ -137,3 +137,10 @@ def test_improvement_compares_against_the_evaluated_unchanged_design(db: Path) -
 def test_a_no_op_step_saves_nothing(db: Path) -> None:
     c_rate = {o.lever: o for o in explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db)}["liion_max_c_rate"]
     assert abs(c_rate.mtow_saved_kg) < 0.01
+
+
+def test_explorers_never_touch_avionics(db: Path, closure_options: list) -> None:
+    improved = explore_improvement(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db)
+    for option in [*closure_options, *improved]:
+        assert option.change.requirements.flight_controller is None
+        assert option.change.requirements.companion_computer is None

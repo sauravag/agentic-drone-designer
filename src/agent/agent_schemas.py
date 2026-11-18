@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from src.schemas.changes import AssumptionChanges, KnobChanges, RequirementChanges
 from src.schemas.components import SensorType
+from src.schemas.requirements import FlightControllerId
 
 MAX_WHAT_IFS: Final[int] = 4  # per design-chat round; enforced after parsing (see DesignerTurn)
 # every field a designer change set may touch, generated from the change models so the two cannot drift
@@ -71,6 +72,12 @@ class RequirementsDraft(BaseModel):
     runway_available: Optional[bool] = Field(
         default=None, description="false for runway-independent, VTOL or ship/field operations")
     vtol_required: Optional[bool] = None
+    flight_controller: Optional[FlightControllerId] = Field(
+        default=None, description="ark_jetson_pab if the user names ARK / PAB / a Jetson carrier with autopilot; "
+                                  "cube_orange_plus if they name a Cube; otherwise null")
+    companion_computer: Optional[bool] = Field(
+        default=None, description="true for autonomous / onboard AI / a named Jetson or companion computer; "
+                                  "false only if the user explicitly excludes one; otherwise null")
     propulsion: Literal["electric", "series_hybrid", "auto"] = "auto"
     dod_group: Optional[Literal[1, 2, 3]] = Field(default=None, description="Only if the user named a DoD UAS group")
     ambiguities: list[str] = Field(default_factory=list, description="Anything unclear or contradictory")

@@ -12,7 +12,7 @@ from typing import Final, Optional
 from pydantic import ValidationError
 
 from src.agent.agent_schemas import Altitude, Distance, Duration, Mass, Power, RequirementsDraft, Speed
-from src.schemas.requirements import OperationalRequirements
+from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
 from src.tools.database.matcher import ComponentNotFoundError, match_payload
 from src.units import (DAY_TO_S, FT_TO_M, G_TO_KG, HOUR_TO_S, KM_TO_M, KMH_TO_MS, KNOT_TO_MS, KW_TO_W, LB_TO_KG,
                        MILE_TO_M, MIN_TO_S, MPH_TO_MS, NMI_TO_M, OZ_TO_KG)
@@ -107,6 +107,16 @@ def _airframe_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, ob
     return {"runway_available": draft.runway_available}
 
 
+def _avionics_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, object]:
+    """New designs start autonomous: Cube Orange+ with a Jetson unless the request says otherwise."""
+    if draft.flight_controller is None:
+        notes.append("Flight controller not stated: assumed a Cube Orange+.")
+    if draft.companion_computer is None and draft.flight_controller != ARK_JETSON_PAB:
+        notes.append("Companion computer not stated: assumed a Jetson Orin NX is fitted (autonomous operation).")
+    return {"flight_controller": draft.flight_controller or CUBE_ORANGE_PLUS,
+            "companion_computer": True if draft.companion_computer is None else draft.companion_computer}
+
+
 def _optional_fields(draft: RequirementsDraft) -> dict[str, float]:
     fields: dict[str, float] = {}
     if draft.service_ceiling is not None:
@@ -129,7 +139,7 @@ def to_requirements(draft: RequirementsDraft, db_path: Path) -> ParseOutcome:
         "payload_power_w": _payload_power_w(draft, payload_kg, db_path, notes),
         "combat_radius_km": _radius_km(draft, notes), "cruise_speed_ms": _speed_ms(draft, notes),
         "propulsion_type": draft.propulsion, "group_constraint": draft.dod_group,
-        **_airframe_fields(draft, notes), **_optional_fields(draft),
+        **_airframe_fields(draft, notes), **_avionics_fields(draft, notes), **_optional_fields(draft),
     }
     try:
         req = OperationalRequirements(**fields)
