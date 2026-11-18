@@ -26,7 +26,7 @@ reads `.env`; when running on the host, `export OPENROUTER_API_KEY=...` in your 
 
 The designer stays in charge of the numbers the agent would otherwise assume. Four pieces, all in the web form:
 
-**Design assumptions.** A panel above the forms holds the 12 technology constants the sizing chain uses; the
+**Design assumptions.** A panel above the forms holds the 20 technology constants the sizing chain uses; the
 defaults reproduce the historical values exactly.
 
 | Group | Values (default) |
@@ -35,6 +35,7 @@ defaults reproduce the historical values exactly.
 | LiPo | specific energy 155 Wh/kg, energy density 280 Wh/L, max discharge 25 C |
 | Reserves | battery reserve 0.20, fuel reserve (hybrid) 0.10 |
 | Propulsion and VTOL | generator BSFC 0.50 kg/kWh, drivetrain efficiency 0.68, hover figure of merit 0.72, lift motor efficiency 0.85 |
+| Avionics | allowance 0.227 kg + 0.01 kg per kg MTOW and 10 W + 0.4 W per kg MTOW (GPS, radios, wiring, the flight controller's own power); Cube Orange+ 0.073 kg; ARK PAB stack 0.166 kg; Jetson companion 0.2 kg; Jetson power 25 W |
 
 They apply to both description and form runs, and each has validated bounds. Changing a battery value makes the
 catalog battery packs *notional*: capacity and voltage stay catalog values, but pack mass and size are derived
@@ -58,6 +59,24 @@ The conversation is saved with the run.
 **Linked re-runs and design history.** Selecting an option or accepting a chat proposal fills a review panel with
 the change (requirements, assumptions, or knobs); **Re-run** starts a new run linked to its parent. The design
 history lists every run of the session with its parent and where the change came from, and Open reloads any of them.
+
+### Avionics stack
+
+The aircraft are designed for autonomous operation, so an **Avionics** section above the requirements form picks
+the stack:
+
+- **Cube Orange+**: the flight controller alone (73 g); a **Jetson Orin NX companion** on its own carrier board
+  (0.2 kg, 25 W) is optional and ticked by default.
+- **ARK Jetson PAB**: the ARK carrier with an ARKV6X flight controller and a Jetson Orin NX 16 GB on one board stack
+  (166 g with heatsink, 25 W). The Jetson is always part of it, so the companion box greys out.
+
+A description can choose too ("ARK", "Cube", "autonomous", "no companion computer"); unstated means Cube with a
+Jetson. The Jetson's power is drawn for the whole flight and its mass goes into the CAD avionics tray, so it shows
+up in endurance, MTOW and the CG. The parts list has a line for each board with a reference price (display only;
+prices move). The masses, watts and the shared allowance are editable under Avionics in Design assumptions.
+Figures researched 2026-11-18 from arkelectron.com, docs.px4.io, retailer listings (GetFPV, RobotShop, Lumenier)
+and NVIDIA's Jetson announcements; the design spec lists them in full. Runs made before this feature read as a
+Cube Orange+ without a Jetson, which is exactly what they sized.
 
 ### 3D viewer
 

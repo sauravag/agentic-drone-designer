@@ -24,7 +24,7 @@ import streamlit as st  # noqa: E402
 from src import pipeline  # noqa: E402
 from src.agent.providers import LLMConfigError  # noqa: E402
 from src.agent.report import defang, inline  # noqa: E402
-from src.schemas.requirements import OperationalRequirements  # noqa: E402
+from src.schemas.requirements import ARK_JETSON_PAB, OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
 from src.ui import agent_service, chat_panel, design_loop, presenters, viewer_panel  # noqa: E402
@@ -43,6 +43,8 @@ MAX_PROMPT_CHARS: Final[int] = 2000
 EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
                               "6-hour endurance, and 80 km datalink radius")
 DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
+COMPANION_CUBE_KEY: Final[str] = "companion_computer_cube"  # editable box (Cube); writes "companion_computer"
+COMPANION_ARK_KEY: Final[str] = "companion_computer_ark"  # greyed, ticked box shown for the ARK stack
 AGENT_TABS: Final[tuple[str, ...]] = ("Critic", "Report", "Files")
 HEADLINE_COLUMNS: Final[int] = 6
 GENERIC_FAILURE: Final[str] = ("The design run failed unexpectedly; details are in the server log and the run "
@@ -56,13 +58,16 @@ STATUS_TEXT: Final[dict[str, str]] = {
 
 def _load_preset() -> None:
     for key, value in presenters.form_defaults(EXAMPLE_MISSIONS[st.session_state["preset"]]).items():
-        st.session_state[key] = value
+        if key not in presenters.HARDWARE_KEYS:  # presets describe missions, not the designer's hardware choice
+            st.session_state[key] = value
 
 
 def _init_state() -> None:
     if "mission_name" not in st.session_state:
         st.session_state["preset"] = next(iter(EXAMPLE_MISSIONS))
         _load_preset()
+    for key, value in presenters.NEW_DESIGN_HARDWARE.items():
+        st.session_state.setdefault(key, value)
     st.session_state.setdefault("prompt", EXAMPLE_PROMPT)
     st.session_state.setdefault("with_aero_cad", pipeline.aero_cad_available())
     st.session_state.setdefault("with_sitl", pipeline.aero_cad_available() and pipeline.sitl_available())
@@ -118,6 +123,30 @@ def _configuration_inputs() -> None:
     g.selectbox(presenters.FIELD_LABELS["group_constraint"], GROUPS, key="group_constraint",
                 format_func=lambda v: "auto" if v == "auto" else f"Group {v}")
     r.checkbox(presenters.FIELD_LABELS["runway_available"], key="runway_available")
+
+
+def _store_companion() -> None:
+    """on_change: keep the Cube's Jetson choice in a plain key that survives runs where the box is not drawn."""
+    st.session_state["companion_computer"] = st.session_state[COMPANION_CUBE_KEY]
+
+
+def _avionics_inputs() -> None:
+    """Outside the requirements form so the Jetson box greys out the moment the ARK stack is chosen."""
+    st.subheader("Avionics")
+    fc, jetson = st.columns(2)
+    fc.selectbox(presenters.FIELD_LABELS["flight_controller"], tuple(presenters.FLIGHT_CONTROLLER_NAMES),
+                 key="flight_controller", format_func=presenters.FLIGHT_CONTROLLER_NAMES.get,
+                 help="Cube Orange+: flight controller only, Jetson optional. ARK Jetson PAB: flight controller and "
+                      "Jetson Orin NX 16 GB on one board stack.")
+    label: str = presenters.FIELD_LABELS["companion_computer"]
+    with jetson:
+        if st.session_state["flight_controller"] == ARK_JETSON_PAB:
+            st.checkbox(label, value=True, disabled=True, key=COMPANION_ARK_KEY)
+            st.caption("Built into the ARK stack.")
+        else:
+            st.checkbox(label, value=st.session_state["companion_computer"], key=COMPANION_CUBE_KEY,
+                        on_change=_store_companion, help="Jetson Orin NX on its own carrier board (see Avionics "
+                                                         "in Design assumptions for its mass and power).")
 
 
 def _requirements_form() -> bool:
@@ -211,6 +240,8 @@ def _headline(view: AgentRunView) -> None:
     cols[3].metric("Cruise L/D", f"{ld:.1f}", help="VSPAERO" if view.aero else "sizing estimate")
     cols[4].metric("Static margin", f"{view.cad.static_margin:.1%}" if view.cad else "not run")
     cols[5].metric("SITL flight test", ("passed" if view.fcs.passed else "FAILED") if view.fcs else "not run")
+    if view.requirements is not None:
+        st.caption("Avionics: " + presenters.avionics_summary(view.requirements, view.design_assumptions))
 
 
 def _table(rows: list[tuple[str, str]]) -> None:
@@ -309,6 +340,7 @@ def main() -> None:
     if _description_form():
         _run_description(st.session_state["prompt"])
     st.selectbox("Start from an example", list(EXAMPLE_MISSIONS), key="preset", on_change=_load_preset)
+    _avionics_inputs()
     if _requirements_form():
         _run_form({key: st.session_state[key] for key in presenters.FIELD_LABELS})
     design_loop.render_history()

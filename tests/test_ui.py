@@ -298,7 +298,15 @@ NO_LLM_PROBLEM = "no LLM in this test"
 
 
 def _fill_form_widget(at: Any, key: str, value: object) -> None:
-    if isinstance(value, bool):
+    if key == "flight_controller":  # avionics inputs live above the form; the Jetson box key depends on the stack
+        at.selectbox(key=key).set_value(value)
+        at.run()
+    elif key == "companion_computer":
+        if at.session_state["flight_controller"] == "cube_orange_plus":
+            box = at.checkbox(key="companion_computer_cube")
+            box.check() if value else box.uncheck()
+            at.run()
+    elif isinstance(value, bool):
         box = at.checkbox(key=key)
         box.check() if value else box.uncheck()
     elif key in SELECT_FIELDS:
@@ -324,7 +332,9 @@ def _form_app_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, req: Operati
     at.run()
     if not at.checkbox(key="with_aero_cad").disabled:
         at.checkbox(key="with_aero_cad").uncheck()
-    for key, value in presenters.form_defaults(req).items():
+    # Avionics inputs first: they sit outside the form and rerun the app, which would drop unsubmitted form values.
+    values = sorted(presenters.form_defaults(req).items(), key=lambda kv: kv[0] not in presenters.HARDWARE_KEYS)
+    for key, value in values:
         if key in presenters.FIELD_LABELS:
             _fill_form_widget(at, key, value)
     at.button(key="submit").click()
@@ -690,3 +700,64 @@ def test_render_viewer_warns_when_the_page_is_not_valid_utf8(tmp_path: Path, mon
     monkeypatch.setattr(viewer_panel.st, "warning", warnings.append)
     viewer_panel.render_viewer(_viewer_view(run, tmp_path))
     assert len(warnings) == 1 and "could not be read" in warnings[0]
+
+
+# ------------------------------------------------------------------ avionics ---
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS  # noqa: E402
+
+
+def _avionics_req(**update: object) -> OperationalRequirements:
+    return OperationalRequirements(**{**G1_ELECTRIC_FW.model_dump(), **update})
+
+
+def test_avionics_inputs_default_to_cube_with_jetson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    assert at.selectbox(key="flight_controller").value == "cube_orange_plus"
+    box = at.checkbox(key="companion_computer_cube")
+    assert box.value is True and not box.disabled
+    assert at.session_state["companion_computer"] is True
+
+
+def test_jetson_checkbox_greys_out_live_under_ark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    at.checkbox(key="companion_computer_cube").uncheck()
+    at.run()
+    at.selectbox(key="flight_controller").set_value("ark_jetson_pab")
+    at.run()
+    shown = at.checkbox(key="companion_computer_ark")
+    assert shown.disabled and shown.value is True
+    at.selectbox(key="flight_controller").set_value("cube_orange_plus")
+    at.run()
+    assert at.checkbox(key="companion_computer_cube").value is False  # the earlier Cube choice survives
+    assert not at.checkbox(key="companion_computer_cube").disabled
+
+
+def test_preset_change_keeps_avionics_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    at.checkbox(key="companion_computer_cube").uncheck()
+    at.run()
+    at.selectbox(key="preset").set_value(list(EXAMPLE_MISSIONS)[1])
+    at.run()
+    assert at.session_state["companion_computer"] is False
+    assert at.checkbox(key="companion_computer_cube").value is False
+
+
+def test_avionics_group_in_assumptions_panel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _llm_app(tmp_path, monkeypatch)
+    assert at.number_input(key="assume_jetson_power_w").value == pytest.approx(25.0)
+    assert at.number_input(key="assume_ark_pab_stack_mass_kg").value == pytest.approx(0.166)
+
+
+def test_avionics_summary_texts() -> None:
+    summary = presenters.avionics_summary
+    assert summary(_avionics_req(companion_computer=True), DEFAULT_ASSUMPTIONS) == \
+        "Cube Orange+ · Jetson Orin NX companion (25 W, 0.2 kg)"
+    assert summary(_avionics_req(), DEFAULT_ASSUMPTIONS) == "Cube Orange+ · no Jetson"
+    assert summary(_avionics_req(flight_controller="ark_jetson_pab"), DEFAULT_ASSUMPTIONS) == \
+        "ARK Jetson PAB + Orin NX 16 GB (25 W, 0.166 kg)"
+
+
+def test_report_requirements_list_avionics() -> None:
+    from src.agent import report
+    rows = dict(report.requirement_rows(_avionics_req(flight_controller="ark_jetson_pab")))
+    assert rows["Flight controller"] == "ark_jetson_pab" and rows["Jetson companion computer"] == "False"

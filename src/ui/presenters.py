@@ -8,8 +8,9 @@ from typing import Any, Final, Optional
 
 from pydantic import ValidationError
 
+from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
-from src.schemas.requirements import OperationalRequirements
+from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.flight_control.runtime import MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M
 from src.units import WH_TO_J
@@ -27,7 +28,15 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "service_ceiling_m": "Service ceiling (m)",
     "max_stall_speed_ms": "Max stall speed (m/s)",
     "runway_available": "Runway available",
+    "flight_controller": "Flight controller",
+    "companion_computer": "Jetson companion computer",
 }
+FLIGHT_CONTROLLER_NAMES: Final[dict[str, str]] = {
+    CUBE_ORANGE_PLUS: "Cube Orange+", ARK_JETSON_PAB: "ARK Jetson PAB (Orin NX 16 GB)",
+}
+# Hardware choices are the designer's, not the mission's: presets never overwrite them.
+HARDWARE_KEYS: Final[tuple[str, ...]] = ("flight_controller", "companion_computer")
+NEW_DESIGN_HARDWARE: Final[dict[str, Any]] = {"flight_controller": CUBE_ORANGE_PLUS, "companion_computer": True}
 AUTO: Final[str] = "auto"
 # Form sections -> (field, min, max, step, format). Bounds sit inside OperationalRequirements'
 # constraints; tests/test_ui.py pins that, and that every preset fits.
@@ -62,6 +71,16 @@ def form_defaults(req: OperationalRequirements) -> dict[str, Any]:
     values: dict[str, Any] = req.model_dump()
     values["group_constraint"] = AUTO if req.group_constraint is None else req.group_constraint
     return values
+
+
+def avionics_summary(req: OperationalRequirements, assumptions: DesignAssumptions) -> str:
+    """One line naming the fitted avionics stack, with the Jetson's power and mass when one is fitted."""
+    a = assumptions
+    if req.flight_controller == ARK_JETSON_PAB:
+        return f"ARK Jetson PAB + Orin NX 16 GB ({a.jetson_power_w:g} W, {a.ark_pab_stack_mass_kg:g} kg)"
+    if req.companion_computer:
+        return f"Cube Orange+ · Jetson Orin NX companion ({a.jetson_power_w:g} W, {a.companion_computer_mass_kg:g} kg)"
+    return "Cube Orange+ · no Jetson"
 
 
 def sizing_summary(s: SizingOutput) -> list[tuple[str, str]]:

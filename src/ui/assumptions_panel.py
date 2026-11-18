@@ -40,10 +40,24 @@ GROUPS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
         ("hover_figure_of_merit", "Hover figure of merit (fraction)"),
         ("lift_motor_efficiency", "Lift motor efficiency (fraction)"),
     ),
+    "Avionics": (
+        ("avionics_base_mass_kg", "Allowance base mass (kg)"),
+        ("avionics_mass_per_mtow", "Allowance mass per kg MTOW (kg/kg)"),
+        ("avionics_base_power_w", "Allowance base power (W)"),
+        ("avionics_power_per_kg_w", "Allowance power per kg MTOW (W/kg)"),
+        ("cube_orange_plus_mass_kg", "Cube Orange+ mass (kg)"),
+        ("ark_pab_stack_mass_kg", "ARK PAB stack mass (kg)"),
+        ("companion_computer_mass_kg", "Jetson companion mass (kg)"),
+        ("jetson_power_w", "Jetson power (W)"),
+    ),
 }
 GROUP_HELP: Final[dict[str, str]] = {
     "Battery (electric, Li-ion)": "Used for battery-electric designs (the sizing code sizes the electric pack as Li-ion).",
     "Hybrid buffer pack (LiPo)": "Used for the hybrid's buffer pack (the sizing code sizes it as LiPo).",
+    "Avionics": ("Avionics mass = allowance base + per-kg MTOW + the chosen flight-controller stack "
+                 "(Cube or ARK) + the Jetson companion (Cube with the Jetson ticked only). Avionics power = "
+                 "allowance base + per-kg MTOW (incl. the flight controller's own draw) + Jetson power whenever "
+                 "a Jetson is fitted (ARK always). Both are drawn for the whole flight."),
 }
 _FIELDS: Final[tuple[str, ...]] = tuple(f for fields in GROUPS.values() for f, _ in fields)
 
