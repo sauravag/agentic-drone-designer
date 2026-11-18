@@ -154,7 +154,8 @@ def match_payload(
     target: float = _require_positive(target_mass_kg, "target_mass_kg")
     candidates: list[Payload] = [
         p for p in load_catalog(db_path, "payloads")
-        if p.mass_kg >= target
+        if p.vendor is None  # generic sensor classes only: a named gimbal is chosen by name, never by mass
+        and p.mass_kg >= target
         and (sensor_type is None or p.sensor_type == sensor_type)
         and (max_power_w is None or p.power_w <= max_power_w)
     ]

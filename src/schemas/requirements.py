@@ -9,6 +9,8 @@ from src.units import HOUR_TO_S, KM_TO_M
 FlightControllerId = Literal["cube_orange_plus", "ark_jetson_pab"]
 CUBE_ORANGE_PLUS: Final[str] = "cube_orange_plus"
 ARK_JETSON_PAB: Final[str] = "ark_jetson_pab"  # carries the Jetson Orin NX on the same board stack
+# Defined here, not in payload_catalog, because components -> requirements; payload_catalog re-exports it.
+CUSTOM_PAYLOAD: Final[str] = "custom"
 
 
 class OperationalRequirements(BaseModel):

@@ -22,7 +22,7 @@ from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, S
 from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN, CADPackingError
 from src.tools.aero_cad.stability import AeroAnalysisError
 from src.tools.database.matcher import ComponentNotFoundError, select_bom
-from src.tools.database.seed_data import DEFAULT_DB_PATH, seed_database
+from src.tools.database.seed_data import CATALOG_VERSION, DEFAULT_DB_PATH, catalog_version, seed_database
 from src.tools.flight_control.flight_model import FlightModelError
 from src.tools.flight_control.param_generator import ParamGenerationError
 from src.tools.flight_control.runtime import (MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M,
@@ -154,7 +154,7 @@ def _noop(_: str) -> None:
 
 def ensure_catalog(db_path: Path) -> None:
     with _SEED_LOCK:
-        if not db_path.is_file():
+        if not db_path.is_file() or catalog_version(db_path) != CATALOG_VERSION:  # stale: rebuilt in place
             seed_database(db_path)
 
 

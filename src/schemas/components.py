@@ -108,6 +108,8 @@ class Payload(_Component):
     length_m: Length
     width_m: Length
     height_m: Length
+    vendor: Optional[str] = None  # None: a generic sensor class (what Custom payloads are matched against)
+    reference_price_usd: Optional[str] = None  # display only, researched 2026-11-18
 
 
 class _Avionics(_Component):

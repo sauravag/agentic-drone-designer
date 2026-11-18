@@ -17,9 +17,13 @@ from pydantic import BaseModel
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.components import Battery, CruiseMotor, IceGenerator, Payload, Propeller, VtolMotor
+from src.schemas.payload_catalog import PAYLOADS
 from src.units import INCH_TO_M
 
 DEFAULT_DB_PATH: Final[Path] = Path(__file__).resolve().parents[3] / "data" / "cots_catalog.db"
+# Bump whenever a table's columns or seeded rows change: ensure_catalog reseeds a file with another version.
+# 2: researched NextVision/SIYI gimbals and the payload vendor / reference-price columns.
+CATALOG_VERSION: Final[int] = 2
 
 CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "cruise_motors": CruiseMotor,
@@ -139,25 +143,7 @@ VTOL_PROPS_IN: Final[list[tuple]] = [
     (48, 16, 0.750, 20000), (56, 18, 1.100, 28000), (62, 20, 1.500, 37000), (72, 24, 2.200, 50000),
 ]
 
-# (name, sensor_type, mass_kg, power_w, length_m, width_m, height_m)
-PAYLOADS: Final[list[tuple]] = [
-    ("Micro EO 2-axis gimbal",          "eo",            0.10,   5, 0.06, 0.05, 0.07),
-    ("Multispectral 5-band camera",     "multispectral", 0.17,   7, 0.09, 0.06, 0.05),
-    ("Mini EO/IR gimbal",               "eo_ir",         0.35,  10, 0.08, 0.08, 0.10),
-    ("Compact EO/IR 3-axis zoom",       "eo_ir",         0.80,  18, 0.11, 0.11, 0.14),
-    ("LiDAR mapping unit",              "lidar",         1.20,  25, 0.15, 0.10, 0.10),
-    ("EO/IR 30x zoom + LRF gimbal",     "eo_ir",         1.40,  25, 0.13, 0.13, 0.17),
-    ("Comms relay radio",               "comms_relay",   1.50,  35, 0.18, 0.12, 0.06),
-    ("Mini SAR",                        "sar",           1.80,  60, 0.25, 0.15, 0.10),
-    ("SIGINT receiver",                 "sigint",        2.50,  40, 0.22, 0.16, 0.08),
-    ("Hyperspectral imager",            "hyperspectral", 3.00,  45, 0.25, 0.15, 0.15),
-    ("EO/IR stabilised gimbal 3.5 kg",  "eo_ir",         3.50,  60, 0.18, 0.18, 0.25),
-    ("EO/IR turret 7 kg",               "eo_ir",         7.00, 120, 0.23, 0.23, 0.32),
-    ("SAR/GMTI pod",                    "sar",          12.00, 400, 0.70, 0.25, 0.25),
-    ("MWIR EO/IR turret 15 kg",         "eo_ir",        15.00, 250, 0.30, 0.30, 0.42),
-    ("Long-range MWIR turret 28 kg",    "eo_ir",        28.00, 450, 0.38, 0.38, 0.52),
-    ("Strategic EO/IR turret 45 kg",    "eo_ir",        45.00, 800, 0.45, 0.45, 0.62),
-]
+# Payload rows (researched gimbals + generic sensor classes) live in src/schemas/payload_catalog.py.
 # fmt: on
 
 
@@ -209,7 +195,6 @@ def _propeller_rows() -> list[Propeller]:
     return rows
 
 
-PAYLOAD_FIELDS: Final[list[str]] = ["name", "sensor_type", "mass_kg", "power_w", "length_m", "width_m", "height_m"]
 
 
 def _tuple_rows(model: type[BaseModel], raw: list[tuple], fields: list[str] | None = None) -> list[BaseModel]:
@@ -226,13 +211,17 @@ def build_catalog() -> dict[str, list[BaseModel]]:
         "ice_generators": _tuple_rows(IceGenerator, ICE_GENERATORS),
         "batteries": _battery_rows(),
         "propellers": _propeller_rows(),
-        "payloads": _tuple_rows(Payload, PAYLOADS, PAYLOAD_FIELDS),
+        "payloads": list(PAYLOADS),
     }
+
+
+def _is_optional(annotation: object) -> bool:
+    return typing.get_origin(annotation) in (typing.Union, types.UnionType) and type(None) in typing.get_args(annotation)
 
 
 def _sql_type(annotation: object) -> str:
     # Unwrap Optional[X] -> X; Literal[...] and str map to TEXT.
-    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+    if _is_optional(annotation):
         annotation = next(a for a in typing.get_args(annotation) if a is not type(None))
     if annotation is float:
         return "REAL"
@@ -245,7 +234,8 @@ def _create_table_sql(table: str, model: type[BaseModel]) -> str:
     columns: list[str] = ["id INTEGER PRIMARY KEY AUTOINCREMENT"]
     for name, info in model.model_fields.items():
         if name != "id":
-            columns.append(f"{name} {_sql_type(info.annotation)} NOT NULL")
+            nullable: str = "" if _is_optional(info.annotation) else " NOT NULL"
+            columns.append(f"{name} {_sql_type(info.annotation)}{nullable}")
     return f"CREATE TABLE {table} ({', '.join(columns)})"
 
 
@@ -264,7 +254,14 @@ def seed_database(db_path: Path = DEFAULT_DB_PATH) -> Path:
                 f"INSERT INTO {table} ({', '.join(fields)}) VALUES ({placeholders})",
                 [tuple(getattr(row, f) for f in fields) for row in catalog[table]],
             )
+        conn.execute(f"PRAGMA user_version = {CATALOG_VERSION}")  # an int constant, never user input
     return db_path
+
+
+def catalog_version(db_path: Path) -> int:
+    """The catalog's schema/content version (SQLite user_version); 0 for a catalog seeded before versioning."""
+    with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
 if __name__ == "__main__":
