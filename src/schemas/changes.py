@@ -11,7 +11,7 @@ from typing import Final, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
-from src.schemas.requirements import OperationalRequirements
+from src.schemas.requirements import FlightControllerId, OperationalRequirements
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 
 LABEL_MAX_LEN: Final[int] = 120
@@ -22,7 +22,8 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "group_constraint": "Group limit", "payload_mass_kg": "Payload mass (kg)", "payload_power_w": "Payload power (W)",
     "endurance_hours": "Endurance (h)", "combat_radius_km": "Combat radius (km)",
     "cruise_speed_ms": "Cruise speed (m/s)", "service_ceiling_m": "Service ceiling (m)",
-    "max_stall_speed_ms": "Max stall speed (m/s)",
+    "max_stall_speed_ms": "Max stall speed (m/s)", "flight_controller": "Flight controller",
+    "companion_computer": "Jetson companion computer",
     # assumptions
     "liion_specific_energy_wh_kg": "Specific energy (Li-ion, Wh/kg)",
     "liion_energy_density_wh_l": "Energy density (Li-ion, Wh/L)",
@@ -33,6 +34,11 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "battery_reserve_fraction": "Battery reserve", "fuel_reserve_fraction": "Fuel reserve",
     "bsfc_kg_per_kwh": "Generator BSFC (kg/kWh)", "drivetrain_efficiency": "Drivetrain efficiency",
     "hover_figure_of_merit": "Hover figure of merit", "lift_motor_efficiency": "Lift motor efficiency",
+    "avionics_base_mass_kg": "Avionics allowance base (kg)",
+    "avionics_mass_per_mtow": "Avionics allowance per kg MTOW (kg/kg)",
+    "avionics_base_power_w": "Avionics power base (W)", "avionics_power_per_kg_w": "Avionics power per kg MTOW (W/kg)",
+    "cube_orange_plus_mass_kg": "Cube Orange+ mass (kg)", "ark_pab_stack_mass_kg": "ARK PAB stack mass (kg)",
+    "companion_computer_mass_kg": "Jetson companion mass (kg)", "jetson_power_w": "Jetson power (W)",
     # knobs
     "aspect_ratio": "Aspect ratio", "tail_volume_h": "Horizontal tail volume",
     "tail_volume_v": "Vertical tail volume", "fuselage_length_factor": "Fuselage length factor",
@@ -53,6 +59,8 @@ class RequirementChanges(BaseModel):
     cruise_speed_ms: Optional[float] = None
     service_ceiling_m: Optional[float] = None
     max_stall_speed_ms: Optional[float] = None
+    flight_controller: Optional[FlightControllerId] = None
+    companion_computer: Optional[bool] = None
 
 
 class AssumptionChanges(BaseModel):
@@ -70,6 +78,14 @@ class AssumptionChanges(BaseModel):
     drivetrain_efficiency: Optional[float] = None
     hover_figure_of_merit: Optional[float] = None
     lift_motor_efficiency: Optional[float] = None
+    avionics_base_mass_kg: Optional[float] = None
+    avionics_mass_per_mtow: Optional[float] = None
+    avionics_base_power_w: Optional[float] = None
+    avionics_power_per_kg_w: Optional[float] = None
+    cube_orange_plus_mass_kg: Optional[float] = None
+    ark_pab_stack_mass_kg: Optional[float] = None
+    companion_computer_mass_kg: Optional[float] = None
+    jetson_power_w: Optional[float] = None
 
 
 class KnobChanges(BaseModel):

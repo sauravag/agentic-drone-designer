@@ -24,3 +24,76 @@ def test_reference_designs_unchanged_without_jetson(req) -> None:
     sizing = size_aircraft(req)
     for field in BASELINE_FIELDS:
         assert getattr(sizing, field) == pytest.approx(expected[field], rel=EXACT, abs=EXACT), field
+
+
+# ------------------------------------------------------------------ schemas ---
+from pydantic import ValidationError  # noqa: E402
+
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions  # noqa: E402
+from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges, apply_changes  # noqa: E402
+from src.schemas.requirements import OperationalRequirements  # noqa: E402
+from src.ui.examples import G1_ELECTRIC_FW  # noqa: E402
+
+LEGACY_REQUIREMENTS: Final[Path] = Path(__file__).parent / "data" / "flight_control" / "g1" / "requirements.json"
+MTOW_KG: Final[float] = 10.0
+
+
+def _req(**update: object) -> OperationalRequirements:
+    """Build through the constructor so validators run (model_copy skips them)."""
+    return OperationalRequirements(**{**G1_ELECTRIC_FW.model_dump(), **update})
+
+
+def test_old_requirements_json_loads_as_cube_without_jetson() -> None:
+    req = OperationalRequirements.model_validate(json.loads(LEGACY_REQUIREMENTS.read_text()))
+    assert req.flight_controller == "cube_orange_plus"
+    assert req.companion_computer is False and req.jetson_fitted is False
+
+
+def test_ark_normalises_companion_and_fits_jetson() -> None:
+    req = _req(flight_controller="ark_jetson_pab", companion_computer=True)
+    assert req.companion_computer is False and req.jetson_fitted is True
+
+
+def test_cube_with_companion_fits_jetson() -> None:
+    assert _req(companion_computer=True).jetson_fitted is True
+
+
+def test_apply_changes_switching_to_ark_normalises() -> None:
+    change = ChangeSet(label="ark", requirements=RequirementChanges(flight_controller="ark_jetson_pab"),
+                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    req, _, _ = apply_changes(_req(companion_computer=True), DEFAULT_ASSUMPTIONS, change)
+    assert req.flight_controller == "ark_jetson_pab" and req.companion_computer is False
+
+
+@pytest.mark.parametrize(("flight_controller", "companion", "expected"), [
+    ("cube_orange_plus", False, 0.3 + 0.1),
+    ("cube_orange_plus", True, 0.3 + 0.1 + 0.2),
+    ("ark_jetson_pab", False, 0.227 + 0.1 + 0.166),
+])
+def test_avionics_mass_formula(flight_controller: str, companion: bool, expected: float) -> None:
+    assert DEFAULT_ASSUMPTIONS.avionics_mass_kg(MTOW_KG, flight_controller, companion) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(("fitted", "expected"), [(False, 10.0 + 4.0), (True, 10.0 + 4.0 + 25.0)])
+def test_avionics_power_formula(fitted: bool, expected: float) -> None:
+    assert DEFAULT_ASSUMPTIONS.avionics_power_w(MTOW_KG, fitted) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(("field", "below", "above"), [
+    ("avionics_base_mass_kg", -0.01, 5.01), ("avionics_mass_per_mtow", -0.01, 0.051),
+    ("avionics_base_power_w", 0.99, 200.1), ("avionics_power_per_kg_w", -0.01, 5.01),
+    ("cube_orange_plus_mass_kg", 0.029, 0.51), ("ark_pab_stack_mass_kg", 0.079, 1.01),
+    ("companion_computer_mass_kg", 0.019, 3.01), ("jetson_power_w", 0.99, 100.1),
+])
+def test_avionics_assumption_bounds(field: str, below: float, above: float) -> None:
+    for value in (below, above):
+        with pytest.raises(ValidationError):
+            DesignAssumptions(**{field: value})
+
+
+def test_change_sets_carry_avionics_fields() -> None:
+    from src.schemas.changes import FIELD_LABELS
+    for name in ("flight_controller", "companion_computer", "jetson_power_w", "cube_orange_plus_mass_kg"):
+        assert name in FIELD_LABELS
+    assert set(AssumptionChanges.model_fields) >= {"jetson_power_w", "avionics_base_mass_kg"}
+
