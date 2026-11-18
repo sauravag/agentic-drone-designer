@@ -3,10 +3,14 @@ line, requirement changes, the explorer and the display helpers."""
 
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 import pytest
+from pydantic import ValidationError
 
 from src import pipeline
+from src.schemas.components import ComponentNeeds
+from src.schemas.requirements import OperationalRequirements
 from src.schemas.payload_catalog import (
     CUSTOM_PAYLOAD,
     PAYLOADS,
@@ -15,8 +19,10 @@ from src.schemas.payload_catalog import (
     payload_spec,
     resolve_payload_name,
 )
-from src.tools.database.matcher import load_catalog, match_payload
+from src.tools.database.matcher import load_catalog, match_payload, payload_part, select_bom
 from src.tools.database.seed_data import CATALOG_VERSION, catalog_version, seed_database
+from src.tools.sizing.mission_solver import component_needs, size_aircraft
+from src.ui.examples import EXAMPLE_MISSIONS
 
 MM = 0.001
 QUOTE = "quote only"
@@ -136,3 +142,70 @@ def test_stale_catalog_is_reseeded(catalog: Path) -> None:
     pipeline.ensure_catalog(catalog)
     assert catalog_version(catalog) == CATALOG_VERSION
     assert any(p.vendor == "SIYI" for p in load_catalog(catalog, "payloads"))
+
+
+# ---------------------------------------------------------- requirement + parts list ---
+G1 = next(iter(EXAMPLE_MISSIONS.values()))
+ZT30 = "SIYI ZT30"
+
+
+def _named(mass: float = 0.854, power: float = 9.0, model: str = ZT30) -> OperationalRequirements:
+    return G1.model_copy(update={"payload_model": model, "payload_mass_kg": mass, "payload_power_w": power})
+
+
+def _payload_needs(model: str = ZT30, mass: float = 0.854, power: Optional[float] = None) -> ComponentNeeds:
+    return ComponentNeeds(cruise_power_w=100.0, battery_energy_j=1e6, battery_peak_power_w=500.0,
+                          payload_mass_kg=mass, payload_power_w=power, payload_model=model)
+
+
+def test_requirements_default_custom_and_old_json_loads() -> None:
+    old = G1.model_dump(mode="json")
+    old.pop("payload_model")
+    assert OperationalRequirements.model_validate(old).payload_model == CUSTOM_PAYLOAD
+
+
+def test_unknown_model_rejected() -> None:
+    with pytest.raises(ValidationError, match="Foo 9000"):
+        OperationalRequirements.model_validate({**G1.model_dump(), "payload_model": "Foo 9000"})
+
+
+def test_payload_edited() -> None:
+    assert _named().payload_edited is False
+    assert _named(mass=0.9).payload_edited is True
+    assert _named(power=12.0).payload_edited is True
+    assert G1.payload_edited is False
+
+
+def test_named_model_bom_line(catalog: Path) -> None:
+    part = payload_part(catalog, _payload_needs(power=9.0))
+    spec = payload_spec(ZT30)
+    assert (part.name, part.mass_kg, part.power_w, part.vendor) == (ZT30, 0.854, 9.0, "SIYI")
+    assert (part.length_m, part.width_m, part.height_m) == (spec.length_m, spec.width_m, spec.height_m)
+    edited = payload_part(catalog, _payload_needs(mass=0.9, power=12.0))
+    assert (edited.name, edited.mass_kg, edited.power_w) == ("SIYI ZT30 (edited)", 0.9, 12.0)
+
+
+def test_custom_bom_line_matches_today(catalog: Path) -> None:
+    part = payload_part(catalog, _payload_needs(model=CUSTOM_PAYLOAD, mass=1.0))
+    assert part == match_payload(catalog, 1.0)  # Custom: today's lightest-generic-at-or-above match
+    assert (part.name, part.mass_kg) == ("LiDAR mapping unit", 1.20)
+
+
+def test_component_needs_copies_payload_model() -> None:
+    req = _named()
+    needs = component_needs(size_aircraft(req), req)
+    assert (needs.payload_model, needs.payload_mass_kg, needs.payload_power_w) == (ZT30, 0.854, 9.0)
+    custom = component_needs(size_aircraft(G1), G1)
+    assert (custom.payload_model, custom.payload_power_w) == (CUSTOM_PAYLOAD, None)
+
+
+def test_named_model_reaches_cad_payload_box(catalog: Path) -> None:
+    pytest.importorskip("build123d")
+    from src.tools.aero_cad import components as cad_components
+    from tests.test_aero_cad import _fitted_layout
+
+    req = _named()
+    sizing = size_aircraft(req)
+    bom = select_bom(catalog, component_needs(sizing, req))
+    assert bom.payload.name == ZT30
+    assert cad_components.payload(bom, _fitted_layout(sizing, bom)).mass_kg == 0.854

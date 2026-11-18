@@ -2,7 +2,7 @@
 
 from typing import Any, Final, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.units import HOUR_TO_S, KM_TO_M
 
@@ -11,6 +11,7 @@ CUBE_ORANGE_PLUS: Final[str] = "cube_orange_plus"
 ARK_JETSON_PAB: Final[str] = "ark_jetson_pab"  # carries the Jetson Orin NX on the same board stack
 # Defined here, not in payload_catalog, because components -> requirements; payload_catalog re-exports it.
 CUSTOM_PAYLOAD: Final[str] = "custom"
+PAYLOAD_EDIT_TOLERANCE: Final[float] = 1e-6  # kg and W: typed back to the datasheet value counts as unedited
 
 
 class OperationalRequirements(BaseModel):
@@ -34,6 +35,27 @@ class OperationalRequirements(BaseModel):
     # Defaults (Cube, no Jetson) keep requirements written before the avionics choice existed unchanged.
     flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
     companion_computer: bool = False  # separate Jetson on its own carrier; only meaningful with the Cube
+    # A catalogue payload name, or Custom. payload_mass_kg / payload_power_w stay the values sized with: a model
+    # pre-fills them from its datasheet, and the designer may edit either (payload_edited).
+    payload_model: str = CUSTOM_PAYLOAD
+
+    @field_validator("payload_model")
+    @classmethod
+    def _known_payload(cls, value: str) -> str:
+        from src.schemas.payload_catalog import payload_spec  # deferred: payload_catalog -> components -> here
+
+        if value != CUSTOM_PAYLOAD and payload_spec(value) is None:
+            raise ValueError(f"unknown payload model {value!r}: choose a catalogue payload or {CUSTOM_PAYLOAD!r}")
+        return value
+
+    @property
+    def payload_edited(self) -> bool:
+        """A catalogue model whose mass or power was changed from its datasheet values."""
+        from src.schemas.payload_catalog import payload_spec
+
+        spec = payload_spec(self.payload_model)
+        return spec is not None and (abs(self.payload_mass_kg - spec.mass_kg) > PAYLOAD_EDIT_TOLERANCE
+                                     or abs(self.payload_power_w - spec.power_w) > PAYLOAD_EDIT_TOLERANCE)
 
     @model_validator(mode="before")
     @classmethod

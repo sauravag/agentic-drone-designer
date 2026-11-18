@@ -16,7 +16,7 @@ from scipy.optimize import brentq
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import ComponentNeeds
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
-from src.schemas.requirements import OperationalRequirements
+from src.schemas.requirements import CUSTOM_PAYLOAD, OperationalRequirements
 from src.schemas.state import SizingOutput
 from src.tools.sizing.aero_model import (
     AirfoilPolar,
@@ -359,4 +359,7 @@ def component_needs(sizing: SizingOutput, req: OperationalRequirements) -> Compo
         generator_power_w=sizing.generator_power_w if is_hybrid else None,
         flight_controller=req.flight_controller,
         companion_computer=req.companion_computer,
+        payload_model=req.payload_model,
+        # A named model carries the designer's power; Custom keeps matching by mass alone, as before.
+        payload_power_w=None if req.payload_model == CUSTOM_PAYLOAD else req.payload_power_w,
     )

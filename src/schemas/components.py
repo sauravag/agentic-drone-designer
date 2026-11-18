@@ -5,7 +5,7 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from src.schemas.requirements import CUBE_ORANGE_PLUS, FlightControllerId
+from src.schemas.requirements import CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, FlightControllerId
 from src.units import KWH_TO_J, WH_TO_J
 
 # Any length >= 3 m on a single component almost certainly means a mm/inch unit leak.
@@ -144,6 +144,7 @@ class ComponentNeeds(BaseModel):
     generator_power_w: Optional[float] = Field(default=None, gt=0)
     flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
     companion_computer: bool = False
+    payload_model: str = CUSTOM_PAYLOAD  # a catalogue name is used as-is; Custom is matched by mass
 
 
 class SelectedBOM(BaseModel):
