@@ -243,6 +243,7 @@ def _headline(view: AgentRunView) -> None:
     cols[4].metric("Static margin", f"{view.cad.static_margin:.1%}" if view.cad else "not run")
     cols[5].metric("SITL flight test", ("passed" if view.fcs.passed else "FAILED") if view.fcs else "not run")
     if view.requirements is not None:
+        st.caption("Payload: " + presenters.payload_summary(view.requirements))
         st.caption("Avionics: " + presenters.avionics_summary(view.requirements, view.design_assumptions))
 
 

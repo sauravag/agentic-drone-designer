@@ -259,3 +259,30 @@ def test_review_panel_payload_model_choices() -> None:
     assert design_loop._field_choices("requirements", "payload_model") == payload_choices()
     assert design_loop._field_choices("requirements", "propulsion_type") == ("electric", "series_hybrid", "auto")
     assert design_loop._field_choices("requirements", "payload_mass_kg") is None
+
+
+# ------------------------------------------------------------------------ display ---
+def test_bom_rows_show_payload_vendor_price(catalog: Path) -> None:
+    from src.ui.presenters import bom_rows
+
+    req = _named()
+    named = {r["Part"]: r for r in bom_rows(select_bom(catalog, component_needs(size_aircraft(req), req)))}
+    assert (named["Payload"]["Item"], named["Payload"]["Ref. price"]) == (ZT30, "≈ $7,000")
+    generic = {r["Part"]: r for r in bom_rows(select_bom(catalog, component_needs(size_aircraft(G1), G1)))}
+    assert generic["Payload"]["Ref. price"] == "—"
+
+
+def test_report_rows_show_payload_model() -> None:
+    from src.agent.report import requirement_rows
+
+    assert ("Payload", "SIYI ZT30 (edited)") in requirement_rows(_named(mass=0.9))
+    assert ("Payload", "SIYI ZT30") in requirement_rows(_named())
+    assert ("Payload", "Custom payload") in requirement_rows(G1)
+
+
+def test_payload_summary() -> None:
+    from src.ui.presenters import payload_summary
+
+    assert payload_summary(_named()) == "SIYI ZT30 (0.854 kg, 9 W)"
+    assert payload_summary(_named(mass=0.9)) == "SIYI ZT30 (edited) (0.9 kg, 9 W)"
+    assert payload_summary(G1) == "Custom payload (1 kg, 15 W)"

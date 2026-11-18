@@ -118,7 +118,8 @@ def polar_rows(aero: AeroStabilityOutput, sizing: SizingOutput) -> list[dict[str
 
 
 def requirement_rows(req: OperationalRequirements) -> list[tuple[str, str]]:
-    values: dict[str, Any] = {**presenters.form_defaults(req), **presenters.avionics_values(req)}
+    values: dict[str, Any] = {**presenters.form_defaults(req), **presenters.avionics_values(req),
+                              "payload_model": presenters.payload_display(req)}
     return [(label, str(values[key])) for key, label in presenters.FIELD_LABELS.items()]
 
 

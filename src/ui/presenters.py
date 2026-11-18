@@ -10,7 +10,9 @@ from pydantic import ValidationError
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
+from src.schemas.payload_catalog import CUSTOM_LABEL, payload_spec
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
+from src.tools.database.matcher import EDITED_SUFFIX
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.flight_control.runtime import MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M
 from src.units import WH_TO_J
@@ -20,6 +22,7 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "group_constraint": "DoD group",
     "propulsion_type": "Propulsion",
     "airframe_topology": "Airframe",
+    "payload_model": "Payload",
     "payload_mass_kg": "Payload mass (kg)",
     "payload_power_w": "Payload power (W)",
     "endurance_hours": "Endurance (h)",
@@ -50,6 +53,7 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
 SECONDS_PER_MINUTE: Final[float] = 60.0
 IN_AVIONICS_ALLOWANCE: Final[str] = "in avionics allowance"
+NO_PRICE: Final[str] = "—"  # generic and Custom payload rows have no reference price
 
 
 def parse_form(values: dict[str, Any]) -> tuple[Optional[OperationalRequirements], list[str]]:
@@ -79,6 +83,18 @@ def avionics_values(req: OperationalRequirements) -> dict[str, str]:
     is_ark: bool = req.flight_controller == ARK_JETSON_PAB
     return {"flight_controller": FLIGHT_CONTROLLER_NAMES[req.flight_controller],
             "companion_computer": ARK_BUILT_IN if is_ark else ("yes" if req.companion_computer else "no")}
+
+
+def payload_display(req: OperationalRequirements) -> str:
+    """The payload's name: a catalogue model (marked when its mass or power was edited) or Custom."""
+    if payload_spec(req.payload_model) is None:
+        return CUSTOM_LABEL
+    return req.payload_model + (EDITED_SUFFIX if req.payload_edited else "")
+
+
+def payload_summary(req: OperationalRequirements) -> str:
+    """One line for the results headline, e.g. 'SIYI ZT30 (0.854 kg, 9 W)'."""
+    return f"{payload_display(req)} ({req.payload_mass_kg:g} kg, {req.payload_power_w:g} W)"
 
 
 def avionics_summary(req: OperationalRequirements, assumptions: DesignAssumptions) -> str:
@@ -134,7 +150,7 @@ def bom_rows(bom: SelectedBOM) -> list[dict[str, Any]]:
     ]
     rows = [
         {"Part": label, "Item": part.name, "Qty": qty, "Unit mass (kg)": round(part.mass_kg, 3),
-         "Mass (kg)": round(qty * part.mass_kg, 3), "Power (W)": None, "Ref. price": ""}
+         "Mass (kg)": round(qty * part.mass_kg, 3), "Power (W)": None, "Ref. price": _part_price(label, part)}
         for label, part, qty in parts if part is not None
     ]
     rows += [_avionics_row(label, part) for label, part in
@@ -143,6 +159,11 @@ def bom_rows(bom: SelectedBOM) -> list[dict[str, Any]]:
     rows.append({"Part": "Total", "Item": "", "Qty": None, "Unit mass (kg)": None,
                  "Mass (kg)": round(bom.total_hardware_mass_kg, 3), "Power (W)": None, "Ref. price": ""})
     return rows
+
+
+def _part_price(label: str, part: Any) -> str:
+    """Only the payload carries a reference price among these parts (generic and Custom rows show a dash)."""
+    return (part.reference_price_usd or NO_PRICE) if label == "Payload" else ""
 
 
 def _avionics_row(label: str, part: Any) -> dict[str, Any]:
