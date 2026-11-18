@@ -35,7 +35,7 @@
 4. Old `requirements.json` without the new keys → Cube, no Jetson. (Task 1.)
 5. CAD tray and sizing disagreeing on avionics mass after an assumption edit → tray must follow `sizing.avionics_mass_kg`. (Task 4.)
 
-**Ruling (UI):** the Configuration inputs live inside `st.form("requirements")`, so a widget cannot change its `disabled` state when another form widget changes before submit. The checkbox therefore stays enabled; its help text and a caption say the ARK stack always includes the Jetson and the box applies to the Cube only. The schema normalisation guarantees the correct result either way, and the results header shows what was actually fitted. Cost if wrong: a small UI follow-up moving both avionics widgets outside the form.
+**UI decision (user, 2026-11-18):** live greying-out. The two avionics widgets sit in an "Avionics" section **outside and directly above** `st.form("requirements")` (below the description form), so changing the select reruns the script and the checkbox is `disabled` (and shown ticked, caption "built into the ARK stack") when ARK is selected. Form runs read both keys from `st.session_state` as today. Description runs keep using the parser's avionics fields.
 
 ---
 
@@ -176,11 +176,12 @@
 - [ ] **Step 1: Failing tests** (`AppTest.from_file`, as existing UI tests):
   - `test_avionics_inputs_default_to_cube_with_jetson`: `at.selectbox(key="flight_controller").value == "cube_orange_plus"`, `at.checkbox(key="companion_computer").value is True`.
   - `test_preset_change_keeps_avionics_choice`: untick, change `preset`, run → checkbox still False.
+  - `test_jetson_checkbox_greys_out_live_under_ark`: select `ark_jetson_pab`, run (no submit) → the Jetson checkbox shown is disabled and ticked; switch back to Cube → enabled again with the earlier Cube choice intact.
   - `test_avionics_group_in_assumptions_panel`: number input for `jetson_power_w` exists with value 25.0.
   - `test_avionics_summary_texts`: the three exact strings above.
   - `test_report_requirements_list_avionics`: `report.requirement_rows(req)` contains a ("Flight controller", ...) row.
 - [ ] **Step 2:** `pytest tests/test_ui.py -q` → FAIL.
-- [ ] **Step 3:** Implement: `_load_preset` skips `HARDWARE_KEYS`; `_init_state` `setdefault`s each `NEW_DESIGN_HARDWARE` item; `_configuration_inputs` adds a second row with a `selectbox` (`format_func=FLIGHT_CONTROLLER_NAMES.get`) and the `checkbox` (help text: applies to the Cube Orange+; the ARK stack always includes the Jetson — see Ruling); `st.caption("Avionics: " + avionics_summary(...))` under the headline metrics (`app.py:205-213`) from `view.requirements` / `view.design_assumptions` when `view.requirements` is set.
+- [ ] **Step 3:** Implement: `_load_preset` skips `HARDWARE_KEYS`; `_init_state` `setdefault`s each `NEW_DESIGN_HARDWARE` item; a new `_avionics_inputs()` rendered just before `_requirements_form()` (outside any form) with a `selectbox` (`format_func=FLIGHT_CONTROLLER_NAMES.get`) and the `checkbox` (`disabled=` ARK selected; when disabled it displays ticked without overwriting the stored Cube choice — render it with `value=True` under a separate display key, keeping `companion_computer` untouched; caption "built into the ARK stack"); `st.caption("Avionics: " + avionics_summary(...))` under the headline metrics (`app.py:205-213`) from `view.requirements` / `view.design_assumptions` when `view.requirements` is set.
 - [ ] **Step 4:** `pytest -q` (full host suite) → all pass; coverage ≥ 80 % (`pytest --cov=src -q`).
 - [ ] **Step 5:** Commit `feat: avionics stack choice and assumptions in the web form`.
 
