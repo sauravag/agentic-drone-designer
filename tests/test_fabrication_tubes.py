@@ -2,18 +2,24 @@ import math
 
 import pytest
 
+from src.tools.aero_cad.airfoil_geometry import load_airfoil
+from src.tools.aero_cad.layout import WING_Z_FRACTION, layout_from_sizing
+from src.tools.sizing.mission_solver import size_aircraft
+from tests.reference_designs import CASES
+
 from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
 from src.tools.fabrication.tubes import (
     KitUnavailable,
     bending_stress_pa,
     joint_y_m,
     plan_spar,
-    wing_root_moment_nm,
+    elliptic_moment_nm,
+    usable_depth_m,
 )
 
 
 def test_reviewer_numbers_25kg():
-    m = wing_root_moment_nm(25.0, 2.0, 4.0)
+    m = elliptic_moment_nm(25.0, 4.0, 2.0, 0.0)
     assert m == pytest.approx(4.0 * 25 * 9.80665 / 2 * 4 * 2.0 / (3 * math.pi), rel=1e-9)  # ~416 N·m
     assert bending_stress_pa(TubeStock(od_m=0.025, id_m=0.023), m) > 900e6
 
@@ -25,7 +31,7 @@ def test_25kg_design_takes_a_32mm_spar_and_36mm_socket():
 
 
 def test_spar_steps_down_inside_the_previous_tube():
-    depth = lambda y: 0.030 if y < 0.8 else 0.017  # 18x16 root (259 MPa) no longer fits past 0.8 m
+    depth = lambda y: 0.030 if y < 0.8 else 0.015  # 16x14 root no longer fits past 0.8 m
     plan = plan_spar(5.0, 1.4, 0.06, depth, None, DEFAULT_FABRICATION)
     outer, inner = plan.segments[0].tube, plan.segments[1].tube
     assert inner.od_m <= outer.id_m and outer.id_m - inner.od_m <= 0.0002
@@ -89,8 +95,8 @@ def test_no_step_plan_is_one_segment_to_the_tip():
 @pytest.mark.parametrize(
     "depth",
     [
-        lambda y: 0.030 if y < 0.8 else 0.017,
-        lambda y: 0.030 if y < 1.4 - 1e-9 else 0.017,
+        lambda y: 0.030 if y < 0.8 else 0.015,
+        lambda y: 0.030 if y < 1.4 - 1e-9 else 0.015,
     ],
 )
 def test_every_segment_fits_its_outboard_end(depth):
@@ -99,3 +105,46 @@ def test_every_segment_fits_its_outboard_end(depth):
         assert seg.y_end_m > seg.y_start_m
         assert seg.tube.od_m <= depth(seg.y_end_m) + 1e-9
     assert plan.segments[-1].y_end_m == pytest.approx(1.4)
+
+
+def test_moment_falls_to_zero_at_the_tip():
+    assert elliptic_moment_nm(25.0, 4.0, 2.0, 2.0) == pytest.approx(0.0, abs=1e-9)
+    assert elliptic_moment_nm(25.0, 4.0, 2.0, 3.0) == pytest.approx(0.0, abs=1e-9)
+    assert 0.0 < elliptic_moment_nm(25.0, 4.0, 2.0, 1.0) < elliptic_moment_nm(25.0, 4.0, 2.0, 0.0)
+
+
+def test_a_rod_can_be_the_tip_member():
+    settings = DEFAULT_FABRICATION.model_copy(
+        update={"tubes": (TubeStock(od_m=0.005, id_m=0.003), TubeStock(od_m=0.007, id_m=0.005)), "rods_m": (0.003,)}
+    )
+    depth = lambda y: 0.030 if y < 0.3 else 0.0035
+    plan = plan_spar(0.3, 0.5, 0.02, depth, None, settings)
+    tip = plan.segments[-1].tube
+    assert (tip.od_m, tip.id_m) == (0.003, 0.0)
+    assert plan.segments[0].y_end_m == pytest.approx(0.3, abs=1e-6)
+
+
+def _wing_depth(case: str):
+    sizing = size_aircraft(CASES[case])
+    layout = layout_from_sizing(sizing, 0.30, sizing.fuselage_diameter_m, sizing.fuselage_length_m)
+    foil = load_airfoil(layout.airfoil).to_asb()
+    ratio = float(foil.local_thickness(0.25))
+    diameter = layout.fuselage_diameter_m
+    depth = lambda y: usable_depth_m(ratio * layout.wing.chord_at(y), DEFAULT_FABRICATION)
+    joint = joint_y_m(diameter / 2.0, WING_Z_FRACTION * diameter)
+    boom_y = layout.vtol_booms[0].y_m if layout.vtol_booms else None
+    return sizing, layout, depth, joint, boom_y
+
+
+@pytest.mark.parametrize("case, root_mm", [("g1", (14, 12)), ("g2", (28, 24))])
+def test_reference_designs_get_a_spar(case, root_mm):
+    sizing, layout, depth, joint, boom_y = _wing_depth(case)
+    semi = layout.wing.semi_span_m
+    plan = plan_spar(sizing.mtow_kg, semi, joint, depth, boom_y, DEFAULT_FABRICATION)
+    root = plan.segments[0].tube
+    assert (round(root.od_m * 1e3), round(root.id_m * 1e3)) == root_mm
+    for seg in plan.segments:
+        assert seg.y_end_m > seg.y_start_m
+        assert seg.tube.od_m <= depth(seg.y_end_m) + 1e-9
+    if case == "g1":
+        assert plan.segments[-1].tube.od_m <= 0.006 + 1e-9

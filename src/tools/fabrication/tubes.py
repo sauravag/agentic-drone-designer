@@ -13,10 +13,13 @@ from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.units import G0
 
-MIN_WEB_M: Final[float] = 0.006  # wood left above and below the spar tube
+MIN_WEB_M: Final[float] = 0.002  # wood left above and below the spar tube
 FIT_EPS_M: Final[float] = 1e-9  # float tolerance on diameter comparisons
 HALF_WING_FRACTION: Final[float] = 0.5  # one wing carries half the weight
-ELLIPTIC_CENTROID_FACTOR: Final[float] = 4.0 / (3.0 * math.pi)  # centroid of an elliptic load
+ELLIPTIC_MOMENT_FACTOR: Final[float] = 2.0 / (3.0 * math.pi)  # prefactor of the exact elliptic moment
+ELLIPTIC_SQUARE_OFFSET: Final[float] = 2.0
+ELLIPTIC_ACOS_FACTOR: Final[float] = 3.0
+BISECTION_ITERATIONS: Final[int] = 50
 HOVER_ARMS: Final[int] = 2  # two booms' thrust reacts through the spar per side
 HOVER_SHARE: Final[float] = 0.25  # each motor carries a quarter of the weight
 ROOT_SPAN_M: Final[float] = 0.0
@@ -41,10 +44,15 @@ class SparPlan:
     insertion_m: float
 
 
-def wing_root_moment_nm(mtow_kg: float, exposed_semi_span_m: float, n_limit: float) -> float:
-    """Root bending moment of one wing under an elliptic load at the limit load factor."""
-    half_lift = n_limit * mtow_kg * G0 * HALF_WING_FRACTION
-    return half_lift * ELLIPTIC_CENTROID_FACTOR * exposed_semi_span_m
+def elliptic_moment_nm(mtow_kg: float, n: float, semi_span_m: float, y_m: float) -> float:
+    """Bending moment at span station y (from the centreline) for an elliptic lift distribution.
+
+    M = (2 P b / 3 pi) [(2 + xi^2) sqrt(1 - xi^2) - 3 xi acos(xi)], P = n W / 2, xi = y / b.
+    """
+    xi = min(max(y_m / semi_span_m, 0.0), 1.0)
+    half_lift = n * mtow_kg * G0 * HALF_WING_FRACTION
+    shape = (ELLIPTIC_SQUARE_OFFSET + xi**2) * math.sqrt(1.0 - xi**2) - ELLIPTIC_ACOS_FACTOR * xi * math.acos(xi)
+    return ELLIPTIC_MOMENT_FACTOR * half_lift * semi_span_m * shape
 
 
 def hover_moment_nm(mtow_kg: float, arm_m: float) -> float:
@@ -74,8 +82,8 @@ def _allowable_pa(settings: FabricationSettings) -> float:
 def _moment_at(
     mtow_kg: float, semi_span_m: float, y_m: float, boom_y_m: Optional[float], settings: FabricationSettings
 ) -> float:
-    """Governing moment at station y: flight on the remaining span vs hover from the boom."""
-    flight = wing_root_moment_nm(mtow_kg, semi_span_m - y_m, settings.n_limit)
+    """Governing moment at station y: flight (elliptic) vs hover (boom reaction)."""
+    flight = elliptic_moment_nm(mtow_kg, settings.n_limit, semi_span_m, y_m)
     hover = 0.0 if boom_y_m is None else hover_moment_nm(mtow_kg, boom_y_m - y_m)
     return max(flight, hover)
 
@@ -98,17 +106,16 @@ def _stations(joint_m: float, semi_span_m: float) -> list[float]:
 def _step_down(
     current: TubeStock, depth_m: float, moment_nm: float, settings: FabricationSettings
 ) -> Optional[TubeStock]:
-    """Largest stock tube that slides inside `current`, fits the depth and carries the moment."""
-    for tube in reversed(settings.tubes):
+    """Largest stock tube or rod that slides inside `current`, fits the depth and carries the moment."""
+    rods = tuple(TubeStock(od_m=r, id_m=0.0) for r in settings.rods_m)
+    for tube in sorted(settings.tubes + rods, key=lambda t: (t.od_m, t.id_m), reverse=True):
         nests = tube.od_m <= current.id_m + FIT_EPS_M and current.id_m - tube.od_m <= settings.fit_clearance_m + FIT_EPS_M
         if nests and tube.od_m <= depth_m + FIT_EPS_M and _passes(tube, moment_nm, settings):
             return tube
     return None
 
 
-def _pick_socket(
-    root: TubeStock, moment_nm: float, settings: FabricationSettings
-) -> TubeStock:
+def _pick_socket(root: TubeStock, moment_nm: float, settings: FabricationSettings) -> TubeStock:
     for tube in settings.tubes:
         sleeves = tube.id_m >= root.od_m - FIT_EPS_M and tube.id_m - root.od_m <= settings.fit_clearance_m + FIT_EPS_M
         if sleeves and _passes(tube, moment_nm, settings):
@@ -116,6 +123,18 @@ def _pick_socket(
     raise KitUnavailable(
         f"no stock tube can sleeve the {root.od_m * 1e3:.0f} mm spar tube as a fuselage socket"
     )
+
+
+def _step_position(depth_at: Callable[[float], float], od_m: float, inboard_m: float, outboard_m: float) -> float:
+    """Outermost y in [inboard, outboard) where the depth still admits `od_m` (depth is non-increasing)."""
+    lo, hi = inboard_m, outboard_m
+    for _ in range(BISECTION_ITERATIONS):
+        mid = 0.5 * (lo + hi)
+        if depth_at(mid) >= od_m - FIT_EPS_M:
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 def plan_spar(
@@ -143,17 +162,17 @@ def plan_spar(
         depth = depth_at(y)
         if depth >= current.od_m - FIT_EPS_M:
             continue
-        # The bay [inboard, y] must already hold the thinner tube, so the step sits at `inboard`.
-        if inboard <= start + FIT_EPS_M:
+        y_step = _step_position(depth_at, current.od_m, max(inboard, start), y)
+        if y_step <= start + FIT_EPS_M:
             raise _unavailable_at(y)
-        moment = _moment_at(mtow_kg, semi_span_m, inboard, boom_y_m, settings)
+        moment = _moment_at(mtow_kg, semi_span_m, y_step, boom_y_m, settings)
         smaller = _step_down(current, depth, moment, settings)
         if smaller is None:
             raise _unavailable_at(y)
-        segments.append(SparSegment(current, start, inboard))
-        current, start = smaller, inboard
+        segments.append(SparSegment(current, start, y_step))
+        current, start = smaller, y_step
     segments.append(SparSegment(current, start, semi_span_m))
 
-    centre_moment = _moment_at(mtow_kg, semi_span_m, ROOT_SPAN_M, boom_y_m, settings)
+    centre_moment = _moment_at(mtow_kg, semi_span_m, 0.0, boom_y_m, settings)
     socket = _pick_socket(root, centre_moment, settings)
     return SparPlan(tuple(segments), socket, joint_y_m, settings.insertion_fraction * semi_span_m)
