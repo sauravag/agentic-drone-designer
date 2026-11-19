@@ -564,6 +564,27 @@ def test_unknown_model_note_and_mass_required(db: Path) -> None:
     assert "Payload 'Foo 9000' is not in the catalogue; treated as a custom payload." in outcome.assumptions
 
 
+def test_custom_named_payload_has_no_catalogue_note(db: Path) -> None:
+    outcome = to_requirements(SRS_DRAFT.model_copy(update={"payload_model": "Custom payload"}), db)
+    assert outcome.requirements is not None and outcome.requirements.payload_model == "custom"
+    assert not any("not in the catalogue" in note for note in outcome.assumptions)
+
+
+def test_datasheet_note_names_only_the_unstated_values(db: Path) -> None:
+    named = SRS_DRAFT.model_copy(update={"payload_model": "SIYI ZT30", "payload_power": None})
+    power_only = to_requirements(named.model_copy(update={"payload_mass": Mass(value=1.2, unit="kg")}), db)
+    assert "Payload SIYI ZT30: unstated power taken from its datasheet (9 W)." in power_only.assumptions
+    both = to_requirements(named.model_copy(update={"payload_mass": None}), db)
+    assert "Payload SIYI ZT30: unstated mass and power taken from its datasheet (0.854 kg, 9 W)." in both.assumptions
+
+
+def test_conflicting_sensor_type_is_noted(db: Path) -> None:
+    zr10 = to_requirements(SRS_DRAFT.model_copy(update={"payload_model": "SIYI ZR10"}), db)  # SRS says eo_ir
+    assert "Payload sensor 'eo_ir' ignored: SIYI ZR10 is an EO payload." in zr10.assumptions
+    zt30 = to_requirements(SRS_DRAFT.model_copy(update={"payload_model": "SIYI ZT30"}), db)
+    assert not any("ignored" in note for note in zt30.assumptions)
+
+
 def test_no_model_stays_custom(db: Path) -> None:
     req = to_requirements(SRS_DRAFT, db).requirements
     assert req is not None and req.payload_model == "custom"

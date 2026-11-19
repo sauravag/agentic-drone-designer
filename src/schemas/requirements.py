@@ -51,11 +51,9 @@ class OperationalRequirements(BaseModel):
     @property
     def payload_edited(self) -> bool:
         """A catalogue model whose mass or power was changed from its datasheet values."""
-        from src.schemas.payload_catalog import payload_spec
+        from src.schemas.payload_catalog import payload_edited  # deferred: payload_catalog -> components -> here
 
-        spec = payload_spec(self.payload_model)
-        return spec is not None and (abs(self.payload_mass_kg - spec.mass_kg) > PAYLOAD_EDIT_TOLERANCE
-                                     or abs(self.payload_power_w - spec.power_w) > PAYLOAD_EDIT_TOLERANCE)
+        return payload_edited(self.payload_model, self.payload_mass_kg, self.payload_power_w)
 
     @model_validator(mode="before")
     @classmethod

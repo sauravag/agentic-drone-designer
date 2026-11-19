@@ -11,9 +11,9 @@ from typing import Final, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
-from src.schemas.requirements import ARK_JETSON_PAB, FlightControllerId, OperationalRequirements
+from src.schemas.requirements import ARK_JETSON_PAB, CUSTOM_PAYLOAD, FlightControllerId, OperationalRequirements
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
-from src.schemas.payload_catalog import payload_spec
+from src.schemas.payload_catalog import CUSTOM_LABEL, payload_spec
 
 LABEL_MAX_LEN: Final[int] = 120
 
@@ -141,6 +141,13 @@ def _format(value: object) -> str:
     return str(value)
 
 
+def _format_requirement(name: str, value: object) -> str:
+    """`_format`, except that Custom shows as 'Custom payload' rather than its stored value 'custom'."""
+    if name == "payload_model" and value == CUSTOM_PAYLOAD:
+        return CUSTOM_LABEL
+    return _format(value)
+
+
 class ChangeSet(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -163,7 +170,8 @@ class ChangeSet(BaseModel):
         # datasheet mass and power) show and no-ops do not.
         for name in RequirementChanges.model_fields:
             if getattr(req, name) != merged[name]:
-                rows.append((FIELD_LABELS[name], _format(getattr(req, name)), _format(merged[name])))
+                rows.append((FIELD_LABELS[name], _format_requirement(name, getattr(req, name)),
+                             _format_requirement(name, merged[name])))
         for name, new in _set_fields(self.assumptions).items():
             old = getattr(assumptions, name)
             if old != new:

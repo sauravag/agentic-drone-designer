@@ -10,9 +10,8 @@ from pydantic import ValidationError
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
-from src.schemas.payload_catalog import CUSTOM_LABEL, payload_spec
+from src.schemas.payload_catalog import payload_display_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
-from src.tools.database.matcher import EDITED_SUFFIX
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.flight_control.runtime import MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M
 from src.units import WH_TO_J
@@ -90,9 +89,7 @@ def avionics_values(req: OperationalRequirements) -> dict[str, str]:
 
 def payload_display(req: OperationalRequirements) -> str:
     """The payload's name: a catalogue model (marked when its mass or power was edited) or Custom."""
-    if payload_spec(req.payload_model) is None:
-        return CUSTOM_LABEL
-    return req.payload_model + (EDITED_SUFFIX if req.payload_edited else "")
+    return payload_display_name(req.payload_model, req.payload_mass_kg, req.payload_power_w)
 
 
 def payload_summary(req: OperationalRequirements) -> str:
@@ -170,7 +167,8 @@ def _part_price(label: str, part: Any) -> str:
 
 
 def _avionics_row(label: str, part: Any) -> dict[str, Any]:
-    power: Any = IN_AVIONICS_ALLOWANCE if part.power_w is None else part.power_w
+    # Text throughout the column ("in avionics allowance" or "25"), so Streamlit's Arrow table has one type.
+    power: str = IN_AVIONICS_ALLOWANCE if part.power_w is None else f"{part.power_w:g}"
     return {"Part": label, "Item": part.name, "Qty": 1, "Unit mass (kg)": round(part.mass_kg, 3),
             "Mass (kg)": round(part.mass_kg, 3), "Power (W)": power, "Ref. price": part.reference_price_usd}
 

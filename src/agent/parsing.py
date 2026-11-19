@@ -12,7 +12,8 @@ from typing import Final, Optional
 from pydantic import ValidationError
 
 from src.agent.agent_schemas import Altitude, Distance, Duration, Mass, Power, RequirementsDraft, Speed
-from src.schemas.payload_catalog import payload_spec, resolve_payload_name
+from src.schemas.components import Payload
+from src.schemas.payload_catalog import SENSOR_LABELS, is_custom_name, payload_spec, resolve_payload_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, OperationalRequirements
 from src.tools.database.matcher import ComponentNotFoundError, match_payload
 from src.units import (DAY_TO_S, FT_TO_M, G_TO_KG, HOUR_TO_S, KM_TO_M, KMH_TO_MS, KNOT_TO_MS, KW_TO_W, LB_TO_KG,
@@ -93,7 +94,7 @@ def _payload_fields(draft: RequirementsDraft, db_path: Path, notes: list[str]) -
     """Payload model, mass and power. A named catalogue model supplies its datasheet mass and power unless the user
     stated them; otherwise (Custom) the mass must be stated. None when neither a mass nor a known model was given."""
     model: Optional[str] = resolve_payload_name(draft.payload_model) if draft.payload_model else None
-    if draft.payload_model and model is None:
+    if draft.payload_model and model is None and not is_custom_name(draft.payload_model):
         notes.append(f"Payload '{draft.payload_model}' is not in the catalogue; treated as a custom payload.")
     spec = payload_spec(model) if model is not None else None
     if spec is None:
@@ -102,12 +103,25 @@ def _payload_fields(draft: RequirementsDraft, db_path: Path, notes: list[str]) -
         mass: float = kg(draft.payload_mass)
         return {"payload_model": CUSTOM_PAYLOAD, "payload_mass_kg": mass,
                 "payload_power_w": _payload_power_w(draft, mass, db_path, notes)}
-    if draft.payload_mass is None or draft.payload_power is None:
-        notes.append(f"Payload {spec.name}: unstated mass/power taken from its datasheet "
-                     f"({spec.mass_kg:g} kg, {spec.power_w:g} W).")
+    notes += _model_notes(draft, spec)
     return {"payload_model": spec.name,
             "payload_mass_kg": spec.mass_kg if draft.payload_mass is None else kg(draft.payload_mass),
             "payload_power_w": spec.power_w if draft.payload_power is None else watts(draft.payload_power)}
+
+
+def _model_notes(draft: RequirementsDraft, spec: Payload) -> list[str]:
+    """Which datasheet values filled unstated ones, and a stated sensor class the named model overrides."""
+    unstated: list[tuple[str, str]] = [(name, text) for name, text, stated in (
+        ("mass", f"{spec.mass_kg:g} kg", draft.payload_mass), ("power", f"{spec.power_w:g} W", draft.payload_power))
+        if stated is None]
+    notes: list[str] = []
+    if unstated:
+        names, values = " and ".join(n for n, _ in unstated), ", ".join(v for _, v in unstated)
+        notes.append(f"Payload {spec.name}: unstated {names} taken from its datasheet ({values}).")
+    if draft.payload_sensor is not None and draft.payload_sensor != spec.sensor_type:
+        sensor: str = SENSOR_LABELS.get(spec.sensor_type, spec.sensor_type)
+        notes.append(f"Payload sensor '{draft.payload_sensor}' ignored: {spec.name} is an {sensor} payload.")
+    return notes
 
 
 def _speed_ms(draft: RequirementsDraft, notes: list[str]) -> float:

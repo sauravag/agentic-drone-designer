@@ -27,8 +27,8 @@ from src.schemas.components import (
     VtolMotor,
 )
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
-from src.schemas.payload_catalog import payload_spec
-from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, PAYLOAD_EDIT_TOLERANCE
+from src.schemas.payload_catalog import payload_display_name, payload_spec
+from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS
 from src.tools.database.seed_data import CATALOG_TABLES, pack_envelope
 from src.units import WH_TO_J
 
@@ -38,7 +38,6 @@ MTOW_TOLERANCE: float = 0.03
 # Avionics names and reference prices (display only; masses and watts are DesignAssumptions).
 # Sources: arkelectron.com, docs.px4.io, GetFPV/RobotShop/Lumenier, NVIDIA developer forum.
 AVIONICS_RESEARCH_DATE: Final[str] = "2026-11-18"
-EDITED_SUFFIX: Final[str] = " (edited)"  # a catalogue payload whose mass or power the designer changed
 COMPANION: Final[str] = "companion"
 AVIONICS_REFERENCE: Final[dict[str, tuple[str, str]]] = {
     CUBE_ORANGE_PLUS: ("CubePilot Cube Orange+ (ADS-B carrier)", "≈ $450–546"),
@@ -176,10 +175,8 @@ def payload_part(db_path: Path, needs: ComponentNeeds) -> Payload:
     if spec is None:
         return match_payload(db_path, needs.payload_mass_kg, needs.payload_sensor_type, needs.payload_power_w)
     power: float = spec.power_w if needs.payload_power_w is None else needs.payload_power_w
-    edited: bool = (abs(needs.payload_mass_kg - spec.mass_kg) > PAYLOAD_EDIT_TOLERANCE
-                    or abs(power - spec.power_w) > PAYLOAD_EDIT_TOLERANCE)
     return spec.model_copy(update={"mass_kg": needs.payload_mass_kg, "power_w": power,
-                                   "name": spec.name + (EDITED_SUFFIX if edited else "")})
+                                   "name": payload_display_name(spec.name, needs.payload_mass_kg, power)})
 
 
 def avionics_parts(

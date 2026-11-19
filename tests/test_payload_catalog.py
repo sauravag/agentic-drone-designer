@@ -326,3 +326,44 @@ def test_restating_the_current_model_keeps_edited_values() -> None:
     new_req, _, _ = apply_changes(edited, DEFAULT_ASSUMPTIONS,
                                   _payload_change(payload_model=ZT30, cruise_speed_ms=25.0))
     assert (new_req.payload_mass_kg, new_req.payload_power_w) == (1.0, 9.0)
+
+
+# -------------------------------------------------------------- display and review panel ---
+def test_describe_names_custom_payload() -> None:
+    to_custom = _payload_change(payload_model=CUSTOM_PAYLOAD).describe(_named(), DEFAULT_ASSUMPTIONS)
+    assert ("Payload", ZT30, "Custom payload") in to_custom
+    to_model = _payload_change(payload_model=ZT30).describe(G1, DEFAULT_ASSUMPTIONS)
+    assert ("Payload", "Custom payload", ZT30) in to_model
+
+
+def test_payload_display_name_is_the_one_edited_rule() -> None:
+    from src.schemas.payload_catalog import EDITED_SUFFIX, payload_display_name
+    from src.tools.database import matcher
+
+    assert payload_display_name(ZT30, 0.854, 9.0) == ZT30
+    assert payload_display_name(ZT30, 0.9, 9.0) == ZT30 + EDITED_SUFFIX
+    assert payload_display_name(ZT30, 0.854, 12.0) == ZT30 + EDITED_SUFFIX
+    assert payload_display_name(CUSTOM_PAYLOAD, 1.0, 5.0) == "Custom payload"
+    assert not hasattr(matcher, "EDITED_SUFFIX")  # the catalogue owns the payload naming rule
+
+
+def _review_state(monkeypatch: pytest.MonkeyPatch, **fields: object) -> dict[str, object]:
+    from src.ui import design_loop
+
+    state = {design_loop._review_key("requirements", name): value for name, value in fields.items()}
+    monkeypatch.setattr(design_loop.st, "session_state", state)
+    design_loop._fill_review_payload()
+    return {name: state.get(design_loop._review_key("requirements", name)) for name in
+            ("payload_model", "payload_mass_kg", "payload_power_w")}
+
+
+def test_review_panel_model_pick_refills_mass_and_power(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _review_state(monkeypatch, payload_model="SIYI ZR10", payload_mass_kg=0.854, payload_power_w=9.0)
+    assert state == {"payload_model": "SIYI ZR10", "payload_mass_kg": 0.381, "payload_power_w": 4.0}
+
+
+def test_review_panel_refill_leaves_custom_and_absent_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    custom = _review_state(monkeypatch, payload_model=CUSTOM_PAYLOAD, payload_mass_kg=0.854)
+    assert custom == {"payload_model": CUSTOM_PAYLOAD, "payload_mass_kg": 0.854, "payload_power_w": None}
+    model_only = _review_state(monkeypatch, payload_model="SIYI ZR10")  # mass/power follow the model on apply
+    assert model_only == {"payload_model": "SIYI ZR10", "payload_mass_kg": None, "payload_power_w": None}

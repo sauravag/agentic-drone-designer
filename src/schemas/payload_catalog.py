@@ -9,16 +9,17 @@ import re
 from typing import Final, Optional
 
 from src.schemas.components import Payload
-from src.schemas.requirements import CUSTOM_PAYLOAD
+from src.schemas.requirements import CUSTOM_PAYLOAD, PAYLOAD_EDIT_TOLERANCE
 
-__all__ = ["CUSTOM_PAYLOAD", "PAYLOADS", "PAYLOAD_RESEARCH_DATE", "payload_choices", "payload_label", "payload_spec",
-           "resolve_payload_name"]
+__all__ = ["CUSTOM_PAYLOAD", "EDITED_SUFFIX", "PAYLOADS", "PAYLOAD_RESEARCH_DATE", "is_custom_name", "payload_choices",
+           "payload_display_name", "payload_edited", "payload_label", "payload_spec", "resolve_payload_name"]
 
 PAYLOAD_RESEARCH_DATE: Final[str] = "2026-11-18"
 MM_TO_M: Final[float] = 0.001
 QUOTE_ONLY: Final[str] = "quote only"
 NOT_PUBLIC: Final[str] = "not public"
 CUSTOM_LABEL: Final[str] = "Custom payload"
+EDITED_SUFFIX: Final[str] = " (edited)"  # a catalogue payload whose mass or power the designer changed
 SENSOR_LABELS: Final[dict[str, str]] = {"eo": "EO", "eo_ir": "EO/IR"}
 
 # Datasheet values, researched 2026-11-18 from:
@@ -98,6 +99,21 @@ def payload_spec(name: str) -> Optional[Payload]:
     return _BY_NAME.get(ALIASES.get(name, name))
 
 
+def payload_edited(name: str, mass_kg: float, power_w: float) -> bool:
+    """A catalogue model sized with a mass or power other than its datasheet values. Custom is never edited."""
+    spec: Optional[Payload] = payload_spec(name)
+    return spec is not None and (abs(mass_kg - spec.mass_kg) > PAYLOAD_EDIT_TOLERANCE
+                                 or abs(power_w - spec.power_w) > PAYLOAD_EDIT_TOLERANCE)
+
+
+def payload_display_name(name: str, mass_kg: float, power_w: float) -> str:
+    """The payload's name everywhere it is shown: 'SIYI ZT30', 'SIYI ZT30 (edited)' or 'Custom payload'."""
+    spec: Optional[Payload] = payload_spec(name)
+    if spec is None:
+        return CUSTOM_LABEL
+    return spec.name + (EDITED_SUFFIX if payload_edited(name, mass_kg, power_w) else "")
+
+
 # Words people add around a model name ("ZT30 gimbal", "SIYI ZT30 EO/IR"); SIYI's "UniPod" is a family prefix.
 FILLER_WORDS: Final[frozenset[str]] = frozenset({"gimbal", "camera", "pod", "payload", "eo", "ir", "eoir", "unipod"})
 
@@ -109,6 +125,11 @@ def _key(text: str) -> str:
 def _model_key(text: str) -> str:
     """Case-, punctuation- and filler-insensitive key: 'SIYI UniPod MT11' and 'siyi mt11 gimbal' -> 'siyimt11'."""
     return "".join(k for word in text.split() if (k := _key(word)) not in FILLER_WORDS)
+
+
+def is_custom_name(text: str) -> bool:
+    """'custom', 'Custom payload' and the like: the user chose Custom rather than naming a product."""
+    return _model_key(text) == CUSTOM_PAYLOAD
 
 
 def resolve_payload_name(text: str) -> Optional[str]:

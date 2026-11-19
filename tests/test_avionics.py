@@ -187,7 +187,8 @@ def test_total_hardware_mass_counts_avionics_lines(catalog: Path) -> None:
 def test_bom_rows_show_avionics_rows(catalog: Path) -> None:
     rows = {r["Part"]: r for r in bom_rows(_bom(catalog, _req(companion_computer=True)))}
     assert rows["Flight controller"]["Power (W)"] == "in avionics allowance"
-    assert rows["Companion computer"]["Power (W)"] == JETSON_W
+    assert rows["Companion computer"]["Power (W)"] == f"{JETSON_W:g}"  # one column type: no Arrow mixed-type warning
+    assert all(r["Power (W)"] is None or isinstance(r["Power (W)"], str) for r in rows.values())
     assert rows["Flight controller"]["Ref. price"].startswith("≈ $")
     assert rows["Total"]["Mass (kg)"] == pytest.approx(round(_bom(catalog, _req(companion_computer=True))
                                                             .total_hardware_mass_kg, 3))

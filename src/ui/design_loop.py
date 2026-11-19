@@ -18,7 +18,7 @@ from src.agent.providers import LLMConfigError
 from src.agent.report import defang, inline
 from src.schemas.changes import (FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges,
                                  RequirementChanges)
-from src.schemas.payload_catalog import payload_choices, payload_label
+from src.schemas.payload_catalog import payload_choices, payload_label, payload_spec
 from src.ui import agent_service
 from src.ui.agent_service import AgentRunView, NoChangeError
 
@@ -210,13 +210,25 @@ def _field_choices(section: str, field: str) -> Optional[tuple[Any, ...]]:
     return _choices(section, field)
 
 
+def _fill_review_payload() -> None:
+    """on_change: picking a catalogue model refills the panel's payload mass and power boxes (when the change shows
+    them) with its datasheet values, as the requirements box does. Custom keeps the numbers; a change without those
+    boxes needs nothing, because applying it brings the model's datasheet values."""
+    spec = payload_spec(st.session_state[_review_key("requirements", "payload_model")])
+    if spec is None:
+        return
+    for field, value in (("payload_mass_kg", spec.mass_kg), ("payload_power_w", spec.power_w)):
+        if _review_key("requirements", field) in st.session_state:
+            st.session_state[_review_key("requirements", field)] = value
+
+
 def _edit_widget(section: str, field: str, value: Any) -> None:
     key, label = _review_key(section, field), FIELD_LABELS[field]
     choices = _field_choices(section, field)
     if isinstance(value, bool):
         st.checkbox(label, key=key)
     elif field == "payload_model":
-        st.selectbox(label, choices, key=key, format_func=payload_label)
+        st.selectbox(label, choices, key=key, format_func=payload_label, on_change=_fill_review_payload)
     elif choices is not None:
         st.selectbox(label, choices, key=key)
     else:
