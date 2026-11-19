@@ -294,6 +294,7 @@ from src.tools.fabrication.fittings import (  # noqa: E402
 from src.tools.fabrication.fuselage_parts import firewall_station, fuselage_parts, socket_axis_m  # noqa: E402
 from src.tools.fabrication.rib_outline import Hole, circle_face, rect_face  # noqa: E402
 from src.tools.fabrication.tubes import boom_tube  # noqa: E402
+from src.tools.aero_cad.layout import fuselage_radius_at  # noqa: E402
 from tests.test_fabrication_fuselage import (  # noqa: E402
     _assert_no_intersections,
     _boom_solid,
@@ -416,8 +417,40 @@ def test_split_crutch_stays_clear_of_every_fuselage_part(case, designs, request)
     assert len(_pieces(split)) >= 2
     assert sum(p.area_m2 for p in _pieces(split)) == pytest.approx(crutch.area_m2, abs=1e-9)
     others = [p for p in parts if p.label != "C-1"]
+    placed = _real_components(designs, case, layout)
+    trays = component_plates(placed, layout, settings, spar)
     extras = _socket_tubes(layout, spar) + _pin_rods(layout, spar, parts, settings) + [_boom_solid(layout, settings)]
-    _assert_no_intersections([(p.label, part_solid(p, settings)) for p in (*split, *others)] + extras)
+    extras += [(c.name, c.solid()) for c in placed]
+    _assert_no_intersections([(p.label, part_solid(p, settings)) for p in (*split, *others, *trays)] + extras)
+    cover = settings.fuselage_cover_thickness_m
+    for doubler in _doublers(split):  # its top corners stay inside the covering
+        box = part_solid(doubler, settings).bounding_box()
+        for x in (box.min.X, box.max.X):
+            r = fuselage_radius_at(layout, x) - cover
+            assert max(abs(box.min.Y), abs(box.max.Y)) <= math.sqrt(r * r - box.max.Z**2) + 1e-9, doubler.label
+
+
+def _tail_vertices(face: bd.Face, tip_x: float, cut_x: float) -> list[tuple[float, float]]:
+    return sorted((round(v.X, 9), round(v.Y, 9)) for v in face.outer_wire().vertices()
+                  if abs(v.X - tip_x) < 1e-9 or (abs(v.X - cut_x) < 1e-9 and 0.0 < v.Y < 0.12))
+
+
+def test_pieces_interlock_with_the_brief_dovetail():
+    part = _plate(1.4, 0.12)
+    a, b, *_ = _pieces(split_to_bed(part, DEFAULT_FABRICATION))
+    tip = a.outline.bounding_box().max.X
+    cut = tip - DOVETAIL_DEPTH_M
+    assert abs(cut - 1.4 / 3.0) <= SPLIT_SEARCH_M + 1e-9
+    tail = _tail_vertices(a.outline, tip, cut)
+    neck = [y for x, y in tail if abs(x - cut) < 1e-9]
+    flare = [y for x, y in tail if abs(x - tip) < 1e-9]
+    assert len(neck) == 2 and len(flare) == 2
+    assert neck[1] - neck[0] == pytest.approx(0.010, abs=1e-9)
+    assert flare[1] - flare[0] == pytest.approx(0.016, abs=1e-9)
+    assert sum(neck) / 2 == pytest.approx(sum(flare) / 2, abs=1e-9)  # symmetric tail
+    socket = _tail_vertices(b.outline, tip, cut)
+    flat = [c for v in tail for c in v]
+    assert [c for v in socket for c in v] == pytest.approx(flat, abs=1e-9)  # b carries the same tail (no straight cut)
 
 
 # ------------------------------------------------------------------------------------- component trays ---
@@ -623,3 +656,45 @@ def test_motor_plates_sit_on_the_boom_under_each_rotor_hub(g2_kit_inputs, g2_boo
         box = part_solid(plate, settings).bounding_box()
         assert box.min.Z == pytest.approx(tube.start_m[2] + tube.tube.od_m / 2, abs=1e-9)
         assert box.max.Z <= z + 1e-9  # under the motor
+
+
+def _lowered_quadplane(layout, drop_m: float):
+    """g2 with its lift booms and rotor hubs moved down, so the spar no longer forces the booms lower."""
+    booms = tuple(dataclasses.replace(b, z_m=b.z_m - drop_m) for b in layout.vtol_booms)
+    rotors = tuple((x, y, z - drop_m) for x, y, z in layout.rotor_positions)
+    return dataclasses.replace(layout, vtol_booms=booms, rotor_positions=rotors)
+
+
+def test_lift_boom_keeps_its_layout_height_when_the_spar_allows(g2_kit_inputs, designs):
+    layout, _, spar, settings = g2_kit_inputs
+    low = _lowered_quadplane(layout, 0.03)
+    parts, tubes = boom_parts(low, spar, settings, _lift_motors(designs, low))
+    t = settings.sheet_for("plate").thickness_m
+    for tube, boom in zip(sorted((t_ for t_ in tubes if t_.role == "lift_boom"), key=lambda t_: -t_.start_m[1]),
+                          low.vtol_booms):
+        z_hub = boom.z_m + boom.diameter_m / 2
+        assert tube.start_m[2] == pytest.approx(z_hub - t - tube.tube.od_m / 2, abs=1e-9)
+    by = ribs_by_label(parts)
+    for k, (_, _, z_hub) in enumerate(low.rotor_positions, start=1):
+        assert part_solid(by[f"MP-{k}"], settings).bounding_box().max.Z == pytest.approx(z_hub, abs=1e-9)
+
+
+def test_g2_motor_plates_carry_their_motors(g2_kit_inputs, g2_booms):
+    """Even where the spar forces the boom down, a plate never sits above its hub."""
+    layout, _, _, settings = g2_kit_inputs
+    by = ribs_by_label(g2_booms[0])
+    for k, (_, _, z_hub) in enumerate(layout.rotor_positions, start=1):
+        assert part_solid(by[f"MP-{k}"], settings).bounding_box().max.Z <= z_hub + 1e-9
+
+
+def test_one_sided_boom_set_is_unavailable(g2_kit_inputs):
+    layout, _, spar, settings = g2_kit_inputs
+    one = dataclasses.replace(layout, vtol_booms=layout.vtol_booms[:1])
+    with pytest.raises(KitUnavailable, match="MP-"):
+        boom_parts(one, spar, settings)
+
+
+def test_join_notes_ignore_labels_that_merely_contain_d():
+    part = _plate(1.4, 0.12, label="X-Dummy")
+    notes = join_notes(split_to_bed(part, DEFAULT_FABRICATION))
+    assert len(notes) == 2 and notes[0].startswith("X-Dummya + X-Dummyb")

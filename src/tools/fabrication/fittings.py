@@ -15,10 +15,14 @@
   dovetail; a doubler `<label>-D<k>` of the same family is glued on the part's +Z face over joint k, lapping
   DOUBLER_LAP_M either side of the dovetail (down to DOUBLER_MIN_LAP_M where holes crowd it). Its band stays clear of
   the long-axis extent of every hole and slot (+ MIN_WEB_M), so it misses whatever passes through them (formers
-  stand in the crutch's tab slots and span its width).
+  stand in the crutch's tab slots and span its width). Its edges are inset DOUBLER_EDGE_INSET_M from the part's
+  outline: on a curved skin the doubler's outer face sits one sheet off the part's plane, where the skin is narrower
+  by r - sqrt(r^2 - z^2); 2 mm bounds that for every radius above 6 mm at the 4.5 mm top of a crutch doubler.
+  The dovetail is cut at nominal size: its press fit comes from the kerf (like every tab and slot).
 """
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Final, Optional, Sequence
 
@@ -44,6 +48,8 @@ SPLIT_CLEARANCE_M: Final[float] = 0.003  # joint path to any hole or slot (>= MI
 SPLIT_SEARCH_STEP_M: Final[float] = 0.001
 DOUBLER_LAP_M: Final[float] = 0.020  # doubler overlap either side of the dovetail, when there is room
 DOUBLER_MIN_LAP_M: Final[float] = 0.010  # shortest overlap accepted between holes or slots
+DOUBLER_EDGE_INSET_M: Final[float] = 0.002  # doubler edges stay this far inside the part's outline
+DOUBLER_LABEL: Final[re.Pattern[str]] = re.compile(r"^(?P<base>.+)-D(?P<k>\d+)$")
 MAX_SPLIT_PIECES: Final[int] = 8
 CRUISE_MOTOR_NAME: Final[str] = "cruise_motor"
 AREA_EPS_M2: Final[float] = 1e-10
@@ -266,7 +272,10 @@ def _cut(face: bd.Face, joints: Sequence[_Joint]) -> Optional[list[bd.Face]]:
 
 def _doubler(face: bd.Face, joint: _Joint) -> Optional[bd.Face]:
     lo, hi = _doubler_band(joint)
-    faces = _faces(face.intersect(rect_face(lo, -REACH_M, hi, REACH_M)))
+    inset = _faces(bd.offset(face, amount=-DOUBLER_EDGE_INSET_M))
+    if len(inset) != 1:
+        return None
+    faces = _faces(inset[0].intersect(rect_face(lo, -REACH_M, hi, REACH_M)))
     return faces[0] if len(faces) == 1 else None
 
 
@@ -298,7 +307,10 @@ def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings) -> 
 
 
 def split_to_bed(part: KitPart, settings: FabricationSettings) -> tuple[KitPart, ...]:
-    """The part unchanged if it fits the usable bed, else its pieces then their doublers (module docstring)."""
+    """The part unchanged if it fits the usable bed, else its pieces then their doublers (module docstring).
+
+    Pieces are nominal geometry: the dovetail's tail and socket are the same line, and the joint gets its press fit
+    from the laser kerf (applied at DXF export), as tabs and slots do."""
     if _fits(part.outline, settings):
         return (part,)
     (w, h), short = _size(part.outline), _usable_bed(settings)[1]
@@ -323,9 +335,12 @@ def _world_centre(part: KitPart) -> bd.Vector:
 def join_notes(pieces: Sequence[KitPart]) -> tuple[str, ...]:
     """'C-1a + C-1b: dovetail + doubler C-1-D1 at x = 0.512 m' for every doubler among `pieces`."""
     by_label, notes = {p.label: p for p in pieces}, []
-    for doubler in (p for p in pieces if "-D" in p.label):
-        base, k = doubler.label.rsplit("-D", 1)
-        a, b = (by_label[f"{base}{chr(ord('a') + int(k) - 1 + i)}"] for i in (0, 1))
+    for doubler in pieces:
+        match = DOUBLER_LABEL.match(doubler.label)
+        if match is None:
+            continue
+        base, k = match["base"], int(match["k"])
+        a, b = (by_label[f"{base}{chr(ord('a') + k - 1 + i)}"] for i in (0, 1))
         direction = tuple(_world_centre(b) - _world_centre(a))
         axis = max(range(3), key=lambda i: abs(direction[i]))
         coord = tuple(_world_centre(doubler))[axis]

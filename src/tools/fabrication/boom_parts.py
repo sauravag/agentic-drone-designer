@@ -1,14 +1,17 @@
 """Boom tubes, boom clamps and motor mount plates for the laser-cut kit (frame convention: see `kit.py`).
 
 - Boom tubes (R13): `boom_tube(layout diameter)` stock. The tail boom `TB-1` sits where the layout puts it. Each lift
-  boom `LB-R` / `LB-L` keeps its layout x, y and length, but its axis height is set by the clamp (below): the layout
-  hangs the boom from the wing chord plane, where the stock tube would cut through the spar.
+  boom `LB-R` / `LB-L` keeps its layout x, y and length; its top sits one plate thickness under the rotor hub plane
+  (the layout boom's top), so the motor plates carry the motors at the layout height. Where the spar member is too
+  low for that (the clamp needs a MIN_WEB_M web between the two tubes), the boom drops further and the motor plates
+  sit under the hub plane by the difference.
 - Boom clamps `BC-R1`/`BC-R2` (`BC-L…` mirrored), quadplane only: a laminated pair of 3 mm plates in the boom's
   yz-plane at the spar's x, BC-x1 just ahead of the spar axis and BC-x2 just aft of it (local X -> y, local Y -> z,
   extruded aft like a former). Each plate rings the boom tube (hole = boom OD + fit clearance) and its top edge is the
   saddle the spar member bears on: the member's underside ((OD + clearance) / 2 below its axis, stretched for the
   axis' slope) along the spar axis incl. dihedral. The boom axis sits MIN_WEB_M + hole radius below the lowest point
-  of that saddle, so the plate keeps a MIN_WEB_M web between the two tubes. A plate side that would reach a wing rib
+  of that saddle or lower (above): the plate keeps at least a MIN_WEB_M web between the two tubes and grows taller
+  when the boom sits lower. A plate side that would reach a wing rib
   stops one rib-sheet thickness clear of it; the boom hole must still keep MIN_WEB_M there.
 - Motor plates `MP-1…4`: discs on top of each lift boom under every rotor hub, with a centre mark hole and a slotted
   cross for 16 / 19 / 25 mm bolt circles; they sit under the motor (`vtol_motor_k` when given).
@@ -87,7 +90,10 @@ def _motor_plates(layout: AircraftLayout, boom_z: dict[int, float], tube_od_m: f
     """`MP-k` on top of its boom under rotor hub k (hub z is the motor's underside)."""
     t, plates = settings.sheet_for("plate").thickness_m, []
     for k, (x, y, z_hub) in enumerate(layout.rotor_positions, start=1):
-        top = boom_z[RIGHT if y > 0 else LEFT] + tube_od_m / 2.0
+        side = RIGHT if y > 0 else LEFT
+        if side not in boom_z:
+            raise KitUnavailable(f"MP-{k}: rotor hub at y = {y:.3f} m has no lift boom under it")
+        top = boom_z[side] + tube_od_m / 2.0
         if top + t > z_hub:
             raise KitUnavailable(f"MP-{k}: the motor plate on the lowered boom would reach into the lift motor")
         outline = motor_plate_outline(motor_plate_diameter_m(_lift_motor_diameter_m(components, k - 1)))
@@ -142,7 +148,8 @@ def _clamp(boom: Boom, layout: AircraftLayout, spar: SparPlan, settings: Fabrica
     if min(y_boom - span[0], span[1] - y_boom) - hole_d / 2.0 < MIN_WEB_M - WEB_EPS_M:
         raise KitUnavailable(f"{label}: a wing rib leaves less than {MIN_WEB_M * 1e3:.0f} mm beside the boom hole")
     seat = _seat_z(layout, spar, settings, span, y_boom)
-    boom_z = min(seat) - MIN_WEB_M - hole_d / 2.0
+    under_hub = boom.z_m + boom.diameter_m / 2.0 - settings.sheet_for("plate").thickness_m - od / 2.0
+    boom_z = min(under_hub, min(seat) - MIN_WEB_M - hole_d / 2.0)
     return _Clamp(side, socket_axis_m(layout, y_boom)[0], span, seat,
                   boom_z - hole_d / 2.0 - CLAMP_CHEEK_M, Hole(y_boom, boom_z, hole_d))
 
