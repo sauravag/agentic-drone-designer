@@ -195,6 +195,13 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 | `options.json` | explorer options with their sizing + catalog results (written when the explorer ran) |
 | `design_chat.json` | the design chat for this run (written from the web form once you chat) |
 
+**Download all files (.zip)** in the Files tab exports the whole run as `<run id>.zip`: every file above
+(sub-folders included) under one `<run id>/` folder, plus `design.json`. `design.json` is a versioned record
+(`"format": "isr-forge-design"`, `"format_version": 1`) of everything the results view shows: requirements,
+assumptions, sizing, parts, aero, CAD, flight test, critic gates and history, explorer options and lineage, with
+paths relative to the run folder. It is built when you download and exists only inside the zip; it is what a
+future "open a shared design" feature will read.
+
 ## Critic gates (SRS §5)
 
 1. Static margin 8–14 %

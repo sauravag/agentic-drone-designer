@@ -137,3 +137,45 @@ def test_design_json_is_not_written_to_the_run_folder(tmp_path: Path) -> None:
     run_dir = _run_folder(tmp_path)
     build_zip(_view(run_dir))
     assert not (run_dir / "design.json").exists()
+
+
+ZIP_BUTTON = "Download all files (.zip)"
+
+
+def _app_with(view: AgentRunView, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from src.ui import agent_service
+    from tests.test_ui import _llm_app
+
+    at: Any = _llm_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", lambda *a, **k: view)
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _zip_buttons(at: Any) -> list[Any]:
+    return [b for b in at.download_button if b.label == ZIP_BUTTON]
+
+
+def _failed_view(run_dir: Path, **fields: Any) -> AgentRunView:
+    return _view(run_dir, status="not_converged", cad=None, fcs=None, report_path=None,
+                 warnings=("NON-CONVERGENCE: sizing: mass spiral",), **fields)
+
+
+def test_files_tab_offers_the_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _app_with(_failed_view(_run_folder(tmp_path)), tmp_path, monkeypatch)
+    assert len(_zip_buttons(at)) == 1
+
+
+def test_files_tab_warns_when_the_run_cannot_be_zipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    view = _view(_run_folder(tmp_path), status="not_converged", cad=None, fcs=None,
+                 report_path=tmp_path / "elsewhere.md", warnings=("NON-CONVERGENCE: sizing: mass spiral",))
+    at = _app_with(view, tmp_path, monkeypatch)
+    assert any("cannot be zipped" in w.value for w in at.warning)
+    assert not _zip_buttons(at)
+
+
+def test_files_tab_has_no_zip_for_a_deleted_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _app_with(_failed_view(tmp_path / "gone"), tmp_path, monkeypatch)
+    assert not _zip_buttons(at)

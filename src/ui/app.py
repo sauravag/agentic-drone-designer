@@ -28,7 +28,7 @@ from src.schemas.requirements import ARK_JETSON_PAB, OperationalRequirements  # 
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
 from src.schemas.payload_catalog import payload_choices, payload_label, payload_spec  # noqa: E402
-from src.ui import agent_service, chat_panel, design_loop, presenters, viewer_panel  # noqa: E402
+from src.ui import agent_service, chat_panel, design_archive, design_loop, presenters, viewer_panel  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
@@ -43,7 +43,8 @@ GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
 EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
                               "6-hour endurance, and 80 km datalink radius")
-DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
+ZIP_LABEL: Final[str] = "Download all files (.zip)"
+DESIGN_TABS: Final[tuple[str, ...]] =("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
 COMPANION_CUBE_KEY: Final[str] = "companion_computer_cube"  # editable box (Cube); writes "companion_computer"
 COMPANION_ARK_KEY: Final[str] = "companion_computer_ark"  # greyed, ticked box shown for the ARK stack
 PENDING_DESIGN_KEY: Final[str] = "pending_design"  # set by Design aircraft inside the box; main() runs it
@@ -304,6 +305,20 @@ def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: 
                        "quadplane), then +15° roll and +10° pitch steps in FBWA. Details in sitl_report.json.")
 
 
+def _zip_download(view: AgentRunView) -> None:
+    """Every file of the run plus design.json in one zip; nothing when the run folder is gone."""
+    if view.out_dir is None or not Path(view.out_dir).is_dir():
+        return
+    try:
+        data: bytes = design_archive.build_zip(view)
+    except (ValueError, FileNotFoundError) as exc:
+        logger.warning("run %s cannot be zipped: %s", view.run_id, exc)
+        st.warning(f"This run's files cannot be zipped: {exc}")
+        return
+    st.download_button(ZIP_LABEL, data=data, file_name=design_archive.zip_name(view), mime=design_archive.ZIP_MIME,
+                       type="primary", key=f"dl-zip-{view.run_id}")
+
+
 def _agent_tabs(view: AgentRunView, critic_tab: Any, report_tab: Any, files_tab: Any) -> None:
     with critic_tab:
         st.subheader("Final critic gates")
@@ -321,6 +336,7 @@ def _agent_tabs(view: AgentRunView, critic_tab: Any, report_tab: Any, files_tab:
         else:
             st.markdown(text)  # LLM prose in it is defanged by report.render; raw HTML stays disabled
     with files_tab:
+        _zip_download(view)
         for path in presenters.downloadable_files(view.out_dir) if view.out_dir else []:
             st.download_button(path.name, data=path.read_bytes(), file_name=path.name, key=f"dl-{view.run_id}-{path.name}")
 
