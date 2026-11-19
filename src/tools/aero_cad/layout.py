@@ -32,6 +32,12 @@ TAIL_BOOM_START_FRACTION: Final[float] = 0.9  # boom root buried in the tail con
 TAIL_BOOM_DIAMETER_FRACTION: Final[float] = 0.25  # of fuselage diameter
 MIN_BOOM_DIAMETER_M: Final[float] = 0.02
 
+# Control surfaces (shared by OpenVSP and the laser-cut kit): span fractions and chord fractions aft of the hinge.
+AILERON_ETA: Final[tuple[float, float]] = (0.55, 0.95)
+AILERON_CHORD_FRACTION: Final[float] = 0.25
+TAIL_CONTROL_ETA: Final[tuple[float, float]] = (0.05, 0.95)
+TAIL_CONTROL_CHORD_FRACTION: Final[float] = 0.35
+
 ROTOR_CLEARANCE_FRACTION: Final[float] = 0.10  # gap to wing/fuselage, fraction of rotor diameter
 VTOL_BOOM_DIAMETER_FRACTION: Final[float] = 0.08  # of rotor diameter
 VTOL_BOOM_OVERHANG_FRACTION: Final[float] = 0.15  # boom extension past each rotor hub

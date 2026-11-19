@@ -13,60 +13,15 @@ import pytest
 build123d = pytest.importorskip("build123d")
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS  # noqa: E402
-from src.schemas.components import SelectedBOM  # noqa: E402
-from src.schemas.state import AeroStabilityOutput, SizingOutput  # noqa: E402
 from src.tools.aero_cad import build, cad_packer, components, mass_properties, stability, structure  # noqa: E402
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_selig_dat  # noqa: E402
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
-from src.tools.database.matcher import select_bom  # noqa: E402
-from src.tools.database.seed_data import seed_database  # noqa: E402
-from src.tools.sizing.mission_solver import component_needs, size_aircraft  # noqa: E402
+from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml  # noqa: E402
 from tests.reference_designs import CASES  # noqa: E402
 
 SM_MIN: float = 0.08
 SM_MAX: float = 0.14
 DEG: float = math.pi / 180.0
-
-
-# ------------------------------------------------------------------------------------------ fixtures ---
-@pytest.fixture(scope="module")
-def catalog(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return seed_database(tmp_path_factory.mktemp("db") / "cots_catalog.db")
-
-
-@pytest.fixture(scope="module")
-def designs(catalog: Path) -> dict[str, tuple[SizingOutput, SelectedBOM]]:
-    out: dict[str, tuple[SizingOutput, SelectedBOM]] = {}
-    for key, req in CASES.items():
-        sizing: SizingOutput = size_aircraft(req)
-        out[key] = (sizing, select_bom(catalog, component_needs(sizing, req)))
-    return out
-
-
-def _synthetic_aero(layout: AircraftLayout, np_offset_mac: float = 0.25) -> AeroStabilityOutput:
-    """Stand-in for VSPAERO so packing can be tested without OpenVSP."""
-    return AeroStabilityOutput(
-        cl0=0.3, cl_alpha_per_rad=5.0, cd0=0.03, ld_cruise=15.0, cm_alpha_per_rad=-1.2, cn_beta_per_rad=0.08,
-        cl_beta_per_rad=-0.05, cl_delta_a_per_rad=0.2, cm_delta_e_per_rad=-1.0, cn_delta_r_per_rad=-0.05,
-        x_np_m=layout.wing.x_ac_m + np_offset_mac * layout.wing.mac_m,
-    )
-
-
-def _fitted_layout(sizing: SizingOutput, bom: SelectedBOM, station: float = 0.30) -> AircraftLayout:
-    diameter: float = max(sizing.fuselage_diameter_m, components.required_fuselage_diameter_m(sizing, bom))
-    return layout_from_sizing(sizing, station, diameter, components.required_fuselage_length_m(sizing, bom, diameter))
-
-
-def _synthetic_oml(layout: AircraftLayout, path: Path) -> Path:
-    """Fuselage cylinder + wing slab exported in metres, like OpenVSP's trimmed STEP."""
-    bd = build123d
-    fus = bd.Pos(layout.fuselage_length_m / 2, 0, 0) * bd.Rot(0, 90, 0) * bd.Cylinder(
-        layout.fuselage_diameter_m / 2, layout.fuselage_length_m)
-    w = layout.wing
-    wing = bd.Pos(w.x_le_root_m + w.root_chord_m / 2, 0, w.z_root_m) * bd.Box(
-        w.root_chord_m, 2 * w.semi_span_m, 0.1 * w.root_chord_m)
-    bd.export_step(fus + wing, str(path), unit=bd.Unit.M)
-    return path
 
 
 # ---------------------------------------------------------------------------------------- airfoils ---
@@ -149,11 +104,6 @@ def _cases(**overrides: stability.AeroCoefficients) -> stability.VspaeroCases:
         deflection_deg=10.0,
     )
     return stability.VspaeroCases(**{**base, **overrides})
-
-
-@pytest.fixture()
-def g1_layout(designs: dict) -> AircraftLayout:
-    return layout_from_sizing(designs["g1"][0])
 
 
 def test_derivatives_from_synthetic_vspaero(g1_layout: AircraftLayout) -> None:

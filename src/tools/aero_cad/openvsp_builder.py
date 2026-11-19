@@ -22,7 +22,16 @@ import openvsp as vsp
 
 from src.schemas.state import AeroStabilityOutput, SizingOutput
 from src.tools.aero_cad.airfoil_geometry import load_airfoil, write_selig_dat
-from src.tools.aero_cad.layout import FUSELAGE_PROFILE, AircraftLayout, Boom, SurfacePlanform
+from src.tools.aero_cad.layout import (
+    AILERON_CHORD_FRACTION,
+    AILERON_ETA,
+    FUSELAGE_PROFILE,
+    TAIL_CONTROL_CHORD_FRACTION,
+    TAIL_CONTROL_ETA,
+    AircraftLayout,
+    Boom,
+    SurfacePlanform,
+)
 from src.tools.aero_cad.stability import (
     AeroAnalysisError,
     AeroCoefficients,
@@ -40,10 +49,6 @@ DEFLECTION_DEG: Final[float] = 10.0
 WAKE_ITERATIONS: Final[int] = 3
 MIRROR_GAIN_SYMMETRIC: Final[float] = -1.0
 
-AILERON_ETA: Final[tuple[float, float]] = (0.55, 0.95)
-AILERON_CHORD_FRACTION: Final[float] = 0.25
-TAIL_CONTROL_ETA: Final[tuple[float, float]] = (0.05, 0.95)
-TAIL_CONTROL_CHORD_FRACTION: Final[float] = 0.35
 ROTOR_AXIS_ROTATION_DEG: Final[float] = -90.0  # PROP disc normal from +x to +z (lift rotor)
 MAX_PLAUSIBLE_CD0: Final[float] = 0.2
 

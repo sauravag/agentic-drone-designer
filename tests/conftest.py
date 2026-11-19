@@ -1,13 +1,29 @@
-"""Test isolation: no test sees the developer's real LLM keys or provider/model settings.
+"""Shared test fixtures, plus test isolation: no test sees the developer's real LLM keys or
+provider/model settings.
 
-The snapshot is taken at import (before any fixture runs) so the opt-in live test
+The design fixtures (`catalog`, `designs`, `g1_layout`, `g1_kit_inputs`) are shared by the CAD and
+fabrication tests; plain helpers live in `tests/cad_helpers.py`. The LLM-env snapshot is taken at import (before any fixture runs) so the opt-in live test
 (tests/test_agent_e2e.py with ISR_FORGE_LIVE_LLM=1) can restore it explicitly.
 """
 
 import os
+from pathlib import Path
 from typing import Final
 
 import pytest
+
+from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
+from src.schemas.state import SizingOutput
+from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
+from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
+from src.tools.database.matcher import select_bom
+from src.tools.database.seed_data import seed_database
+from src.tools.fabrication.tubes import SparPlan, joint_y_m, plan_spar
+from src.tools.fabrication.wing_parts import spar_depth_at
+from src.tools.sizing.mission_solver import component_needs, size_aircraft
+from tests.cad_helpers import _fitted_layout
+from tests.reference_designs import CASES
 
 LLM_ENV_VARS: Final[tuple[str, ...]] = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ISR_FORGE_LLM_PROVIDER",
                                         "ISR_FORGE_MODEL")
@@ -18,3 +34,39 @@ LIVE_LLM_ENV: Final[dict[str, str]] = {k: os.environ[k] for k in LLM_ENV_VARS if
 def _no_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in LLM_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+# ---------------------------------------------------------------------------- shared design fixtures ---
+@pytest.fixture(scope="module")
+def catalog(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return seed_database(tmp_path_factory.mktemp("db") / "cots_catalog.db")
+
+
+@pytest.fixture(scope="module")
+def designs(catalog: Path) -> dict[str, tuple[SizingOutput, SelectedBOM]]:
+    out: dict[str, tuple[SizingOutput, SelectedBOM]] = {}
+    for key, req in CASES.items():
+        sizing: SizingOutput = size_aircraft(req)
+        out[key] = (sizing, select_bom(catalog, component_needs(sizing, req)))
+    return out
+
+
+@pytest.fixture()
+def g1_layout(designs: dict) -> AircraftLayout:
+    return layout_from_sizing(designs["g1"][0])
+
+
+@pytest.fixture(scope="module")
+def g1_kit_inputs(
+    designs: dict,
+) -> tuple[AircraftLayout, AirfoilShape, SparPlan, FabricationSettings]:
+    """(layout, airfoil, spar plan, settings) for g1 so that `wing_ribs(*g1_kit_inputs)` works."""
+    sizing, bom = designs["g1"]
+    layout = _fitted_layout(sizing, bom)
+    airfoil = load_airfoil(layout.airfoil)
+    wing = layout.wing
+    joint = joint_y_m(layout.fuselage_diameter_m / 2.0, wing.z_root_m)
+    boom_y = max(abs(b.y_m) for b in layout.vtol_booms) if layout.vtol_booms else None
+    depth = spar_depth_at(wing, airfoil, DEFAULT_FABRICATION)
+    spar = plan_spar(sizing.mtow_kg, wing.semi_span_m, joint, depth, boom_y, DEFAULT_FABRICATION)
+    return layout, airfoil, spar, DEFAULT_FABRICATION
