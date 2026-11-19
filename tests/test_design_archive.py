@@ -1,5 +1,8 @@
 """Design export: the versioned design.json record and the run-folder zip (spec 2026-11-19-export-design-zip)."""
 
+import io
+import shutil
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +13,7 @@ from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, Requi
 from src.schemas.state import CADArtifacts, FCSArtifacts, RunLineage
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui.agent_service import AgentRunView
-from src.ui.design_archive import DesignRecord, design_record
+from src.ui.design_archive import DesignRecord, build_zip, design_record, zip_name
 from tests.reference_designs import G1_ELECTRIC_FW
 
 
@@ -79,3 +82,58 @@ def test_record_without_artifacts_builds(tmp_path: Path) -> None:
 def test_record_needs_a_run_folder(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="run folder"):
         design_record(_view(tmp_path, out_dir=None))
+
+
+def _zip(view: AgentRunView) -> zipfile.ZipFile:
+    return zipfile.ZipFile(io.BytesIO(build_zip(view)))
+
+
+def _run_folder(tmp_path: Path) -> Path:
+    run_dir = tmp_path / "r1"
+    (run_dir / "sitl").mkdir(parents=True)
+    (run_dir / "vspaero" / "a").mkdir(parents=True)
+    (run_dir / "oml.step").write_bytes(b"step")
+    (run_dir / "sitl" / "log.bin").write_bytes(b"\x00\x01")
+    (run_dir / "vspaero" / "a" / "b.txt").write_text("polar")
+    return run_dir
+
+
+def test_zip_holds_every_file_under_the_run_id_folder(tmp_path: Path) -> None:
+    view = _view(_run_folder(tmp_path))
+    archive = _zip(view)
+    assert sorted(archive.namelist()) == ["r1/design.json", "r1/oml.step", "r1/sitl/log.bin", "r1/vspaero/a/b.txt"]
+    assert DesignRecord.model_validate_json(archive.read("r1/design.json")).run_id == "r1"
+    assert archive.read("r1/sitl/log.bin") == b"\x00\x01"
+    assert zip_name(view) == "r1.zip"
+
+
+def test_zip_skips_symlinks_and_outside_files(tmp_path: Path) -> None:
+    run_dir = _run_folder(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    (run_dir / "linked.txt").symlink_to(outside / "secret.txt")
+    (run_dir / "linked_dir").symlink_to(outside, target_is_directory=True)
+    names = _zip(_view(run_dir)).namelist()
+    assert not any("linked" in name or "secret" in name for name in names)
+
+
+def test_zip_replaces_a_stray_design_json(tmp_path: Path) -> None:
+    run_dir = _run_folder(tmp_path)
+    (run_dir / "design.json").write_text("stale")
+    archive = _zip(_view(run_dir))
+    assert archive.namelist().count("r1/design.json") == 1
+    assert DesignRecord.model_validate_json(archive.read("r1/design.json")).run_id == "r1"
+
+
+def test_zip_needs_an_existing_folder(tmp_path: Path) -> None:
+    run_dir = _run_folder(tmp_path)
+    shutil.rmtree(run_dir)
+    with pytest.raises(FileNotFoundError):
+        build_zip(_view(run_dir))
+
+
+def test_design_json_is_not_written_to_the_run_folder(tmp_path: Path) -> None:
+    run_dir = _run_folder(tmp_path)
+    build_zip(_view(run_dir))
+    assert not (run_dir / "design.json").exists()

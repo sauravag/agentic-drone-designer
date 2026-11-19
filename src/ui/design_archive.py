@@ -7,6 +7,8 @@ Opening a zip in the app is parked (docs/superpowers/specs/2026-11-19-share-desi
 what that opener will validate. Kept free of Streamlit so it is unit-testable.
 """
 
+import io
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Literal, Optional
@@ -22,6 +24,7 @@ from src.ui.agent_service import AgentRunView
 DESIGN_FORMAT: Final[str] = "isr-forge-design"
 FORMAT_VERSION: Final[int] = 1
 RECORD_FILE: Final[str] = "design.json"
+ZIP_MIME: Final[str] = "application/zip"
 _CAD_PATHS: Final[tuple[str, ...]] = ("oml_vsp3_path", "oml_step_path", "assembly_step_path", "viewer_model_path")
 _FCS_PATHS: Final[tuple[str, ...]] = ("param_path", "sitl_report_path")
 
@@ -90,3 +93,36 @@ def design_record(view: AgentRunView, now: Optional[datetime] = None) -> DesignR
         options=view.options, options_explanation=view.options_explanation, explorer_note=view.explorer_note,
         lineage=view.lineage,
     )
+
+
+def zip_name(view: AgentRunView) -> str:
+    return f"{view.run_id}.zip"
+
+
+def _run_files(root: Path) -> list[Path]:
+    """Regular files under the run folder, recursively; symlinks (and anything beneath a symlinked folder, or
+    resolving outside the folder) are skipped. The folder's own design.json is replaced by the fresh record."""
+    files: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        under_link = any((root / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts)))
+        if path.is_symlink() or under_link or not path.is_file() or relative == Path(RECORD_FILE):
+            continue
+        if path.resolve().is_relative_to(root):
+            files.append(path)
+    return files
+
+
+def build_zip(view: AgentRunView, now: Optional[datetime] = None) -> bytes:
+    """The design's zip: `<run_id>/design.json` plus every run file at `<run_id>/<path in the run folder>`.
+    Raises FileNotFoundError when the run folder is gone and ValueError as `design_record` does."""
+    record: DesignRecord = design_record(view, now)
+    root: Path = Path(view.out_dir).resolve()  # type: ignore[arg-type]  # design_record checked it is set
+    if not root.is_dir():
+        raise FileNotFoundError(f"the run folder {root.name} no longer exists")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{record.run_id}/{RECORD_FILE}", record.model_dump_json(indent=2))
+        for path in _run_files(root):
+            archive.write(path, f"{record.run_id}/{path.relative_to(root).as_posix()}")
+    return buffer.getvalue()
