@@ -68,3 +68,19 @@ def test_missing_socket_is_unavailable():
 def test_step_down_with_no_nested_tube_is_unavailable():
     with pytest.raises(KitUnavailable, match="no stock tube fits the wing at y = 0.860 m"):
         plan_spar(5.0, 1.4, 0.06, lambda y: 0.030 if y < 0.8 else 0.005, None, DEFAULT_FABRICATION)
+
+
+def test_tip_depth_is_checked():
+    depth = lambda y: 0.03 if y < 1.4 - 1e-9 else 0.012
+    try:
+        plan = plan_spar(5.0, 1.4, 0.06, depth, None, DEFAULT_FABRICATION)
+    except KitUnavailable as exc:
+        assert "no stock tube fits the wing at y = 1.400" in str(exc)
+    else:
+        assert plan.segments[-1].tube.od_m <= 0.012
+
+
+def test_no_step_plan_is_one_segment_to_the_tip():
+    plan = plan_spar(5.0, 1.4, 0.06, lambda y: 0.030, None, DEFAULT_FABRICATION)
+    assert len(plan.segments) == 1
+    assert plan.segments[0].y_end_m == pytest.approx(1.4)

@@ -89,9 +89,10 @@ def _unavailable_at(y_m: float) -> KitUnavailable:
 
 
 def _stations(joint_m: float, semi_span_m: float) -> list[float]:
-    """Joint, then every rib pitch outboard, strictly inside the span."""
+    """Every rib pitch outboard of the joint, strictly inside the span, then the tip."""
     count = int(math.floor((semi_span_m - joint_m) / RIB_PITCH_M))
-    return [joint_m + k * RIB_PITCH_M for k in range(1, count + 1) if joint_m + k * RIB_PITCH_M < semi_span_m - FIT_EPS_M]
+    inner = [joint_m + k * RIB_PITCH_M for k in range(1, count + 1)]
+    return [y for y in inner if y < semi_span_m - FIT_EPS_M] + [semi_span_m]
 
 
 def _step_down(
