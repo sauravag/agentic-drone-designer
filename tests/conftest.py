@@ -1,7 +1,8 @@
 """Shared test fixtures, plus test isolation: no test sees the developer's real LLM keys or
 provider/model settings.
 
-The design fixtures (`catalog`, `designs`, `g1_layout`, `g1_kit_inputs`) are shared by the CAD and
+The design fixtures (`catalog`, `designs`, `g1_layout`, `g1_kit_inputs`,
+`g2_kit_inputs`) are shared by the CAD and
 fabrication tests; plain helpers live in `tests/cad_helpers.py`. The LLM-env snapshot is taken at import (before any fixture runs) so the opt-in live test
 (tests/test_agent_e2e.py with ISR_FORGE_LIVE_LLM=1) can restore it explicitly.
 """
@@ -56,12 +57,12 @@ def g1_layout(designs: dict) -> AircraftLayout:
     return layout_from_sizing(designs["g1"][0])
 
 
-@pytest.fixture(scope="module")
-def g1_kit_inputs(
-    designs: dict,
-) -> tuple[AircraftLayout, AirfoilShape, SparPlan, FabricationSettings]:
-    """(layout, airfoil, spar plan, settings) for g1 so that `wing_ribs(*g1_kit_inputs)` works."""
-    sizing, bom = designs["g1"]
+KitInputs = tuple[AircraftLayout, AirfoilShape, SparPlan, FabricationSettings]
+
+
+def _kit_inputs(designs: dict, case: str) -> KitInputs:
+    """(layout, airfoil, spar plan, settings) for a reference design, so `wing_ribs(*inputs)` works."""
+    sizing, bom = designs[case]
     layout = _fitted_layout(sizing, bom)
     airfoil = load_airfoil(layout.airfoil)
     wing = layout.wing
@@ -70,3 +71,13 @@ def g1_kit_inputs(
     depth = spar_depth_at(wing, airfoil, DEFAULT_FABRICATION)
     spar = plan_spar(sizing.mtow_kg, wing.semi_span_m, joint, depth, boom_y, DEFAULT_FABRICATION)
     return layout, airfoil, spar, DEFAULT_FABRICATION
+
+
+@pytest.fixture(scope="module")
+def g1_kit_inputs(designs: dict) -> KitInputs:
+    return _kit_inputs(designs, "g1")
+
+
+@pytest.fixture(scope="module")
+def g2_kit_inputs(designs: dict) -> KitInputs:
+    return _kit_inputs(designs, "g2")

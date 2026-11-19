@@ -9,6 +9,7 @@ from tests.reference_designs import CASES
 
 from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
 from src.tools.fabrication.tubes import (
+    MIN_WEB_M,
     KitUnavailable,
     bending_stress_pa,
     joint_y_m,
@@ -161,3 +162,9 @@ def test_several_steps_fit_between_two_rib_stations():
 def test_negative_boom_distance_is_rejected():
     with pytest.raises(ValueError, match="boom_y_m"):
         plan_spar(5.0, 1.4, 0.06, lambda y: 0.030, -0.5, DEFAULT_FABRICATION)
+
+
+def test_usable_depth_allows_for_webs_and_hole_clearance():
+    t = 0.030
+    expected = t - 2 * MIN_WEB_M - DEFAULT_FABRICATION.fit_clearance_m
+    assert usable_depth_m(t, DEFAULT_FABRICATION) == pytest.approx(expected, abs=1e-12)

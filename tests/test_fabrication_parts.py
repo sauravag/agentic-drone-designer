@@ -156,9 +156,8 @@ def test_aileron_ribs_split_at_75_percent(g1_kit_inputs, ribs):
     assert AILERON_HINGE_FRACTION == pytest.approx(0.75)
 
 
-def test_every_rib_keeps_a_minimum_web(g1_kit_inputs, ribs, tails):
-    _, _, spar, _ = g1_kit_inputs
-    for part in [*ribs, *tails]:
+def _assert_minimum_webs(parts) -> None:
+    for part in parts:
         if part.family not in ("rib", "doubler"):
             continue
         outer, holes = part.outline.outer_wire(), part.outline.inner_wires()
@@ -166,6 +165,21 @@ def test_every_rib_keeps_a_minimum_web(g1_kit_inputs, ribs, tails):
             assert hole.distance_to(outer) >= MIN_WEB_M - TOL_M, part.label
             for other in holes[i + 1:]:
                 assert hole.distance_to(other) >= MIN_WEB_M - TOL_M, part.label
+
+
+def test_every_rib_keeps_a_minimum_web(ribs, tails):
+    _assert_minimum_webs([*ribs, *tails])
+
+
+@pytest.mark.xfail(
+    strict=True, raises=KitUnavailable,
+    reason="g2: the 32x28 socket (32.2 mm hole) does not fit WR-02 (31.7 mm thick), and the insertion zone "
+    "(to 0.470 m) runs past the 28x24 root segment's end (0.255 m); spar plan does not size against these — controller ruling pending",
+)
+def test_g2_wing_ribs_keep_a_minimum_web(g2_kit_inputs):
+    ribs = wing_ribs(*g2_kit_inputs)
+    assert len(ribs) > 0
+    _assert_minimum_webs(ribs)
 
 
 def test_root_rib_is_a_3mm_doubler_with_pin_hole(g1_kit_inputs, ribs):

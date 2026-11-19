@@ -71,8 +71,8 @@ def joint_y_m(fuselage_radius_m: float, wing_z_m: float) -> float:
 
 
 def usable_depth_m(local_thickness_m: float, settings: FabricationSettings) -> float:
-    """Room for a spar tube once the top and bottom webs are reserved."""
-    return local_thickness_m - 2.0 * MIN_WEB_M
+    """Room for a spar tube once the top and bottom webs and the hole's fit clearance are reserved."""
+    return local_thickness_m - 2.0 * MIN_WEB_M - settings.fit_clearance_m
 
 
 def _allowable_pa(settings: FabricationSettings) -> float:
