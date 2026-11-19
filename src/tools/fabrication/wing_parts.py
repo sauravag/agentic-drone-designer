@@ -114,7 +114,7 @@ def _mirrored(part: KitPart, side_from: str, side_to: str, settings: Fabrication
     return dataclasses.replace(part, label=part.label.replace(side_from, side_to, 1), location=location)
 
 
-def _spar_hole_m(spar: SparPlan, y_m: float, settings: FabricationSettings) -> float:
+def spar_hole_m(spar: SparPlan, y_m: float, settings: FabricationSettings) -> float:
     """The spar segment at y (the inboard one on a step); the socket stays inside the fuselage."""
     seg = next(s for s in spar.segments if s.y_start_m - FIT_EPS_M <= y_m <= s.y_end_m + FIT_EPS_M)
     return seg.tube.od_m + settings.fit_clearance_m
@@ -140,7 +140,7 @@ def _wing_rib(
     chord = wing.chord_at(y)
     label, is_root = _label("WR-", index), index == 0
     profile = notched_profile(airfoil, chord, settings)
-    spar_hole = _placed_hole(profile, airfoil, chord, (SPAR_CHORD_STATION,), _spar_hole_m(spar, y, settings), [], label)
+    spar_hole = _placed_hole(profile, airfoil, chord, (SPAR_CHORD_STATION,), spar_hole_m(spar, y, settings), [], label)
     holes = [spar_hole]
     if is_root:
         holes.append(_placed_hole(profile, airfoil, chord, (PIN_CHORD_FRACTION,), pin_hole_m(settings), holes, label))

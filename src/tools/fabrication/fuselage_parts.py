@@ -183,7 +183,7 @@ def _single_face(shape: bd.Shape, label: str) -> bd.Face:
     return faces[0]
 
 
-def _profile_corners(layout: AircraftLayout, x0_m: float, x1_m: float) -> list[float]:
+def profile_corners(layout: AircraftLayout, x0_m: float, x1_m: float) -> list[float]:
     """Fuselage-profile break stations strictly inside (x0, x1): r(x) is linear between them."""
     length = layout.fuselage_length_m
     return [f * length for f, _ in FUSELAGE_PROFILE if x0_m < f * length < x1_m]
@@ -193,7 +193,7 @@ def _plane_location(origin: Vec3, x_dir: Vec3, z_dir: Vec3) -> bd.Location:
     return bd.Location(bd.Plane(origin=origin, x_dir=x_dir, z_dir=z_dir))
 
 
-def _station_location(x_m: float) -> bd.Location:
+def station_location(x_m: float) -> bd.Location:
     """yz-plane part at station x: local X -> y, local Y -> z, extruded aft (+x)."""
     return _plane_location((x_m, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
 
@@ -249,13 +249,13 @@ def _in_pod(layout: AircraftLayout, c: PlacedComponent) -> bool:
     x0, x1 = max(c.x_min, 0.0), min(c.x_max, layout.fuselage_length_m)
     if x0 >= x1:
         return False
-    radius = max(fuselage_radius_at(layout, x) for x in (x0, x1, *_profile_corners(layout, x0, x1)))
+    radius = max(fuselage_radius_at(layout, x) for x in (x0, x1, *profile_corners(layout, x0, x1)))
     _, ly, lz = c.size_m
     box = rect_face(c.center_m[1] - ly / 2.0, c.center_m[2] - lz / 2.0, c.center_m[1] + ly / 2.0, c.center_m[2] + lz / 2.0)
     return _area(_common(box, _disc(radius))) > AREA_EPS_M2
 
 
-def _firewall_station(layout: AircraftLayout, settings: FabricationSettings,
+def firewall_station(layout: AircraftLayout, settings: FabricationSettings,
                       components: Sequence[PlacedComponent]) -> float:
     """FIRST_FORMER_FRACTION of the length, or earlier so the firewall pair ends COMPONENT_GAP_M ahead of the
     foremost component in the pod (`_in_pod`: the tractor motor ahead of the nose and lift rotors out on the
@@ -281,7 +281,7 @@ def _check_no_collision(mandatory: Sequence[float]) -> None:
 
 def former_stations(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
                     components: Sequence[PlacedComponent] = ()) -> tuple[float, ...]:
-    """Firewall station first (`_firewall_station`, taking the place of the first regular station), then every
+    """Firewall station first (`firewall_station`, taking the place of the first regular station), then every
     FORMER_PITCH_M from FIRST_FORMER_FRACTION up to TAIL_BOOM_START_FRACTION of the length (and clear of the boom
     root), plus the two socket stations and the pin station (`_mount_stations`). Regular stations within
     STATION_MERGE_M of those, or between the two socket stations, are dropped so no former meets the socket.
@@ -291,7 +291,7 @@ def former_stations(layout: AircraftLayout, spar: SparPlan, settings: Fabricatio
     if layout.tail_boom is not None:
         last = min(last, layout.tail_boom.x_start_m - t)  # a former slab never reaches the boom root
     count = math.floor((last - first) / FORMER_PITCH_M + STATION_EPS) + 1
-    firewall = _firewall_station(layout, settings, components)
+    firewall = firewall_station(layout, settings, components)
     fore, aft, pin = _mount_stations(layout, spar)
     _check_no_collision((firewall, fore, aft, pin))
 
@@ -374,7 +374,7 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
     fore, _, pin_station = _mount_stations(layout, spar)
     t_former, t_plate = settings.sheet_for("former").thickness_m, settings.sheet_for("plate").thickness_m
     x_max = pin_station + t_former
-    skin = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *_profile_corners(layout, fore, x_max)))
+    skin = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *profile_corners(layout, fore, x_max)))
     rim = skin - settings.fuselage_cover_thickness_m - MIN_WEB_M
     y_outer = _plate_outer_y(layout, spar, settings, rim)
     socket, pin = _plate_holes(layout, spar, settings, y_outer - t_plate / 2.0)
@@ -481,7 +481,7 @@ def _half_former(frame: _Frame, index: int, x_m: float, sign: int) -> list[KitPa
     pieces.sort(key=lambda p: p.center().X)
     names = [label] if len(pieces) == 1 else [f"{label}{chr(ord('a') + i)}" for i in range(len(pieces))]
     centres = _lightening_centres(radius, sign, half_t)
-    return [KitPart(name, "former", drill(piece, lightening_holes(piece, (), centres), name), _station_location(x_m))
+    return [KitPart(name, "former", drill(piece, lightening_holes(piece, (), centres), name), station_location(x_m))
             for name, piece in zip(names, pieces)]
 
 
@@ -496,8 +496,8 @@ def _firewall(frame: _Frame) -> tuple[KitPart, KitPart]:
     disc = _disc(frame.inner_radius(x))  # the nose widens aft, so the front face bounds the pair
     for k in range(2):
         _assert_clear(frame, "FW-1", x + k * t, disc)
-    return (KitPart("FW-1a", "bulkhead", disc, _station_location(x)),
-            KitPart("FW-1b", "bulkhead", disc, _station_location(x + t)))
+    return (KitPart("FW-1a", "bulkhead", disc, station_location(x)),
+            KitPart("FW-1b", "bulkhead", disc, station_location(x + t)))
 
 
 def _boom_mount_parts(frame: _Frame) -> list[KitPart]:
@@ -510,14 +510,14 @@ def _boom_mount_parts(frame: _Frame) -> list[KitPart]:
         label = f"BM-{k}"
         disc = _disc(frame.inner_radius(x + frame.bulkhead_t_m))  # the tail cone narrows aft: the aft face bounds it
         _assert_clear(frame, label, x, disc)
-        parts.append(KitPart(label, "bulkhead", drill(disc, (hole,), label), _station_location(x)))
+        parts.append(KitPart(label, "bulkhead", drill(disc, (hole,), label), station_location(x)))
     return parts
 
 
 # --------------------------------------------------------------------------------------- crutch ---
 def _crutch_outline(frame: _Frame) -> bd.Face:
     x0, x1 = frame.crutch_x
-    xs = sorted({x0, x1, *_profile_corners(frame.layout, x0, x1)})
+    xs = sorted({x0, x1, *profile_corners(frame.layout, x0, x1)})
     upper = [(x, frame.inner_radius(x), 0.0) for x in xs]
     lower = [(x, -y, 0.0) for x, y, _ in reversed(upper)]
     return bd.Face(bd.Wire.make_polygon(upper + lower, close=True))
