@@ -1,25 +1,29 @@
-"""Fuselage parts for the laser-cut kit: crutch, half-formers, firewall and wing-mount side plates
+"""Fuselage parts for the laser-cut kit: crutch, half-formers, firewall, wing-box side plates and tail-boom mounts
 (frame convention: see `kit.py`).
 
+- Firewall `FW-1a`, `FW-1b`: two solid discs laminated face to face. The cruise motor is a tractor ahead of the
+  nose, so the firewall takes the first station (FIRST_FORMER_FRACTION of the length), moved forward when a
+  component in the pod starts earlier (a chin payload): it then ends COMPONENT_GAP_M ahead of that component.
 - Crutch `C-1`: a horizontal 3 mm plate centred on z = 0 (it spans z = +-t/2), as wide as the fuselage inside
-  the covering, from the firewall's aft face to just aft of the last former. Its outline is in aircraft x, y,
-  shifted by the plate origin x.
-- Half-formers `F-nnU` / `F-nnL`: semi-discs of r(x) - cover above and below the crutch. Each has two tabs
-  that drop into crutch slots (U and L tabs meet at z = 0), stringer notches, openings where components or the
-  tail boom pass, and lightening holes. A former at station x lies in the yz plane and extrudes aft
-  (local X -> y, local Y -> z, local Z -> +x), so its location X is the station and its outline radius is
-  r(station) - cover.
-- Firewall `FW-1a`, `FW-1b`: two solid discs laminated face to face at the first station. The cruise motor is a
-  tractor ahead of the nose (outside the pod), so the firewall takes the former station nearest to it.
+  the covering, from the firewall's aft face to just aft of the last former (never into the boom mounts). Its
+  outline is in aircraft x, y, shifted by the plate origin x.
+- Half-formers `F-nnU` / `F-nnL`: semi-discs of r(x) - cover above and below the crutch, with two tabs that drop
+  into crutch slots (U and L tabs meet at z = 0), stringer notches and lightening holes. A former lies in the yz
+  plane and extrudes aft (local X -> y, local Y -> z, local Z -> +x), so its location X is the station and its
+  outline radius is r(station) - cover. A component cutting a half-former in two gives pieces `F-nnLa`, `F-nnLb`,
+  each held by its own tab.
 - Wing-box side plates `WM-L`, `WM-R`: vertical plates (xz plane) in the upper fuselage, from the forward socket
   former to a former just aft of the root pin, tabbed into both; formers in between get the plate's section cut
   out. Each carries its wing's socket tube (coaxial with that wing's spar, so following the dihedral; the two
   meet at the centreline) and the anti-rotation pin. They stop MIN_WEB_M under the socket hole, so components
   on the axis pass underneath. Local X -> x, local Y -> z; WM-R extrudes toward -y from its outer face, WM-L is
   its mirror.
+- Boom mounts `BM-1`, `BM-2`: 3 mm bulkheads in the tail cone carrying the stock tail-boom tube, one just aft of
+  the boom root, one as far aft as a MIN_WEB_M rim around the boom hole allows (at least 30 mm apart).
 
-Openings, slots and notches keep a `MIN_WEB_M` web; anything that would break a part raises `KitUnavailable`.
-Slots are cut at the mating stock's nominal thickness; kerf is applied at DXF export.
+Every component whose box crosses a former, the crutch or a plate gets an opening (or a notch where it breaks
+through the outline); openings, slots and notches keep a MIN_WEB_M web, and anything that would break a part
+raises `KitUnavailable`. Slots are cut at the mating stock's nominal thickness; kerf is applied at DXF export.
 """
 
 import math
@@ -53,25 +57,26 @@ from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, pin_hole_m
 
 FORMER_PITCH_M: Final[float] = 0.12
 FIRST_FORMER_FRACTION: Final[float] = 0.10  # of fuselage length
-STATION_MERGE_M: Final[float] = 0.020  # a regular station this close to a socket station is dropped
+STATION_MERGE_M: Final[float] = 0.020  # a regular station this close to a mandatory one is dropped
 SOCKET_FORMER_GAP_M: Final[float] = 0.010  # socket stations sit this far beyond the socket's outer surface
+PIN_FORMER_GAP_M: Final[float] = 0.010  # the wing-box's aft former sits this far aft of the root pin
 STRINGER_COUNT: Final[int] = 8
 FULL_TURN_DEG: Final[float] = 360.0
 STRINGER_START_DEG: Final[float] = FULL_TURN_DEG / STRINGER_COUNT / 2.0  # none on the crutch plane
 FORMER_TAB_WIDTH_M: Final[float] = 0.006
 FORMER_TAB_INSET_M: Final[float] = 0.003  # tab outer edge inboard of the former rim / crutch edge
 CRUTCH_TAIL_MARGIN_M: Final[float] = 0.010  # crutch runs this far past the last former's aft face
-BOOM_SLOT_LEAD_M: Final[float] = 0.010  # crutch slot for the tail boom starts this far ahead of its first sleeve
-BOOM_SLEEVE_FORMERS: Final[int] = 2
-PIN_FORMER_GAP_M: Final[float] = 0.010  # the wing-box's aft former sits this far aft of the root pin
 MOUNT_TAB_INSET_M: Final[float] = 0.004  # wing-box tabs are this much shorter than the plate, top and bottom
 MOUNT_TAB_MIN_HEIGHT_M: Final[float] = 0.004
+BOOM_MOUNT_MIN_SPACING_M: Final[float] = 0.030
 LIGHTENING_POLAR: Final[tuple[tuple[float, float], ...]] = ((0.50, 90.0), (0.62, 35.0), (0.62, 145.0))  # (r/R, deg)
 AREA_EPS_M2: Final[float] = 1e-10
 REACH_FACTOR: Final[float] = 2.0  # half-plane cutters extend this many radii
-FAR_M: Final[float] = 1.0  # open-ended cutters run this far past the part
 UP: Final[int] = 1
 DOWN: Final[int] = -1
+WEB_TEXT: Final[str] = f"{MIN_WEB_M * 1e3:.0f} mm"
+
+Cut = tuple[str, bd.Face]  # (what passes through, cutter in the part's local XY)
 
 
 @dataclass(frozen=True)
@@ -97,10 +102,11 @@ class _Frame:
     settings: FabricationSettings
     components: tuple[PlacedComponent, ...]
     stations: tuple[float, ...]  # firewall first, then the half-formers
+    boom_mounts: tuple[float, ...]  # BM-1, BM-2 stations (empty without a tail boom)
     mount: _Mount
     crutch_t_m: float
     former_t_m: float
-    firewall_t_m: float
+    bulkhead_t_m: float
 
     def inner_radius(self, x_m: float) -> float:
         return fuselage_radius_at(self.layout, x_m) - self.settings.fuselage_cover_thickness_m
@@ -111,7 +117,8 @@ class _Frame:
 
     @property
     def crutch_x(self) -> tuple[float, float]:
-        return self.stations[0] + 2.0 * self.firewall_t_m, self.stations[-1] + self.former_t_m + CRUTCH_TAIL_MARGIN_M
+        end = self.stations[-1] + self.former_t_m + CRUTCH_TAIL_MARGIN_M
+        return self.stations[0] + 2.0 * self.bulkhead_t_m, min(end, *self.boom_mounts)
 
 
 # ------------------------------------------------------------------------------------- geometry ---
@@ -148,6 +155,28 @@ def _assert_web(result: bd.Shape, cut: bd.Face, voids: Sequence[bd.Face], region
         raise KitUnavailable(message)
 
 
+def _cut_openings(base: bd.Face, rim: bd.Face, cuts: Sequence[Cut], region: Optional[bd.Face],
+                  protected: Sequence[bd.Face], label: str, part: str) -> list[bd.Face]:
+    """Cut every opening from `base`; return the resulting pieces.
+
+    An opening inside `rim` is a closed hole and must keep a MIN_WEB_M band of material (within `region`) all
+    round. An opening breaking through `rim` is a notch: it must only keep that band clear of the `protected`
+    features (tabs). Openings may merge with each other."""
+    if not cuts:
+        return [base]
+    voids = [face for _, face in cuts]
+    result = base.cut(*voids)
+    for name, cut in cuts:
+        message = f"{label}: the opening for the {name} leaves less than {WEB_TEXT} of the {part}"
+        if _area(cut.cut(rim)) <= AREA_EPS_M2:
+            _assert_web(result, cut, voids, region, message)
+            continue
+        band = bd.offset(cut, amount=MIN_WEB_M).cut(*voids)
+        if any(_area(zone.cut(result)) > AREA_EPS_M2 for zone in (_common(band, p) for p in protected) if zone):
+            raise KitUnavailable(message)
+    return list(result.faces())
+
+
 def _single_face(shape: bd.Shape, label: str) -> bd.Face:
     faces = shape.faces()
     if len(faces) != 1:
@@ -170,6 +199,31 @@ def _station_location(x_m: float) -> bd.Location:
     return _plane_location((x_m, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
 
 
+def _overlaps(c: PlacedComponent, axis: int, lo_m: float, hi_m: float, grow_m: float = 0.0) -> bool:
+    """The component's box (grown by `grow_m` each side) overlaps [lo, hi] along aircraft axis 0/1/2."""
+    half = c.size_m[axis] / 2.0 + grow_m
+    return c.center_m[axis] - half < hi_m and c.center_m[axis] + half > lo_m
+
+
+def _crossing(frame: _Frame, x0_m: float, x1_m: float) -> list[PlacedComponent]:
+    """Components whose box, plus half the component gap, reaches into the slab x0..x1."""
+    return [c for c in frame.components if _overlaps(c, 0, x0_m, x1_m, COMPONENT_GAP_M / 2.0)]
+
+
+def _yz_opening(c: PlacedComponent) -> bd.Face:
+    """yz bounding box grown by COMPONENT_GAP_M (half each side)."""
+    _, ly, lz = c.size_m
+    hy, hz = (ly + COMPONENT_GAP_M) / 2.0, (lz + COMPONENT_GAP_M) / 2.0
+    return rect_face(c.center_m[1] - hy, c.center_m[2] - hz, c.center_m[1] + hy, c.center_m[2] + hz)
+
+
+def _assert_clear(frame: _Frame, label: str, x_m: float, outline: bd.Face) -> None:
+    """Solid yz parts (firewall, boom mounts) take no openings: no component may cross them."""
+    for c in _crossing(frame, x_m, x_m + frame.bulkhead_t_m):
+        if _area(_common(outline, _yz_opening(c))) > AREA_EPS_M2:
+            raise KitUnavailable(f"{label}: the {c.name} crosses this bulkhead")
+
+
 # ------------------------------------------------------------------------------------- stations ---
 def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0, fraction: float = SPAR_CHORD_STATION) -> tuple[float, float]:
     """(x, z) where a wing's spar axis (or, with `fraction`, its chord line at that fraction on the camber line)
@@ -190,31 +244,85 @@ def _mount_stations(layout: AircraftLayout, spar: SparPlan) -> tuple[float, floa
     return min(xs) - offset, max(xs) + offset, pin
 
 
-def former_stations(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> tuple[float, ...]:
-    """Every FORMER_PITCH_M from FIRST_FORMER_FRACTION to TAIL_BOOM_START_FRACTION of the length, plus the two
-    socket stations and the pin station (`_mount_stations`). Regular stations within STATION_MERGE_M of those,
-    or between the two socket stations, are dropped so no former meets the socket. (`settings` keeps the
-    part-builder signature uniform; stations do not depend on it.)"""
-    length = layout.fuselage_length_m
+def _firewall_station(layout: AircraftLayout, settings: FabricationSettings,
+                      components: Sequence[PlacedComponent]) -> float:
+    """FIRST_FORMER_FRACTION of the length, or earlier so the firewall pair ends COMPONENT_GAP_M ahead of the
+    foremost component in the pod (components wholly ahead of the nose, like the tractor motor, don't count)."""
+    station = FIRST_FORMER_FRACTION * layout.fuselage_length_m
+    in_pod = [c.x_min for c in components if c.x_max > 0.0]
+    if in_pod:
+        station = min(station, min(in_pod) - COMPONENT_GAP_M - 2.0 * settings.sheet_for("bulkhead").thickness_m)
+    if fuselage_radius_at(layout, station) <= settings.fuselage_cover_thickness_m:
+        raise KitUnavailable(f"no room for a firewall ahead of the components (x = {station:.3f} m)")
+    return station
+
+
+def _check_no_collision(mandatory: Sequence[float]) -> None:
+    ordered = sorted(mandatory)
+    for a, b in zip(ordered, ordered[1:]):
+        if b - a < STATION_MERGE_M:
+            raise KitUnavailable(
+                f"former stations collide: x = {a:.3f} m and {b:.3f} m (firewall / wing box) are closer than "
+                f"{STATION_MERGE_M * 1e3:.0f} mm"
+            )
+
+
+def former_stations(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
+                    components: Sequence[PlacedComponent] = ()) -> tuple[float, ...]:
+    """Firewall station first (`_firewall_station`, taking the place of the first regular station), then every
+    FORMER_PITCH_M from FIRST_FORMER_FRACTION up to TAIL_BOOM_START_FRACTION of the length (and clear of the boom
+    root), plus the two socket stations and the pin station (`_mount_stations`). Regular stations within
+    STATION_MERGE_M of those, or between the two socket stations, are dropped so no former meets the socket.
+    Mandatory stations closer than STATION_MERGE_M raise `KitUnavailable`."""
+    length, t = layout.fuselage_length_m, settings.sheet_for("former").thickness_m
     first, last = FIRST_FORMER_FRACTION * length, TAIL_BOOM_START_FRACTION * length
+    if layout.tail_boom is not None:
+        last = min(last, layout.tail_boom.x_start_m - t)  # a former slab never reaches the boom root
     count = math.floor((last - first) / FORMER_PITCH_M + STATION_EPS) + 1
+    firewall = _firewall_station(layout, settings, components)
     fore, aft, pin = _mount_stations(layout, spar)
+    _check_no_collision((firewall, fore, aft, pin))
 
     def is_kept(x: float) -> bool:
-        near = any(abs(x - m) < STATION_MERGE_M for m in (fore, aft, pin))
+        near = any(abs(x - m) < STATION_MERGE_M for m in (firewall, fore, aft, pin))
         return not (near or fore < x < aft)
 
-    regular = (first + k * FORMER_PITCH_M for k in range(count))
-    return tuple(sorted((*(x for x in regular if is_kept(x)), fore, aft, pin)))
+    regular = (first + k * FORMER_PITCH_M for k in range(1, count))
+    return (firewall, *sorted((*(x for x in regular if is_kept(x)), fore, aft, pin)))
 
 
-# ------------------------------------------------------------------------------- wing-mount plates ---
+def _boom_mount_stations(layout: AircraftLayout, settings: FabricationSettings) -> tuple[float, ...]:
+    """BM-1 at the boom root + t, BM-2 at the aft-most station whose aft face keeps a MIN_WEB_M rim round the
+    stock boom tube hole (the tail cone narrows aft)."""
+    boom = layout.tail_boom
+    if boom is None:
+        return ()
+    t, cover = settings.sheet_for("bulkhead").thickness_m, settings.fuselage_cover_thickness_m
+    hole = boom_tube(boom.diameter_m, settings).od_m + settings.fit_clearance_m
+
+    def has_rim(x: float) -> bool:
+        return fuselage_radius_at(layout, x + t) - cover - hole / 2.0 - abs(boom.z_m) - abs(boom.y_m) >= MIN_WEB_M
+
+    first = boom.x_start_m + t
+    if not has_rim(first):
+        raise KitUnavailable(f"BM-1: the tail cone is too thin for the {hole * 1e3:.0f} mm boom hole")
+    lo, hi = first, layout.fuselage_length_m - t
+    for _ in range(BISECTION_ITERATIONS):
+        lo, hi = ((lo + hi) / 2.0, hi) if has_rim((lo + hi) / 2.0) else (lo, (lo + hi) / 2.0)
+    if lo - first < BOOM_MOUNT_MIN_SPACING_M:
+        raise KitUnavailable(f"BM-1 and BM-2 would be only {(lo - first) * 1e3:.0f} mm apart "
+                             f"(need {BOOM_MOUNT_MIN_SPACING_M * 1e3:.0f} mm)")
+    return first, lo
+
+
+# ------------------------------------------------------------------------------- wing-box plates ---
 def _oblique_diameter_m(layout: AircraftLayout, fraction: float, od_m: float, thickness_m: float) -> float:
     """Round hole that clears a rod of `od_m` crossing a plate of `thickness_m` along that wing's line at
     `fraction` chord: the line leans off the plate normal (y) by dihedral and taper sweep, so its section is a
     slightly longer ellipse (od / cos) that also walks across the thickness (t tan)."""
-    (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, 1.0, fraction)
-    lean = math.hypot(x1 - x0, z1 - z0)  # off-normal travel per metre of span
+    span = layout.wing.semi_span_m
+    (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, span, fraction)
+    lean = math.hypot(x1 - x0, z1 - z0) / span  # off-normal travel per unit span
     cos_lean = 1.0 / math.hypot(1.0, lean)
     return od_m / cos_lean + thickness_m * lean
 
@@ -222,12 +330,11 @@ def _oblique_diameter_m(layout: AircraftLayout, fraction: float, od_m: float, th
 def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, y_m: float) -> tuple[Hole, Hole]:
     """Socket and pin holes (x, z) where each wing's spar axis / pin line crosses the plate mid-plane at y, sized
     for the rod's oblique crossing plus the fit clearance."""
-    t = settings.sheet_for("plate").thickness_m
-    socket_d = _oblique_diameter_m(layout, SPAR_CHORD_STATION, spar.socket.od_m, t) + settings.fit_clearance_m
-    pin_d = _oblique_diameter_m(layout, PIN_CHORD_FRACTION, pin_hole_m(settings) - settings.fit_clearance_m, t)
-    socket = Hole(*socket_axis_m(layout, y_m), socket_d)
-    pin = Hole(*socket_axis_m(layout, y_m, PIN_CHORD_FRACTION), pin_d + settings.fit_clearance_m)
-    return socket, pin
+    t, clearance = settings.sheet_for("plate").thickness_m, settings.fit_clearance_m
+    socket_d = _oblique_diameter_m(layout, SPAR_CHORD_STATION, spar.socket.od_m, t) + clearance
+    pin_d = _oblique_diameter_m(layout, PIN_CHORD_FRACTION, pin_hole_m(settings) - clearance, t) + clearance
+    return (Hole(*socket_axis_m(layout, y_m), socket_d),
+            Hole(*socket_axis_m(layout, y_m, PIN_CHORD_FRACTION), pin_d))
 
 
 def _plate_outer_y(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, rim_m: float) -> float:
@@ -255,8 +362,8 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
     fore, _, pin_station = _mount_stations(layout, spar)
     t_former, t_plate = settings.sheet_for("former").thickness_m, settings.sheet_for("plate").thickness_m
     x_max = pin_station + t_former
-    corners = _profile_corners(layout, fore, x_max)
-    rim = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *corners)) - settings.fuselage_cover_thickness_m - MIN_WEB_M
+    skin = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *_profile_corners(layout, fore, x_max)))
+    rim = skin - settings.fuselage_cover_thickness_m - MIN_WEB_M
     y_outer = _plate_outer_y(layout, spar, settings, rim)
     socket, pin = _plate_holes(layout, spar, settings, y_outer - t_plate / 2.0)
     z_bottom, z_top = socket.y_m - socket.diameter_m / 2.0 - MIN_WEB_M, math.sqrt(rim**2 - y_outer**2)
@@ -269,20 +376,32 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
                   y_outer - t_plate, y_outer, (socket, pin))
 
 
-def _mount_plates(frame: _Frame) -> tuple[KitPart, KitPart]:
+def _plate_component_cuts(frame: _Frame, side: int) -> list[Cut]:
+    """xz openings for components whose box (grown by half the gap) reaches into this side's plate slab."""
+    m, gap = frame.mount, COMPONENT_GAP_M / 2.0
+    y0, y1 = sorted((side * m.y_inner_m, side * m.y_outer_m))
+    hits = [c for c in frame.components if _overlaps(c, 0, m.x_min_m, m.x_max_m, gap)
+            and _overlaps(c, 1, y0, y1, gap) and _overlaps(c, 2, m.z_m[0], m.z_m[1], gap)]
+    return [(c.name, rect_face(c.x_min - gap, c.center_m[2] - c.size_m[2] / 2.0 - gap,
+                               c.x_max + gap, c.center_m[2] + c.size_m[2] / 2.0 + gap)) for c in hits]
+
+
+def _mount_plate(frame: _Frame, side: int) -> KitPart:
     m = frame.mount
+    label = "WM-R" if side > 0 else "WM-L"
     body = rect_face(m.body_x_m[0], m.z_m[0], m.body_x_m[1], m.z_m[1])
     tabs = (rect_face(m.x_min_m, m.tab_z_m[0], m.body_x_m[0], m.tab_z_m[1]),
             rect_face(m.body_x_m[1], m.tab_z_m[0], m.x_max_m, m.tab_z_m[1]))
-    outline = _single_face(body.fuse(*tabs).clean(), "WM-R")
+    plain = _single_face(body.fuse(*tabs).clean(), label)
+    outline = _single_face(bd.Compound(_cut_openings(plain, plain, _plate_component_cuts(frame, side), None, (),
+                                                     label, "plate")), label)
     socket, pin = m.holes
     for hole, others, name in ((socket, [], "socket"), (pin, [socket], "pin")):
         if not keeps_web(outline, hole, others):
-            raise KitUnavailable(f"no room for the {name} hole with a {MIN_WEB_M * 1e3:.0f} mm web in WM-R")
-    outline = drill(outline, m.holes, "WM-R")
-    right = _plane_location((0.0, m.y_outer_m, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0))
-    left = _plane_location((0.0, -m.y_inner_m, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0))
-    return KitPart("WM-L", "plate", outline, left), KitPart("WM-R", "plate", outline, right)
+            raise KitUnavailable(f"no room for the {name} hole with a {WEB_TEXT} web in {label}")
+    outline = drill(outline, m.holes, label)
+    origin_y = m.y_outer_m if side > 0 else -m.y_inner_m  # both extrude toward -y
+    return KitPart(label, "plate", outline, _plane_location((0.0, origin_y, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
 
 
 # ---------------------------------------------------------------------------------- half-formers ---
@@ -309,30 +428,13 @@ def _stringer_notches(radius_m: float, sign: int, side_m: float) -> list[bd.Face
     return [_square_at(side_m, radius_m - side_m / 2.0, sign * a) for a in angles]
 
 
-def _crosses(component: PlacedComponent, x0_m: float, x1_m: float) -> bool:
-    gap = COMPONENT_GAP_M / 2.0
-    return component.x_min - gap < x1_m and component.x_max + gap > x0_m
-
-
-def _component_opening(c: PlacedComponent) -> bd.Face:
-    """yz bounding box grown by COMPONENT_GAP_M (half each side)."""
-    _, ly, lz = c.size_m
-    hy, hz = (ly + COMPONENT_GAP_M) / 2.0, (lz + COMPONENT_GAP_M) / 2.0
-    return rect_face(c.center_m[1] - hy, c.center_m[2] - hz, c.center_m[1] + hy, c.center_m[2] + hz)
-
-
-def _former_cuts(frame: _Frame, x_m: float, sign: int, has_sleeve: bool) -> list[tuple[str, bd.Face]]:
-    """(what, cutter) for every component, tail-boom sleeve and wing-mount plate passing this half-former."""
-    x1 = x_m + frame.former_t_m
-    cuts = [(c.name, _component_opening(c)) for c in frame.components if c.is_internal and _crosses(c, x_m, x1)]
-    boom = frame.layout.tail_boom
-    if has_sleeve and boom is not None:
-        sleeve = _disc(_sleeve_diameter_m(frame) / 2.0, boom.y_m, boom.z_m)
-        cuts.append(("tail boom", sleeve))
+def _former_cuts(frame: _Frame, x_m: float, sign: int) -> list[Cut]:
+    """(what, cutter) for every component and wing-box plate passing this half-former."""
+    cuts = [(c.name, _yz_opening(c)) for c in _crossing(frame, x_m, x_m + frame.former_t_m)]
     return cuts + _plate_cuts(frame, x_m, sign)
 
 
-def _plate_cuts(frame: _Frame, x_m: float, sign: int) -> list[tuple[str, bd.Face]]:
+def _plate_cuts(frame: _Frame, x_m: float, sign: int) -> list[Cut]:
     """Wing-box plate section where the plate passes this upper former, or its tab slot where it ends in it."""
     m, x1 = frame.mount, x_m + frame.former_t_m
     if sign != UP or not (m.x_min_m < x1 and m.x_max_m > x_m):
@@ -343,51 +445,61 @@ def _plate_cuts(frame: _Frame, x_m: float, sign: int) -> list[tuple[str, bd.Face
     return [("wing-box plate", rect_face(y0, z0, y1, z1)) for y0, y1 in sides]
 
 
-def _sleeve_diameter_m(frame: _Frame) -> float:
-    """Tail-boom sleeve: the stock boom tube (R13) plus the fit clearance."""
-    boom = frame.layout.tail_boom
-    if boom is None:
-        raise ValueError("tail-boom sleeve requested on a layout without a tail boom")
-    return boom_tube(boom.diameter_m, frame.settings).od_m + frame.settings.fit_clearance_m
-
-
 def _lightening_centres(radius_m: float, sign: int, half_t_m: float) -> list[tuple[float, float]]:
     return [(f * radius_m * math.cos(math.radians(a)), sign * (half_t_m + f * radius_m * math.sin(math.radians(a))))
             for f, a in LIGHTENING_POLAR]
 
 
-def _half_former(frame: _Frame, index: int, x_m: float, sign: int, has_sleeve: bool) -> KitPart:
+def _held_by_a_tab(piece: bd.Face, tabs: Sequence[bd.Face]) -> bool:
+    return any(abs(_area(_common(piece, tab)) - tab.area) <= AREA_EPS_M2 for tab in tabs)
+
+
+def _half_former(frame: _Frame, index: int, x_m: float, sign: int) -> list[KitPart]:
     label = f"F-{index:02d}{'U' if sign == UP else 'L'}"
     radius, half_t = frame.inner_radius(x_m), frame.crutch_t_m / 2.0
     half_plane, tabs = _half_plane(radius, sign, half_t), _tabs(radius, sign, half_t)
-    semi = _single_face(_common(_disc(radius), half_plane), label)
-    base = semi.fuse(*tabs).clean()
-    notched = base.cut(*_stringer_notches(radius, sign, frame.settings.stringer_side_m))
-    cuts = _former_cuts(frame, x_m, sign, has_sleeve)
-    voids = [face for _, face in cuts]
-    result = notched.cut(*voids) if voids else notched
-    region = half_plane.fuse(*tabs)
-    for what, face in cuts:
-        _assert_web(result, face, voids, region,
-                    f"{label}: the opening for the {what} leaves less than {MIN_WEB_M * 1e3:.0f} mm of the former")
-    face = _single_face(result, label)
-    face = drill(face, lightening_holes(face, (), _lightening_centres(radius, sign, half_t)), label)
-    return KitPart(label, "former", face, _station_location(x_m))
+    rim = _disc(radius)
+    base = _single_face(_single_face(_common(rim, half_plane), label).fuse(*tabs).clean(), label)
+    base = _single_face(base.cut(*_stringer_notches(radius, sign, frame.settings.stringer_side_m)), label)
+    cuts = _former_cuts(frame, x_m, sign)
+    pieces = _cut_openings(base, rim, cuts, half_plane.fuse(*tabs), tabs, label, "former")
+    if not all(_held_by_a_tab(p, tabs) for p in pieces):
+        names = ", ".join(sorted({name for name, _ in cuts}))
+        raise KitUnavailable(f"{label}: the opening for the {names} cuts off a piece of the former with no tab")
+    pieces.sort(key=lambda p: p.center().X)
+    names = [label] if len(pieces) == 1 else [f"{label}{chr(ord('a') + i)}" for i in range(len(pieces))]
+    centres = _lightening_centres(radius, sign, half_t)
+    return [KitPart(name, "former", drill(piece, lightening_holes(piece, (), centres), name), _station_location(x_m))
+            for name, piece in zip(names, pieces)]
 
 
 def _half_formers(frame: _Frame) -> list[KitPart]:
-    stations = frame.former_stations
-    sleeved = set(stations[-BOOM_SLEEVE_FORMERS:])
-    return [_half_former(frame, i, x, sign, x in sleeved)
-            for i, x in enumerate(stations, start=1) for sign in (UP, DOWN)]
+    return [part for i, x in enumerate(frame.former_stations, start=1) for sign in (UP, DOWN)
+            for part in _half_former(frame, i, x, sign)]
 
 
-# ------------------------------------------------------------------------------------- firewall ---
+# ------------------------------------------------------------------------------- solid bulkheads ---
 def _firewall(frame: _Frame) -> tuple[KitPart, KitPart]:
-    x = frame.stations[0]
-    disc = _disc(frame.inner_radius(x))
+    x, t = frame.stations[0], frame.bulkhead_t_m
+    disc = _disc(frame.inner_radius(x))  # the nose widens aft, so the front face bounds the pair
+    for k in range(2):
+        _assert_clear(frame, "FW-1", x + k * t, disc)
     return (KitPart("FW-1a", "bulkhead", disc, _station_location(x)),
-            KitPart("FW-1b", "bulkhead", disc, _station_location(x + frame.firewall_t_m)))
+            KitPart("FW-1b", "bulkhead", disc, _station_location(x + t)))
+
+
+def _boom_mount_parts(frame: _Frame) -> list[KitPart]:
+    boom = frame.layout.tail_boom
+    if boom is None:
+        return []
+    hole = Hole(boom.y_m, boom.z_m, boom_tube(boom.diameter_m, frame.settings).od_m + frame.settings.fit_clearance_m)
+    parts = []
+    for k, x in enumerate(frame.boom_mounts, start=1):
+        label = f"BM-{k}"
+        disc = _disc(frame.inner_radius(x + frame.bulkhead_t_m))  # the tail cone narrows aft: the aft face bounds it
+        _assert_clear(frame, label, x, disc)
+        parts.append(KitPart(label, "bulkhead", drill(disc, (hole,), label), _station_location(x)))
+    return parts
 
 
 # --------------------------------------------------------------------------------------- crutch ---
@@ -399,25 +511,18 @@ def _crutch_outline(frame: _Frame) -> bd.Face:
     return bd.Face(bd.Wire.make_polygon(upper + lower, close=True))
 
 
-def _crutch_voids(frame: _Frame) -> tuple[list[tuple[str, bd.Face]], list[bd.Face]]:
-    """(closed component openings, open tail-boom slot) in aircraft x, y."""
+def _crutch_openings(frame: _Frame) -> list[Cut]:
+    """Footprint + COMPONENT_GAP_M (half each side) under each internal component and each component crossing
+    the crutch plane, in aircraft x, y."""
     x0, x1 = frame.crutch_x
-    gap = COMPONENT_GAP_M / 2.0
-    openings = []
-    for c in frame.components:
-        if not (c.is_internal and _crosses(c, x0, x1)):
-            continue
-        hy = (c.size_m[1] + COMPONENT_GAP_M) / 2.0
-        openings.append((c.name, rect_face(c.x_min - gap, c.center_m[1] - hy, c.x_max + gap, c.center_m[1] + hy)))
-    boom, open_slots = frame.layout.tail_boom, []
-    if boom is not None:
-        start = frame.former_stations[-BOOM_SLEEVE_FORMERS] - BOOM_SLOT_LEAD_M
-        half = _sleeve_diameter_m(frame) / 2.0
-        open_slots.append(rect_face(start, boom.y_m - half, x1 + FAR_M, boom.y_m + half))
-    return openings, open_slots
+    gap, half_t = COMPONENT_GAP_M / 2.0, frame.crutch_t_m / 2.0
+    hits = [c for c in frame.components if _overlaps(c, 0, x0, x1, gap)
+            and (c.is_internal or _overlaps(c, 2, -half_t, half_t, gap))]
+    return [(c.name, rect_face(c.x_min - gap, c.center_m[1] - (c.size_m[1] + COMPONENT_GAP_M) / 2.0,
+                               c.x_max + gap, c.center_m[1] + (c.size_m[1] + COMPONENT_GAP_M) / 2.0)) for c in hits]
 
 
-def _crutch_slots(frame: _Frame) -> list[tuple[str, bd.Face]]:
+def _crutch_slots(frame: _Frame) -> list[Cut]:
     """Slots for the former tabs, each as wide as the former sheet (the wing-box plates sit in the formers)."""
     slots = []
     for i, x in enumerate(frame.former_stations, start=1):
@@ -426,16 +531,24 @@ def _crutch_slots(frame: _Frame) -> list[tuple[str, bd.Face]]:
     return slots
 
 
+def _crutch_body(frame: _Frame, outline: bd.Face, openings: Sequence[Cut]) -> bd.Face:
+    """The crutch after its component openings. A component spanning the whole width near the nose (a chin
+    payload) leaves only scraps ahead of it; those are dropped, so the crutch then starts behind it."""
+    pieces = sorted(_cut_openings(outline, outline, openings, None, (), "C-1", "crutch"), key=lambda f: f.area)
+    body = pieces[-1]
+    start = body.bounding_box().min.X
+    if any(p.bounding_box().max.X > start + STATION_EPS for p in pieces[:-1]):
+        names = ", ".join(name for name, _ in openings)
+        raise KitUnavailable(f"C-1: the openings for the {names} cut the crutch apart")
+    return body
+
+
 def _crutch(frame: _Frame) -> KitPart:
-    openings, open_slots = _crutch_voids(frame)
-    slots = _crutch_slots(frame)
-    voids = [f for _, f in openings] + open_slots
-    result = _crutch_outline(frame).cut(*voids, *(f for _, f in slots))
-    web = f"{MIN_WEB_M * 1e3:.0f} mm"
-    for name, face in openings:
-        _assert_web(result, face, voids, None, f"C-1: the opening for the {name} leaves less than {web} of crutch")
+    openings, slots = _crutch_openings(frame), _crutch_slots(frame)
+    body = _crutch_body(frame, _crutch_outline(frame), openings)
+    result = body.cut(*(face for _, face in slots))
     for name, face in slots:
-        _assert_web(result, face, [face], None, f"C-1: the slot for {name} leaves less than {web} of crutch")
+        _assert_web(result, face, [face], None, f"C-1: the slot for {name} leaves less than {WEB_TEXT} of crutch")
     x0 = frame.crutch_x[0]
     face = _single_face(result, "C-1").moved(bd.Location((-x0, 0.0, 0.0)))
     return KitPart("C-1", "crutch", face, bd.Location((x0, 0.0, -frame.crutch_t_m / 2.0)))
@@ -445,16 +558,19 @@ def _crutch(frame: _Frame) -> KitPart:
 def fuselage_parts(
     layout: AircraftLayout, spar: SparPlan, components: Sequence[PlacedComponent], settings: FabricationSettings
 ) -> tuple[KitPart, ...]:
-    """Crutch `C-1`, half-formers `F-nnU`/`F-nnL`, firewall `FW-1a`/`FW-1b` and wing-mount plates `WM-L`/`WM-R`.
+    """Crutch `C-1`, half-formers `F-nnU`/`F-nnL`, firewall `FW-1a`/`FW-1b`, wing-box plates `WM-L`/`WM-R` and
+    boom mounts `BM-1`/`BM-2`.
 
-    Openings are cut for every internal component; with no components the formers carry only lightening holes
-    (plus stringer notches, the tail-boom sleeves and the wing-mount notches, which are part of the outline).
+    Every component crossing a former, the crutch or a plate gets an opening there; with no components the
+    formers carry only lightening holes (plus stringer notches and the wing-box slots).
     """
     frame = _Frame(
         layout=layout, settings=settings, components=tuple(components),
-        stations=former_stations(layout, spar, settings), mount=_mount(layout, spar, settings),
+        stations=former_stations(layout, spar, settings, components),
+        boom_mounts=_boom_mount_stations(layout, settings), mount=_mount(layout, spar, settings),
         crutch_t_m=settings.sheet_for("crutch").thickness_m, former_t_m=settings.sheet_for("former").thickness_m,
-        firewall_t_m=settings.sheet_for("bulkhead").thickness_m,
+        bulkhead_t_m=settings.sheet_for("bulkhead").thickness_m,
     )
     formers = _half_formers(frame)  # first, so a too-big component is reported against the former it breaks
-    return (_crutch(frame), *formers, *_firewall(frame), *_mount_plates(frame))
+    return (_crutch(frame), *formers, *_firewall(frame), _mount_plate(frame, -1), _mount_plate(frame, 1),
+            *_boom_mount_parts(frame))
