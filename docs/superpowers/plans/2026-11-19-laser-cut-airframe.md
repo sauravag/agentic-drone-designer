@@ -22,7 +22,10 @@
   680 kg/m³; stringers 3 × 3 mm balsa 160 kg/m³; LE 6 × 6 mm balsa; TE 5 × 15 mm triangular balsa; film
   0.09 kg/m²; fuselage covering 0.24 kg/m²; glue/hardware 10 % of structure; carbon 1600 kg/m³; σ_allow 500 MPa;
   FS 1.5; n_limit 4.0; spar insertion 20 % of semi-span per side; fit clearance ≤ 0.2 mm; tube list thin-wall
-  6×4 … 25×23 and thick-wall 20×16, 25×21, 28×24, 30×26, 32×28, 35×31, 40×36; rods 3, 4, 5 mm.
+  6×4 … 25×23 (2 mm OD steps, 1 mm wall) and thick-wall 20×16, 24×20, 28×24, 32×28, 36×32, 40×36 (each ID equals
+  the next smaller OD, so every tube has a nested partner); rods 3, 4, 5 mm. (Ruling while planning: the spec's
+  thick-wall list 25×21, 30×26, 35×31 had no nested partners, so no socket could ever be found for those spars;
+  the spec's defaults are updated to this list.)
 - Rib pitch stays 0.20 m (`structure.RIB_PITCH_M`). Aileron span 0.55–0.95, hinge at 75 % chord; tail hinge at
   65 % chord (reuse `openvsp_builder.AILERON_ETA`, `AILERON_CHORD_FRACTION`, `TAIL_CONTROL_CHORD_FRACTION` by
   moving them to a module without the OpenVSP import if needed — `openvsp_builder` must not be imported outside
@@ -103,8 +106,9 @@ def test_defaults_match_the_spec():
     assert {(round(t.od_m * 1e3), round(t.id_m * 1e3)) for t in s.tubes} >= {(25, 23), (35, 31), (40, 36), (6, 4)}
 
 def test_every_family_needs_exactly_one_sheet():
+    three_mm = DEFAULT_FABRICATION.sheet_for("former")
     with pytest.raises(ValidationError, match="rib"):
-        DEFAULT_FABRICATION.model_copy(update={"sheets": ()}).model_validate(...)  # build via FabricationSettings(**…)
+        FabricationSettings(sheets=(three_mm,))  # the 3 mm sheet does not list "rib"
 
 def test_tube_id_must_be_below_od():
     with pytest.raises(ValidationError):
@@ -117,8 +121,6 @@ def test_second_moment_of_a_tube():
     t = TubeStock(od_m=0.025, id_m=0.023)
     assert t.second_moment_m4 == pytest.approx(math.pi / 64 * (0.025**4 - 0.023**4))
 ```
-(The family test constructs `FabricationSettings(sheets=(<only the 3 mm sheet without "rib">,))` and expects
-the message to name the uncovered family.)
 
 - [ ] **Step 2:** Run `.venv/bin/python -m pytest tests/test_fabrication_settings.py -q` — Expected: FAIL (`ModuleNotFoundError`).
 - [ ] **Step 3:** Implement `src/schemas/fabrication.py` per the Interfaces block.
@@ -141,9 +143,10 @@ the message to name the uncovered family.)
 - `@dataclass(frozen=True) SparSegment(tube: TubeStock, y_start_m: float, y_end_m: float)`;
   `@dataclass(frozen=True) SparPlan(segments: tuple[SparSegment, ...], socket: TubeStock, joint_y_m: float,
   insertion_m: float)`.
+- `usable_depth_m(local_thickness_m: float, settings) -> float` = thickness − 2·`MIN_WEB_M`
+  (`MIN_WEB_M = 0.006`, defined here, reused by Task 3; film covering adds no thickness).
 - `plan_spar(mtow_kg, semi_span_m, joint_y_m, depth_at: Callable[[float], float], boom_y_m: Optional[float],
-  settings) -> SparPlan` where `depth_at(y)` is the usable depth (airfoil thickness at 25 % chord minus 2 ×
-  covering minus a minimum rib web) at span station y. Algorithm: root segment = smallest stock tube whose stress
+  settings) -> SparPlan` where `depth_at(y)` is `usable_depth_m` of the airfoil thickness at 25 % chord at span station y. Algorithm: root segment = smallest stock tube whose stress
   under max(flight, hover) moment at `joint_y` ≤ σ_allow/FS and whose OD ≤ `depth_at` over its extent; walk
   outboard rib by rib, and where `depth_at(y)` < current OD, step to the largest tube that (a) fits inside the
   current one within `fit_clearance_m`, (b) fits the depth, (c) passes the moment at that y (moment at y uses the
@@ -159,9 +162,10 @@ def test_reviewer_numbers_25kg():
     assert m == pytest.approx(4.0 * 25 * 9.80665 / 2 * 4 * 2.0 / (3 * math.pi), rel=1e-9)  # ~416 N·m
     assert bending_stress_pa(TubeStock(od_m=0.025, id_m=0.023), m) > 900e6
 
-def test_25kg_design_takes_a_35mm_spar():
+def test_25kg_design_takes_a_32mm_spar_and_36mm_socket():
     plan = plan_spar(25.0, 2.1, 0.1, lambda y: 0.050, None, DEFAULT_FABRICATION)
-    assert round(plan.segments[0].tube.od_m * 1e3) == 35
+    assert round(plan.segments[0].tube.od_m * 1e3) == 32   # 28×24 → 419 MPa fails; 32×28 → 312 MPa ≤ 333
+    assert (round(plan.socket.od_m * 1e3), round(plan.socket.id_m * 1e3)) == (36, 32)
 
 def test_spar_steps_down_inside_the_previous_tube():
     depth = lambda y: 0.030 if y < 0.8 else 0.019
@@ -174,13 +178,14 @@ def test_socket_is_larger_than_the_spar():
     plan = plan_spar(5.0, 1.4, 0.06, lambda y: 0.030, None, DEFAULT_FABRICATION)
     assert plan.socket.id_m >= plan.segments[0].tube.od_m
 
-def test_hover_moment_governs_a_quadplane():
-    flight = plan_spar(8.0, 1.5, 0.08, lambda y: 0.06, None, DEFAULT_FABRICATION)
-    hover = plan_spar(8.0, 1.5, 0.08, lambda y: 0.06, 1.2, DEFAULT_FABRICATION)
-    assert hover.segments[0].tube.od_m >= flight.segments[0].tube.od_m
+def test_hover_moment_governs_when_it_is_larger():
+    gentle = DEFAULT_FABRICATION.model_copy(update={"n_limit": 1.0})  # flight 23.6 N·m < hover 43.9 N·m
+    flight = plan_spar(8.0, 1.5, 0.08, lambda y: 0.06, None, gentle)
+    hover = plan_spar(8.0, 1.5, 0.08, lambda y: 0.06, 1.2, gentle)
+    assert hover.segments[0].tube.od_m > flight.segments[0].tube.od_m
 
 def test_too_thin_wing_is_unavailable():
-    with pytest.raises(KitUnavailable, match="fits the wing"):
+    with pytest.raises(KitUnavailable, match="no stock tube fits the wing at y ="):
         plan_spar(25.0, 2.1, 0.1, lambda y: 0.020, None, DEFAULT_FABRICATION)
 
 def test_joint_is_on_the_skin():
@@ -224,13 +229,17 @@ TE notch to `te_chord_m`, spar hole at 25 % chord on the camber line, wiring hol
 lightening holes keep a minimum web `MIN_WEB_M = 0.006` from every edge and hole (constant; shape is the
 builder's call).
 
-- [ ] **Step 1: Write failing tests** (`g1_layout` from conftest, `DEFAULT_FABRICATION`, a spar plan from `plan_spar` on the layout)
+- [ ] **Step 1: Write failing tests.** Add fixture `g1_kit_inputs` in `tests/conftest.py` returning
+  `(layout, airfoil, spar_plan, DEFAULT_FABRICATION)` for the `g1` design (`_fitted_layout`, `load_airfoil`,
+  `plan_spar` with `depth_at` from the airfoil), in that order — `wing_ribs(*g1_kit_inputs)` must work.
 
 ```python
 def test_rib_hole_matches_the_tube_through_it(g1_kit_inputs):
     ribs = wing_ribs(*g1_kit_inputs)
     outer = ribs_by_label(ribs)["WR-05"]
-    assert hole_diameters(outer.outline)[0] == pytest.approx(expected_od(…) + 0.0002, abs=1e-6)
+    spar = g1_kit_inputs[2]
+    tube = next(s.tube for s in spar.segments if s.y_start_m <= outer.location.position.Y < s.y_end_m)
+    assert hole_diameters(outer.outline)[0] == pytest.approx(tube.od_m + 0.0002, abs=1e-6)  # outside insertion
 
 def test_left_ribs_mirror_right(g1_kit_inputs):
     ribs = ribs_by_label(wing_ribs(*g1_kit_inputs))
@@ -238,9 +247,10 @@ def test_left_ribs_mirror_right(g1_kit_inputs):
 
 def test_aileron_ribs_split_at_75_percent(g1_kit_inputs): ...   # WR-k and WR-kA exist only for 0.55–0.95 semi-span
 def test_every_rib_keeps_a_minimum_web(g1_kit_inputs): ...      # each inner wire ≥ MIN_WEB_M from outer wire and other holes
-def test_root_rib_is_a_3mm_doubler_with_pin_hole(g1_kit_inputs): ...
-def test_rib_count_follows_the_20cm_pitch(g1_kit_inputs): ...
-def test_tail_ribs_split_at_65_percent(g1_kit_inputs): ...
+def test_root_rib_is_a_3mm_doubler_with_pin_hole(g1_kit_inputs): ...  # WR-01.family == "doubler"; a 4 mm hole at 70 % chord
+def test_ribs_over_the_socket_have_socket_holes(g1_kit_inputs): ...   # stations < joint_y + insertion → socket.od + clearance
+def test_rib_count_follows_the_20cm_pitch(g1_kit_inputs): ...         # len(WR-*) == len(structure.rib_stations) from joint_y
+def test_tail_ribs_split_at_65_percent(g1_kit_inputs): ...            # HR-k / HR-kA split x == 0.65 chord
 ```
 Helpers (`hole_diameters`, `ribs_by_label`) live in `tests/cad_helpers.py`.
 
@@ -311,13 +321,13 @@ def test_slot_width_equals_mating_thickness(...)            # crutch slots == 0.
 - [ ] **Step 1: Write failing tests**
 
 ```python
-def test_part_that_fits_is_untouched(): ...
+def test_part_that_fits_is_untouched(): ...  # 0.2 × 0.1 m plate → (part,) identical
 def test_long_crutch_splits_into_pieces_that_fit(): # 1.4 m × 0.12 m plate → 3 pieces, each within 590 × 390 mm
 def test_split_pieces_area_plus_dovetails_conserves_area(): # sum(pieces) == original area within 1e-9 m²
 def test_split_avoids_holes(): # no cut line within 3 mm of an inner wire
 def test_part_wider_than_the_bed_is_unavailable(): # 0.5 m × 0.5 m → KitUnavailable
-def test_fixed_wing_has_no_boom_clamps(designs): ...
-def test_boom_tube_is_stock_at_least_layout_diameter(designs): ...
+def test_fixed_wing_has_no_boom_clamps(designs): ...  # g1 → no BC-/MP- labels, no lift_boom tubes
+def test_boom_tube_is_stock_at_least_layout_diameter(designs): ...  # g2 lift booms: tube.od ≥ boom.diameter_m, tube ∈ settings.tubes
 ```
 
 - [ ] **Step 2–4:** Run `.venv/bin/python -m pytest tests/test_fabrication_parts.py -q` (FAIL → implement → PASS).
@@ -333,8 +343,8 @@ def test_boom_tube_is_stock_at_least_layout_diameter(designs): ...
 - `build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
   components: Sequence[PlacedComponent], settings: FabricationSettings) -> Kit` — raises `KitUnavailable` for
   `sizing.dod_group == 3` ("laser-cut construction covers Group 1–2 designs only") and propagates tube/split
-  failures. Calls `split_to_bed` on every part. Adds linear stock: stringers (8 per side… along fuselage between
-  first and last former), LE and TE strips per panel and tail surface. `film_area_m2` = wetted area of wing +
+  failures. Calls `split_to_bed` on every part. Adds linear stock: `STRINGER_COUNT` stringers along the fuselage between the
+  first and last former, LE and TE strips per panel and tail surface. `film_area_m2` = wetted area of wing +
   tails (2 × planform area); `fuselage_cover_area_m2` = lateral area of the pod from `fuselage_radius_at`.
 - `kit_mass_items(kit: Kit, settings) -> list[mp.MassItem]`: each `KitPart` → `mp.box_item`-equivalent from its
   face (mass = area × thickness × density, CG = face centroid mapped by `location`, inertia of a thin plate —
@@ -351,8 +361,8 @@ def test_boom_tube_is_stock_at_least_layout_diameter(designs): ...
 ```python
 def test_group_3_is_unavailable(designs): ...  # match "Group 1–2"
 def test_plate_mass_matches_extruded_solid(designs):  # kit_mass_items part vs mp.solid_item(extrude) within 1e-6 rel
-def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(designs): ...
-def test_every_reference_design_in_group_1_2_gets_a_kit(designs): ...  # all CASES with dod_group<=2
+def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(designs): ...  # kit_mass_kg == Σ items; glue == 10 % of structure
+def test_every_reference_design_in_group_1_2_gets_a_kit(designs): ...  # "g1" (4.1 kg FW) and "g2" (19.4 kg quadplane)
 def test_kit_is_deterministic(designs): ...  # two builds → identical labels and masses
 ```
 
@@ -367,7 +377,8 @@ def test_kit_is_deterministic(designs): ...  # two builds → identical labels a
 
 **Interfaces — Produces:**
 - `pack_layout(sizing, bom, aero, layout, oml_step, settings: FabricationSettings = DEFAULT_FABRICATION) -> PackingResult`.
-- `PackingResult` gains `kit: Optional[Kit]`, `kit_warning: Optional[str]`; keeps `structure` (fallback only;
+- `PackingResult` gains `kit: Optional[Kit]`, `kit_warning: Optional[str]`, `mass_items: tuple[mp.MassItem, ...]`
+  (the items combined into `mass`); keeps `structure` (fallback only;
   `None` when a kit exists — make it `Optional[WingStructure]`) and `shell_areal_density_kg_m2` (0.0 with a kit).
 - `balance_design(..., settings=DEFAULT_FABRICATION)`, `build_aero_cad(..., settings=DEFAULT_FABRICATION)`,
   `pipeline.run_aero_cad(..., settings=DEFAULT_FABRICATION)`.
@@ -386,18 +397,18 @@ Order inside `pack_layout` (decided here; the spec leaves the sequencing open):
 
 ```python
 def test_kit_replaces_the_shell_mass(designs, tmp_path):
-    r = pack(designs["g1_electric_fw"], tmp_path)
+    r = pack(designs["g1"], tmp_path)
     assert r.kit is not None and r.shell_areal_density_kg_m2 == 0.0 and r.structure is None
     names = {i.name for i in r.mass_items}   # expose `mass_items: tuple[MassItem,...]` on PackingResult
     assert "oml_shell" not in names and "landing_gear" in names
 
-def test_as_built_mass_is_kit_plus_gear_plus_components(designs, tmp_path): ...
+def test_as_built_mass_is_kit_plus_gear_plus_components(designs, tmp_path): ...  # r.mass.mass_kg == kit_mass + gear + Σ components
 def test_group_3_falls_back_with_a_warning(designs, tmp_path):
-    r = pack(designs[<group-3 case>], tmp_path)
+    r = pack(designs["g3"], tmp_path)
     assert r.kit is None and "Group 1–2" in r.kit_warning and r.structure is not None
 
-def test_battery_never_overlaps_the_socket(designs, tmp_path): ...
-def test_formers_have_openings_for_the_placed_battery(designs, tmp_path): ...
+def test_battery_never_overlaps_the_socket(designs, tmp_path): ...  # g1, g2: battery x-range disjoint from socket x ± OD/2 + gap
+def test_formers_have_openings_for_the_placed_battery(designs, tmp_path): ...  # every former crossing the battery has an inner wire ⊇ its yz box
 ```
 Update `test_airframe_lighter_than_ribs_and_spars_raises` and the `structure` tests to run on the fallback path
 (Group 3 or a forced `KitUnavailable` via monkeypatch). Keep `structure.py` for the fallback.
@@ -426,7 +437,7 @@ Update `test_airframe_lighter_than_ribs_and_spars_raises` and the `structure` te
 
 ```python
 def test_no_part_leaves_the_bed_or_overlaps(kit): ...       # every placed bbox within margin; pairwise disjoint + margin
-def test_rotation_used_when_only_90_degrees_fits(): ...
+def test_rotation_used_when_only_90_degrees_fits(): ...  # 0.35 × 0.55 m part → rotated=True
 def test_kerf_grows_outlines_and_shrinks_holes():
     f = plate_with_hole(0.1, 0.05, hole_d=0.01)
     k = kerf_outline(f, 0.00015)
@@ -435,7 +446,7 @@ def test_dxf_round_trip_layers_and_units(kit, tmp_path):
     doc = ezdxf.readfile(write_sheets(nest(kit.parts, S), S, tmp_path)[0])
     assert {"CUT_INNER", "CUT_OUTER", "ENGRAVE"} <= {l.dxf.name for l in doc.layers}
     assert doc.header["$INSUNITS"] == 4  # millimetres
-def test_every_label_engraved_once(kit, tmp_path): ...
+def test_every_label_engraved_once(kit, tmp_path): ...  # ENGRAVE TEXT entities across sheets == Σ quantities
 ```
 
 - [ ] **Step 2–4:** `.venv/bin/python -m pytest tests/test_fabrication_export.py -q` FAIL → implement → PASS.
@@ -465,12 +476,12 @@ def test_every_label_engraved_once(kit, tmp_path): ...
 - [ ] **Step 1: Write failing tests**
 
 ```python
-def test_build_sheet_lists_every_label(kit, tmp_path): ...
-def test_parts_csv_mass_sums_to_part_mass(kit, tmp_path): ...
-def test_kit_solid_volume_matches_part_mass(kit): ...
+def test_build_sheet_lists_every_label(kit, tmp_path): ...  # every KitPart.label and TubePart.label in build_sheet.md
+def test_parts_csv_mass_sums_to_part_mass(kit, tmp_path): ...  # Σ mass_g / 1000 == Σ part masses within 1e-6
+def test_kit_solid_volume_matches_part_mass(kit): ...  # Σ solid.volume × density == Σ part masses within 1e-6 rel
 def test_artifacts_carry_kit_paths(designs, tmp_path): ...    # pack_aircraft → cad.build_sheet_path exists
-def test_fallback_artifacts_carry_the_warning(designs, tmp_path): ...
-def test_viewer_structure_part_comes_from_the_kit(...): ...
+def test_fallback_artifacts_carry_the_warning(designs, tmp_path): ...  # g3 → kit_dir None, kit_warning set
+def test_viewer_structure_part_comes_from_the_kit(...): ...  # structure part built from kit_solids, non-empty
 ```
 
 - [ ] **Step 2–4:** Run the three test files: FAIL → implement → PASS.

@@ -96,10 +96,10 @@ factor 1.5; limit load factor 4.0; spar insertion into the socket 20 % of semi-s
 clearance ≤ 0.2 mm.
 
 Default tube stock list (OD × ID, mm): thin-wall 6×4, 8×6, 10×8, 12×10, 14×12, 16×14, 18×16, 20×18, 22×20,
-25×23; thick-wall 20×16, 25×21, 28×24, 30×26, 32×28, 35×31, 40×36; solid rods 3, 4, 5 mm for pins. Nested pairs
-(one tube's ID fits another's OD within the fit clearance) make the socket and the step sleeves. With these, a
-25 kg design needs about a 35×31 mm spar (root chord ≳ 0.37 m at 12 % thickness), so most Group 2 designs get a
-kit; a wing too thin for the tube it needs falls back with that reason.
+25×23; thick-wall 20×16, 24×20, 28×24, 32×28, 36×32, 40×36 (each ID equals the next smaller OD); solid rods 3, 4, 5 mm
+for pins. Nested pairs (one tube's ID fits another's OD within the fit clearance) make the socket and the step
+sleeves. With these, a 25 kg design needs a 32×28 mm spar in a 36×32 mm socket (usable root depth ≥ 32 mm), so
+most Group 2 designs get a kit; a wing too thin for the tube it needs falls back with that reason.
 
 ## Decided with the user (2026-11-19)
 
