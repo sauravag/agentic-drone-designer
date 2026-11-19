@@ -216,9 +216,9 @@ def test_joint_is_on_the_skin():
   tuple[LinearStock,...], film_area_m2: float, fuselage_cover_area_m2: float, spar: SparPlan,
   joins: tuple[str, ...])` (`joins`: human-readable "C-1a + C-1b at x = 0.512 m").
 - `wing_ribs(layout, airfoil, spar: SparPlan, settings) -> tuple[KitPart, ...]`: right panel labels `WR-01…`,
-  left `WL-01…` (mirrored location), stations from `structure.rib_stations` starting at `spar.joint_y_m`;
-  ribs inside the aileron span are two parts `WR-07` and `WR-07A`; ribs within the insertion length get a
-  socket-sized hole, others the local tube hole + `fit_clearance_m`; root rib `WR-01` is family `doubler`
+  left `WL-01…` (mirrored location), stations every `RIB_PITCH_M` from `spar.joint_y_m` (R2);
+  ribs inside the aileron span are two parts `WR-07` and `WR-07A`; every rib's hole is the local spar member
+  OD + `fit_clearance_m` (the socket stays inside the fuselage, R11); root rib `WR-01` is family `doubler`
   (3 mm) with a 4 mm pin hole at 70 % chord; one servo plate `WR-SV` / `WL-SV` per aileron bay.
 - `tail_ribs(layout, airfoil, settings) -> tuple[KitPart, ...]`: labels `HR-`, `HL-`, `V-`, plus `TM-1`
   mount plate; tail spar = smallest stock tube fitting the tail root depth (no stress check; record as
