@@ -192,7 +192,7 @@ def wing_ribs(
     return tuple(right) + tuple(_mirrored(p, "WR-", "WL-", settings) for p in right)
 
 
-def _boom_radius_m(layout: AircraftLayout) -> float:
+def tail_root_radius_m(layout: AircraftLayout) -> float:
     """Tail surfaces start at the boom skin (or the fuselage skin under the tail)."""
     if layout.tail_boom is not None:
         return layout.tail_boom.diameter_m / 2.0
@@ -204,9 +204,15 @@ def _boom_axis_z(layout: AircraftLayout) -> float:
     return layout.tail_boom.z_m if layout.tail_boom is not None else layout.htail.z_root_m
 
 
+def fin_start_m(layout: AircraftLayout, settings: FabricationSettings) -> float:
+    """Height of the first fin rib above the fin root: on top of the fin mount plate `TM-1` (R9)."""
+    top = _boom_axis_z(layout) + tail_root_radius_m(layout) + settings.sheet_for("plate").thickness_m
+    return top - layout.vtail.z_root_m
+
+
 def tail_spar_tube(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> TubeStock:
     """Smallest stock tube that fits the thinner tail root (no stress check: tail loads are small)."""
-    root = _boom_radius_m(layout)
+    root = tail_root_radius_m(layout)
     depth = min(spar_depth_at(s, airfoil, settings)(root) for s in (layout.htail, layout.vtail))
     tube = next((t for t in settings.tubes if t.od_m <= depth + FIT_EPS_M), None)
     if tube is None:
@@ -235,7 +241,7 @@ def _tail_surface_ribs(
 
 def _fin_mount(layout: AircraftLayout, settings: FabricationSettings) -> KitPart:
     """Ply saddle on top of the tail boom under the fin root: z from the boom top up one plate thickness."""
-    radius, vt = _boom_radius_m(layout), layout.vtail
+    radius, vt = tail_root_radius_m(layout), layout.vtail
     width = max(2.0 * radius, TAIL_MOUNT_MIN_WIDTH_M)
     outline = rect_face(0.0, -width / 2.0, vt.root_chord_m, width / 2.0)
     return KitPart("TM-1", "plate", outline, bd.Location((vt.x_le_root_m, 0.0, _boom_axis_z(layout) + radius), FLAT_ROTATION_DEG))
@@ -247,11 +253,11 @@ def tail_ribs(layout: AircraftLayout, airfoil: AirfoilShape, settings: Fabricati
     `airfoil` is the tail section (`layout.TAIL_AIRFOIL_NAME` for OpenVSP-built tails). Fin ribs start on
     top of the mount plate.
     """
-    radius = _boom_radius_m(layout)
+    radius = tail_root_radius_m(layout)
     tube = tail_spar_tube(layout, airfoil, settings)
     ht, vt = layout.htail, layout.vtail
     t_rib = settings.sheet_for("rib").thickness_m
-    fin_start = _boom_axis_z(layout) + radius + settings.sheet_for("plate").thickness_m - vt.z_root_m
+    fin_start = fin_start_m(layout, settings)
 
     def htail_at(index: int, y: float) -> bd.Location:
         return _rib_location(ht.x_le_root_m, y, ht.z_at(y), t_rib, index == 0)

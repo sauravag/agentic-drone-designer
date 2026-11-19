@@ -149,7 +149,7 @@ def _check_insertion(insertion_m: float, root: TubeStock, settings: FabricationS
         )
 
 
-def _step_position(depth_at: Callable[[float], float], od_m: float, inboard_m: float, outboard_m: float) -> float:
+def depth_limit_m(depth_at: Callable[[float], float], od_m: float, inboard_m: float, outboard_m: float) -> float:
     """Outermost y in [inboard, outboard) where the depth still admits `od_m` (depth is non-increasing)."""
     lo, hi = inboard_m, outboard_m
     for _ in range(BISECTION_ITERATIONS):
@@ -185,7 +185,7 @@ def plan_spar(
     current, start = root, joint_y_m
     for y in _stations(joint_y_m, semi_span_m)[1:]:
         while depth_at(y) < current.od_m - FIT_EPS_M:
-            y_step = _step_position(depth_at, current.od_m, start, y)
+            y_step = depth_limit_m(depth_at, current.od_m, start, y)
             if y_step <= start + FIT_EPS_M:
                 raise _unavailable_at(y)
             moment = _moment_at(mtow_kg, semi_span_m, y_step, boom_y_m, settings)

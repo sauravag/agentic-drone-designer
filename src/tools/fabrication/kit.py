@@ -26,11 +26,12 @@ import build123d as bd
 from src.schemas.fabrication import PartFamily, TubeStock
 from src.tools.fabrication.tubes import KitUnavailable, SparPlan
 
-__all__ = ["Kit", "KitPart", "KitUnavailable", "LinearStock", "TubePart", "Vec3"]
+__all__ = ["CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "TubePart", "Vec3"]
 
 Vec3 = tuple[float, float, float]
 TubeRole = Literal["spar", "socket", "tail_boom", "tail_spar", "lift_boom", "pin"]
 LinearKind = Literal["stringer", "le", "te"]
+CoverKind = Literal["film", "fuselage"]
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,17 @@ class LinearStock:
 
 
 @dataclass(frozen=True)
+class CoverSurface:
+    """Covering laid uniformly over `surface` (aircraft frame). `area_m2` is the material area: a lifting
+    surface's film covers both faces (2 x planform), so it is twice the planform `surface`'s area."""
+
+    label: str
+    kind: CoverKind
+    surface: bd.Shape
+    area_m2: float
+
+
+@dataclass(frozen=True)
 class Kit:
     parts: tuple[KitPart, ...]
     tubes: tuple[TubePart, ...]
@@ -77,3 +89,4 @@ class Kit:
     fuselage_cover_area_m2: float
     spar: SparPlan
     joins: tuple[str, ...]  # human-readable, e.g. "C-1a + C-1b at x = 0.512 m"
+    covering: tuple[CoverSurface, ...] = ()  # where the film and fuselage cover lie (mass placement)

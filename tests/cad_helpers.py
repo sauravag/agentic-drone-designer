@@ -10,7 +10,7 @@ from src.schemas.fabrication import FabricationSettings
 from src.schemas.state import AeroStabilityOutput, SizingOutput
 from src.tools.aero_cad import components
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
-from src.tools.fabrication.kit import KitPart
+from src.tools.fabrication.kit import KitPart, TubePart
 
 
 def _synthetic_aero(layout: AircraftLayout, np_offset_mac: float = 0.25) -> AeroStabilityOutput:
@@ -57,3 +57,12 @@ def part_solid(part: KitPart, settings: FabricationSettings) -> bd.Solid:
     """The part as built: outline extruded along local +Z by its sheet thickness, then moved by `location`."""
     thickness = settings.sheet_for(part.family).thickness_m
     return bd.extrude(part.outline, amount=thickness, dir=(0, 0, 1)).moved(part.location)
+
+
+def tube_solid(tube: TubePart) -> bd.Solid:
+    """The tube as built: a hollow (or, for a rod, solid) cylinder from `start_m` along `axis` for `length_m`."""
+    plane = bd.Plane(origin=tube.start_m, z_dir=tube.axis)
+    outer = bd.Solid.make_cylinder(tube.tube.od_m / 2.0, tube.length_m, plane)
+    if tube.tube.id_m <= 0.0:
+        return outer
+    return outer.cut(bd.Solid.make_cylinder(tube.tube.id_m / 2.0, tube.length_m, plane)).solids()[0]
