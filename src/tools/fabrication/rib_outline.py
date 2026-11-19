@@ -1,7 +1,8 @@
 """Flat rib outlines for the laser-cut kit: airfoil, LE/TE stock notches, holes and lightening holes.
 
 Outlines live in the rib's local XY plane (metres): x aft along the chord from the leading edge,
-y in the airfoil thickness direction. Outlines are nominal (no kerf).
+y in the airfoil thickness direction. Outlines are nominal (no kerf)
+and follow the airfoil exactly: the iron-on film covering adds no thickness.
 """
 
 from dataclasses import dataclass
@@ -13,7 +14,6 @@ from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape, camber_at
 from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable
 
-COVERING_INSET_M: Final[float] = 0.0  # iron-on film adds no thickness, so ribs follow the airfoil exactly
 MIN_LIGHTENING_DIAMETER_M: Final[float] = 0.006  # smaller holes save too little to be worth cutting
 CUTTER_REACH_FACTOR: Final[float] = 2.0  # cutting rectangles extend this many chords past the rib
 

@@ -37,6 +37,7 @@ AILERON_ETA: Final[tuple[float, float]] = (0.55, 0.95)
 AILERON_CHORD_FRACTION: Final[float] = 0.25
 TAIL_CONTROL_ETA: Final[tuple[float, float]] = (0.05, 0.95)
 TAIL_CONTROL_CHORD_FRACTION: Final[float] = 0.35
+TAIL_AIRFOIL_NAME: Final[str] = "naca0010"  # OpenVSP's default WING section, used by the tail surfaces
 
 ROTOR_CLEARANCE_FRACTION: Final[float] = 0.10  # gap to wing/fuselage, fraction of rotor diameter
 VTOL_BOOM_DIAMETER_FRACTION: Final[float] = 0.08  # of rotor diameter

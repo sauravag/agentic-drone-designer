@@ -6,6 +6,7 @@ from typing import Iterable
 import build123d as bd
 
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import FabricationSettings
 from src.schemas.state import AeroStabilityOutput, SizingOutput
 from src.tools.aero_cad import components
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
@@ -50,3 +51,9 @@ def hole_diameters(face: bd.Face) -> list[float]:
 
 def ribs_by_label(parts: Iterable[KitPart]) -> dict[str, KitPart]:
     return {p.label: p for p in parts}
+
+
+def part_solid(part: KitPart, settings: FabricationSettings) -> bd.Solid:
+    """The part as built: outline extruded along local +Z by its sheet thickness, then moved by `location`."""
+    thickness = settings.sheet_for(part.family).thickness_m
+    return bd.extrude(part.outline, amount=thickness, dir=(0, 0, 1)).moved(part.location)

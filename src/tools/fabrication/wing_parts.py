@@ -36,7 +36,7 @@ from src.tools.fabrication.rib_outline import (
     rect_face,
     split_at,
 )
-from src.tools.fabrication.tubes import FIT_EPS_M, KitUnavailable, SparPlan, usable_depth_m
+from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, usable_depth_m
 
 AILERON_HINGE_FRACTION: Final[float] = 1.0 - AILERON_CHORD_FRACTION
 TAIL_HINGE_FRACTION: Final[float] = 1.0 - TAIL_CONTROL_CHORD_FRACTION
@@ -45,7 +45,6 @@ WIRING_HOLE_DIAMETER_M: Final[float] = 0.008
 PIN_CHORD_FRACTION: Final[float] = 0.70
 PIN_ROD_DIAMETER_M: Final[float] = 0.004
 LIGHTENING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.38, 0.62)  # either side of the wiring hole
-TAIL_AIRFOIL_NAME: Final[str] = "naca0010"  # OpenVSP's default WING section, which the tail surfaces use
 SERVO_PLATE_CHORD_M: Final[float] = 0.040
 SERVO_PLATE_SPAN_M: Final[float] = 0.050
 SERVO_CUTOUT_CHORD_M: Final[float] = 0.013  # 9 g micro servo body, lying spanwise
@@ -62,7 +61,7 @@ def spar_depth_at(surface: SurfacePlanform, airfoil: AirfoilShape, settings: Fab
     return lambda y: usable_depth_m(ratio * surface.chord_at(y), settings)
 
 
-def rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
+def wing_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
     """`start_m` and every RIB_PITCH_M outboard of it, up to the semi-span."""
     count = math.floor((semi_span_m - start_m) / RIB_PITCH_M + STATION_EPS) + 1
     return tuple(start_m + k * RIB_PITCH_M for k in range(count))
@@ -92,10 +91,19 @@ def _rib_pieces(
     return tuple(parts)
 
 
-def _mirrored(part: KitPart, side_from: str, side_to: str) -> KitPart:
-    """Left-panel copy: same outline, location reflected in y (frame convention in kit.py)."""
+def _rib_location(x_m: float, y_station_m: float, z_m: float, thickness_m: float, is_root: bool) -> bd.Location:
+    """Right-panel rib location: the slab (extruded toward -y) is centred on its station, except a panel's
+    root rib, which lies just outboard of the root station so it stays outside the skin or boom."""
+    top = y_station_m + (thickness_m if is_root else thickness_m / 2.0)
+    return bd.Location((x_m, top, z_m), RIB_ROTATION_DEG)
+
+
+def _mirrored(part: KitPart, side_from: str, side_to: str, settings: FabricationSettings) -> KitPart:
+    """Left-panel copy: same outline, placed so the extruded solid is the exact y-mirror of the right one."""
     pos = part.location.position
-    location = bd.Location((pos.X, -pos.Y, pos.Z), tuple(part.location.orientation))
+    normal_y = (part.location * bd.Location((0.0, 0.0, 1.0))).position.Y - pos.Y  # extrusion direction in y
+    mirrored_y = -pos.Y - normal_y * settings.sheet_for(part.family).thickness_m
+    location = bd.Location((pos.X, mirrored_y, pos.Z), tuple(part.location.orientation))
     return dataclasses.replace(part, label=part.label.replace(side_from, side_to, 1), location=location)
 
 
@@ -127,14 +135,15 @@ def _wing_rib(
     chord = wing.chord_at(y)
     label, is_root = _label("WR-", index), index == 0
     profile = notched_profile(airfoil, chord, settings)
-    holes = [Hole(*camber_point(airfoil, chord, SPAR_CHORD_STATION), _spar_hole_m(spar, y, settings))]
+    spar_hole = _placed_hole(profile, airfoil, chord, (SPAR_CHORD_STATION,), _spar_hole_m(spar, y, settings), [], label)
+    holes = [spar_hole]
     if is_root:
         holes.append(_placed_hole(profile, airfoil, chord, (PIN_CHORD_FRACTION,), _pin_hole_m(settings), holes, label))
     if y < servo_y:  # aileron servo leads run inboard from the servo bay
         holes.append(_placed_hole(profile, airfoil, chord, WIRING_CHORD_FRACTIONS, WIRING_HOLE_DIAMETER_M, holes, label))
     hinge = AILERON_HINGE_FRACTION * chord if _in_span(y / wing.semi_span_m, AILERON_ETA) else None
-    location = bd.Location((wing.x_le_root_m, y, wing.z_at(y)), RIB_ROTATION_DEG)
     family: PartFamily = "doubler" if is_root else "rib"
+    location = _rib_location(wing.x_le_root_m, y, wing.z_at(y), settings.sheet_for(family).thickness_m, is_root)
     return _rib_pieces(label, family, profile, chord, holes, hinge, airfoil, location)
 
 
@@ -147,7 +156,9 @@ def _placed_hole(
         hole = Hole(*camber_point(airfoil, chord, fraction), diameter_m)
         if keeps_web(profile, hole, others):
             return hole
-    raise KitUnavailable(f"no room for a {diameter_m * 1e3:.1f} mm hole in rib {label}")
+    raise KitUnavailable(
+        f"no room for a {diameter_m * 1e3:.1f} mm hole with a {MIN_WEB_M * 1e3:.0f} mm web in rib {label}"
+    )
 
 
 def _pin_hole_m(settings: FabricationSettings) -> float:
@@ -169,14 +180,14 @@ def wing_ribs(
     layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
 ) -> tuple[KitPart, ...]:
     """Right-panel ribs `WR-01…` (+ aileron pieces `WR-kA`, servo plate `WR-SV`), then the left panel `WL-…`."""
-    stations = rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
+    stations = wing_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
     servo_y = _servo_bay_y(stations, layout.wing)
     right = [p for i, y in enumerate(stations) for p in _wing_rib(i, y, servo_y, layout, airfoil, spar, settings)]
     right.append(_servo_plate(layout.wing, servo_y))
-    return tuple(right) + tuple(_mirrored(p, "WR-", "WL-") for p in right)
+    return tuple(right) + tuple(_mirrored(p, "WR-", "WL-", settings) for p in right)
 
 
-def _tail_root_m(layout: AircraftLayout) -> float:
+def _boom_radius_m(layout: AircraftLayout) -> float:
     """Tail surfaces start at the boom skin (or the fuselage skin under the tail)."""
     if layout.tail_boom is not None:
         return layout.tail_boom.diameter_m / 2.0
@@ -184,9 +195,13 @@ def _tail_root_m(layout: AircraftLayout) -> float:
     return fuselage_radius_at(layout, x)
 
 
+def _boom_axis_z(layout: AircraftLayout) -> float:
+    return layout.tail_boom.z_m if layout.tail_boom is not None else layout.htail.z_root_m
+
+
 def tail_spar_tube(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> TubeStock:
     """Smallest stock tube that fits the thinner tail root (no stress check: tail loads are small)."""
-    root = _tail_root_m(layout)
+    root = _boom_radius_m(layout)
     depth = min(spar_depth_at(s, airfoil, settings)(root) for s in (layout.htail, layout.vtail))
     tube = next((t for t in settings.tubes if t.od_m <= depth + FIT_EPS_M), None)
     if tube is None:
@@ -195,43 +210,51 @@ def tail_spar_tube(layout: AircraftLayout, airfoil: AirfoilShape, settings: Fabr
 
 
 def _tail_surface_ribs(
-    prefix: str, surface: SurfacePlanform, place: Callable[[float], bd.Location], start_m: float,
+    prefix: str, surface: SurfacePlanform, place: Callable[[int, float], bd.Location], start_m: float,
     airfoil: AirfoilShape, tube: TubeStock, settings: FabricationSettings,
 ) -> list[KitPart]:
-    """Ribs of one tail surface; the spar hole appears only where the tube fits the local depth."""
-    depth = spar_depth_at(surface, airfoil, settings)
+    """Ribs of one tail surface; the spar hole appears only where it keeps the minimum web (the spar ends
+    inboard of thinner ribs), and the root rib must carry it."""
     parts: list[KitPart] = []
-    for index, span in enumerate(rib_stations(start_m, surface.semi_span_m)):
-        chord = surface.chord_at(span)
-        fits = tube.od_m <= depth(span) + FIT_EPS_M
-        holes = [Hole(*camber_point(airfoil, chord, SPAR_CHORD_STATION), tube.od_m + settings.fit_clearance_m)] if fits else []
-        hinge = TAIL_HINGE_FRACTION * chord if _in_span(span / surface.semi_span_m, TAIL_CONTROL_ETA) else None
+    for index, span in enumerate(wing_rib_stations(start_m, surface.semi_span_m)):
+        label, chord = _label(prefix, index), surface.chord_at(span)
         profile = notched_profile(airfoil, chord, settings)
-        parts += _rib_pieces(_label(prefix, index), "rib", profile, chord, holes, hinge, airfoil, place(span))
+        hole = Hole(*camber_point(airfoil, chord, SPAR_CHORD_STATION), tube.od_m + settings.fit_clearance_m)
+        holes = [hole] if keeps_web(profile, hole, []) else []
+        if index == 0 and not holes:
+            raise KitUnavailable(f"the tail spar does not fit rib {label} with a {MIN_WEB_M * 1e3:.0f} mm web")
+        hinge = TAIL_HINGE_FRACTION * chord if _in_span(span / surface.semi_span_m, TAIL_CONTROL_ETA) else None
+        parts += _rib_pieces(label, "rib", profile, chord, holes, hinge, airfoil, place(index, span))
     return parts
 
 
-def _tail_mount(layout: AircraftLayout, root_m: float) -> KitPart:
-    """Ply saddle on top of the tail boom under the tail roots."""
-    width = max(2.0 * root_m, TAIL_MOUNT_MIN_WIDTH_M)
-    outline = rect_face(0.0, -width / 2.0, layout.htail.root_chord_m, width / 2.0)
-    z = (layout.tail_boom.z_m if layout.tail_boom is not None else layout.htail.z_root_m) + root_m
-    return KitPart("TM-1", "plate", outline, bd.Location((layout.htail.x_le_root_m, 0.0, z), FLAT_ROTATION_DEG))
+def _fin_mount(layout: AircraftLayout, settings: FabricationSettings) -> KitPart:
+    """Ply saddle on top of the tail boom under the fin root: z from the boom top up one plate thickness."""
+    radius, vt = _boom_radius_m(layout), layout.vtail
+    width = max(2.0 * radius, TAIL_MOUNT_MIN_WIDTH_M)
+    outline = rect_face(0.0, -width / 2.0, vt.root_chord_m, width / 2.0)
+    return KitPart("TM-1", "plate", outline, bd.Location((vt.x_le_root_m, 0.0, _boom_axis_z(layout) + radius), FLAT_ROTATION_DEG))
 
 
 def tail_ribs(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> tuple[KitPart, ...]:
-    """Horizontal-tail ribs `HR-…`/`HL-…`, fin ribs `V-…` (split at the hinge) and the mount plate `TM-1`.
+    """Horizontal-tail ribs `HR-…`/`HL-…`, fin ribs `V-…` (split at the hinge) and the fin mount `TM-1`.
 
-    `airfoil` is the tail section (`TAIL_AIRFOIL_NAME` for OpenVSP-built tails).
+    `airfoil` is the tail section (`layout.TAIL_AIRFOIL_NAME` for OpenVSP-built tails). Fin ribs start on
+    top of the mount plate.
     """
-    root = _tail_root_m(layout)
+    radius = _boom_radius_m(layout)
     tube = tail_spar_tube(layout, airfoil, settings)
     ht, vt = layout.htail, layout.vtail
-    right = _tail_surface_ribs(
-        "HR-", ht, lambda y: bd.Location((ht.x_le_root_m, y, ht.z_at(y)), RIB_ROTATION_DEG), root, airfoil, tube, settings
-    )
-    fin = _tail_surface_ribs(
-        "V-", vt, lambda h: bd.Location((vt.x_le_root_m, 0.0, vt.z_root_m + h), FLAT_ROTATION_DEG), root, airfoil, tube, settings
-    )
-    left = [_mirrored(p, "HR-", "HL-") for p in right]
-    return (*right, *left, *fin, _tail_mount(layout, root))
+    t_rib = settings.sheet_for("rib").thickness_m
+    fin_start = _boom_axis_z(layout) + radius + settings.sheet_for("plate").thickness_m - vt.z_root_m
+
+    def htail_at(index: int, y: float) -> bd.Location:
+        return _rib_location(ht.x_le_root_m, y, ht.z_at(y), t_rib, index == 0)
+
+    def fin_at(index: int, h: float) -> bd.Location:
+        return bd.Location((vt.x_le_root_m, 0.0, vt.z_root_m + h), FLAT_ROTATION_DEG)
+
+    right = _tail_surface_ribs("HR-", ht, htail_at, radius, airfoil, tube, settings)
+    fin = _tail_surface_ribs("V-", vt, fin_at, fin_start, airfoil, tube, settings)
+    left = [_mirrored(p, "HR-", "HL-", settings) for p in right]
+    return (*right, *left, *fin, _fin_mount(layout, settings))

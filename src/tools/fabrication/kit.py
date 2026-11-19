@@ -8,7 +8,12 @@ Frame convention (Tasks 3-9 rely on it):
 - `KitPart.location` maps local coordinates into the aircraft frame. The part's 3D solid is the outline
   extruded along local +Z by its sheet thickness (`settings.sheet_for(part.family).thickness_m`), then
   moved by `location`. Wing and horizontal-tail ribs use a +90 deg rotation about x, so local +Z points
-  to aircraft -y; left-panel parts reuse the right-panel outline with the location's y negated.
+  to aircraft -y. Their location origin sits t/2 outboard of the rib station (t = sheet thickness), so
+  the slab spans [y - t/2, y + t/2], centred on the station; a panel's root rib (`WR-01`, `HR-01`)
+  instead lies just outboard of its root station, spanning [y_root, y_root + t], so it stays outside the
+  fuselage skin or tail boom. Left-panel parts reuse the right-panel outline and are placed so their
+  solids are exact y-mirrors of the right-panel solids (for ribs the origin y is t - y_right).
+  Fin ribs (`V-…`) and flat plates are unrotated: they extrude upward (+z) from their origin.
 - Pieces of one split rib (e.g. `WR-07` and its aileron part `WR-07A`) share the same location, so the
   pieces sit side by side exactly as cut from the full rib.
 """
