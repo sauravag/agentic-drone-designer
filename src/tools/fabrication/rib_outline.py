@@ -5,6 +5,7 @@ y in the airfoil thickness direction. Outlines are nominal (no kerf)
 and follow the airfoil exactly: the iron-on film covering adds no thickness.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Final, Iterable, Sequence
 
@@ -124,3 +125,10 @@ def drill(face: bd.Face, holes: Sequence[Hole], label: str) -> bd.Face:
     if len(result) != 1 or len(result[0].inner_wires()) != len(face.inner_wires()) + len(holes):
         raise KitUnavailable(f"a hole breaks out of rib {label}")
     return result[0]
+
+
+def oblique_diameter_m(od_m: float, thickness_m: float, lean: float) -> float:
+    """Round hole (before fit clearance) that clears a rod of `od_m` crossing a slab of `thickness_m` along a line
+    leaning `lean` (off-normal travel per unit along the normal): the section is an ellipse od / cos long that also
+    walks t tan across the thickness (R19)."""
+    return od_m * math.hypot(1.0, lean) + thickness_m * lean

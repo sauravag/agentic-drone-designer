@@ -8,7 +8,7 @@ import build123d as bd
 import pytest
 
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil
-from src.tools.aero_cad.layout import AILERON_ETA, TAIL_AIRFOIL_NAME, TAIL_CONTROL_ETA
+from src.tools.aero_cad.layout import AILERON_ETA, TAIL_AIRFOIL_NAME, TAIL_CONTROL_ETA, fuselage_radius_at
 from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.schemas.fabrication import TubeStock
@@ -22,6 +22,7 @@ from src.tools.fabrication.wing_parts import (
     wing_ribs,
 )
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
+from src.tools.fabrication.fuselage_parts import socket_axis_m
 
 TOL_M = 1e-6
 
@@ -53,24 +54,34 @@ def _x_range(face: bd.Face) -> tuple[float, float]:
     return box.min.X, box.max.X
 
 
+def _wing_hole_m(layout, od_m: float, thickness_m: float, clearance_m: float, fraction: float = 0.25) -> float:
+    """R19: OD/cos(lean) + t tan(lean) + clearance for a rod on the wing's `fraction` line."""
+    span = layout.wing.semi_span_m
+    (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, span, fraction)
+    lean = math.hypot(x1 - x0, z1 - z0) / span
+    return od_m * math.hypot(1.0, lean) + thickness_m * lean + clearance_m
+
+
 def test_rib_hole_matches_the_tube_through_it(g1_kit_inputs, ribs):
     outer = ribs_by_label(ribs)["WR-05"]
-    spar, settings = g1_kit_inputs[2], g1_kit_inputs[3]
+    layout, spar, settings = g1_kit_inputs[0], g1_kit_inputs[2], g1_kit_inputs[3]
     y = _station(outer, settings)
     tube = next(s.tube for s in spar.segments if s.y_start_m < y <= s.y_end_m)  # inboard member on a step
-    assert hole_diameters(outer.outline)[0] == pytest.approx(tube.od_m + 0.0002, abs=1e-6)
+    expected = _wing_hole_m(layout, tube.od_m, settings.sheet_for("rib").thickness_m, 0.0002)
+    assert hole_diameters(outer.outline)[0] == pytest.approx(expected, abs=1e-6)
 
 
 @pytest.mark.parametrize("inputs", ["g1_kit_inputs", "g2_kit_inputs"])
 def test_every_wing_rib_hole_is_its_spar_member_plus_clearance(inputs, request):
     """The socket stays inside the fuselage, so no rib carries a socket hole (R11)."""
     kit_inputs = request.getfixturevalue(inputs)
-    _, _, spar, settings = kit_inputs
+    layout, _, spar, settings = kit_inputs
     ribs = wing_ribs(*kit_inputs)
     for rib in _main_ribs(ribs, "WR-"):
         y = _station(rib, settings)
         tube = next(s.tube for s in spar.segments if y <= s.y_end_m + 1e-12)  # step on a rib: inboard member
-        assert hole_diameters(rib.outline)[0] == pytest.approx(tube.od_m + settings.fit_clearance_m, abs=TOL_M), rib.label
+        expected = _wing_hole_m(layout, tube.od_m, settings.sheet_for(rib.family).thickness_m, settings.fit_clearance_m)
+        assert hole_diameters(rib.outline)[0] == pytest.approx(expected, abs=TOL_M), rib.label
 
 
 def _assert_mirrored(parts, right_prefix: str, left_prefix: str, settings) -> None:
@@ -189,10 +200,11 @@ def test_root_rib_is_a_3mm_doubler_with_pin_hole(g1_kit_inputs, ribs):
     root = ribs_by_label(ribs)["WR-01"]
     chord = layout.wing.chord_at(_station(root, settings))
     pin = next(w for w in root.outline.inner_wires()
-               if hole_centre(w).X == pytest.approx(PIN_CHORD_FRACTION * chord, abs=TOL_M))
+               if hole_centre(w).X == pytest.approx(PIN_CHORD_FRACTION * chord, abs=1e-3))  # R19: at mid-slab (exact check below)
     assert PIN_CHORD_FRACTION == pytest.approx(0.70)
-    assert hole_centre(pin).Y == pytest.approx(camber_at(airfoil, 0.70) * chord, abs=TOL_M)
-    assert 2 * pin.edges()[0].radius == pytest.approx(0.004 + settings.fit_clearance_m, abs=TOL_M)
+    assert hole_centre(pin).Y == pytest.approx(camber_at(airfoil, 0.70) * chord, abs=1e-3)
+    expected = _wing_hole_m(layout, 0.004, 0.003, settings.fit_clearance_m, PIN_CHORD_FRACTION)
+    assert 2 * pin.edges()[0].radius == pytest.approx(expected, abs=TOL_M)
     assert all(p.family == "rib" for p in _main_ribs(ribs, "WR-")[1:])
 
 
@@ -239,8 +251,7 @@ def test_tail_spar_is_the_smallest_tube_that_fits(g1_kit_inputs, tails):
     tube = tail_spar_tube(layout, load_airfoil(TAIL_AIRFOIL_NAME), settings)
     assert tube == settings.tubes[0]
     root = ribs_by_label(tails)["HR-01"]
-    assert hole_diameters(root.outline)[0] == pytest.approx(tube.od_m + settings.fit_clearance_m, abs=TOL_M)
-    assert ribs_by_label(tails)["TM-1"].family == "plate"
+    assert tube.od_m + settings.fit_clearance_m <= hole_diameters(root.outline)[0] <= tube.od_m + 0.001  # R19
 
 
 def test_tail_too_thin_for_any_tube_is_unavailable(g1_kit_inputs):
@@ -263,16 +274,69 @@ def test_wiring_hole_runs_from_the_servo_bay_to_the_root(g1_kit_inputs, ribs):
         assert len(wiring) == (1 if _station(rib, g1_kit_inputs[3]) < servo_y else 0), rib.label
 
 
-def test_fin_sits_on_a_mount_saddle_on_the_boom(g1_kit_inputs, tails):
+def _skin_over(layout, x0: float, x1: float) -> float:
+    """Largest fuselage skin radius over [x0, x1] (r is piecewise linear: ends and profile corners bound it)."""
+    from src.tools.fabrication.fuselage_parts import profile_corners
+    return max(fuselage_radius_at(layout, x) for x in (x0, x1, *profile_corners(layout, x0, x1)))
+
+
+def test_fin_sits_on_a_mount_saddle_on_the_boom_where_the_boom_is_the_limit(g1_kit_inputs):
+    """R9 / R20: a fin whose root chord lies aft of the fuselage sits on TM-1 on top of the boom."""
     layout, _, _, settings = g1_kit_inputs
-    by = ribs_by_label(tails)
-    r_boom = layout.tail_boom.z_m + layout.tail_boom.diameter_m / 2
+    vt = dataclasses.replace(layout.vtail, x_le_root_m=layout.fuselage_length_m)
+    aft = dataclasses.replace(layout, vtail=vt)
+    by = ribs_by_label(tail_ribs(aft, load_airfoil(TAIL_AIRFOIL_NAME), settings))
+    r_boom = aft.tail_boom.z_m + aft.tail_boom.diameter_m / 2
     t_plate = settings.sheet_for("plate").thickness_m
     mount = part_solid(by["TM-1"], settings).bounding_box()
     assert (mount.min.Z, mount.max.Z) == pytest.approx((r_boom, r_boom + t_plate), abs=1e-9)
-    vt = layout.vtail
     assert (mount.min.X, mount.max.X) == pytest.approx((vt.x_le_root_m, vt.x_le_root_m + vt.root_chord_m), abs=1e-9)
     assert part_solid(by["V-01"], settings).bounding_box().min.Z == pytest.approx(r_boom + t_plate, abs=1e-9)
+
+
+def test_tail_roots_start_outside_the_fuselage_skin(g1_kit_inputs, tails):
+    """R20: on g1 the tail roots lie over the tail cone, so HR-01/HL-01 and V-01 start on the skin; no TM-1."""
+    layout, _, _, settings = g1_kit_inputs
+    by = ribs_by_label(tails)
+    ht, vt, boom = layout.htail, layout.vtail, layout.tail_boom
+    root_y = max(boom.diameter_m / 2, _skin_over(layout, ht.x_le_root_m, ht.x_le_root_m + ht.root_chord_m))
+    assert root_y > boom.diameter_m / 2  # the skin is the limit on g1
+    assert part_solid(by["HR-01"], settings).bounding_box().min.Y == pytest.approx(root_y, abs=1e-9)
+    assert part_solid(by["HL-01"], settings).bounding_box().max.Y == pytest.approx(-root_y, abs=1e-9)
+    fin_z = max(boom.z_m + boom.diameter_m / 2, _skin_over(layout, vt.x_le_root_m, vt.x_le_root_m + vt.root_chord_m))
+    assert part_solid(by["V-01"], settings).bounding_box().min.Z == pytest.approx(fin_z, abs=1e-9)
+    assert "TM-1" not in by
+
+
+def _wing_lean(layout, fraction: float) -> float:
+    span = layout.wing.semi_span_m
+    (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, span, fraction)
+    return math.hypot(x1 - x0, z1 - z0) / span
+
+
+def _hole_near(part: KitPart, x_m: float) -> bd.Wire:
+    return min(part.outline.inner_wires(), key=lambda w: abs(hole_centre(w).X - x_m))
+
+
+def test_rib_holes_follow_the_leaning_line_through_the_slab(g1_kit_inputs, ribs):
+    """R19: a hole crossed by a leaning line sits where the line crosses the slab mid-plane and is
+    OD/cos(lean) + t tan(lean) + clearance across."""
+    layout, _, spar, settings = g1_kit_inputs
+    by, wing, clr = ribs_by_label(ribs), layout.wing, settings.fit_clearance_m
+    t_root, t_rib = settings.sheet_for("doubler").thickness_m, settings.sheet_for("rib").thickness_m
+    joint, station = spar.joint_y_m, spar.joint_y_m + 2 * RIB_PITCH_M
+    member = next(s.tube for s in spar.segments if station <= s.y_end_m + 1e-12)
+    cases = (("WR-01", joint, joint + t_root / 2, 0.25, spar.segments[0].tube.od_m, t_root),
+             ("WR-01", joint, joint + t_root / 2, PIN_CHORD_FRACTION, 0.004, t_root),
+             ("WR-03", station, station, 0.25, member.od_m, t_rib))
+    for label, y, mid, fraction, od, t in cases:
+        x, z = socket_axis_m(layout, mid, fraction)
+        lean = _wing_lean(layout, fraction)
+        wire = _hole_near(by[label], x - wing.x_le_root_m)
+        centre = hole_centre(wire)
+        assert (centre.X, centre.Y) == pytest.approx((x - wing.x_le_root_m, z - wing.z_at(y)), abs=1e-7), label
+        expected = od * math.hypot(1.0, lean) + t * lean + clr
+        assert 2 * wire.edges()[0].radius == pytest.approx(expected, abs=1e-7), label
 
 
 # ------------------------------------------------------------------ Task 5: fittings and bed splitting ---

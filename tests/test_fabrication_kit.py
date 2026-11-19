@@ -74,7 +74,6 @@ def _mitre_name(label: str) -> str:
     return f"socket {label}" if label in MITRE_LABELS else label
 
 
-@pytest.mark.xfail(strict=True, reason="R19/R20 pending")
 @pytest.mark.parametrize("case", ["g1", "g2"])
 def test_every_reference_design_in_group_1_2_gets_a_kit(case, request):
     """g1 (4.1 kg fixed wing) and g2 (19.4 kg quadplane) with real components: nothing intersects but the

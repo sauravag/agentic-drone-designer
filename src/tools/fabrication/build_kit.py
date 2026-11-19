@@ -9,10 +9,11 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
 - `PN-R`, `PN-L` 4 mm anti-rotation pins on the 70 % chord line, from the wing-box plate's inner face to
   PIN_REACH_M outboard of the root doubler (R18).
 - `TB-1`, `LB-R`, `LB-L` booms as `boom_parts` places them.
-- `TS-HR`, `TS-HL` horizontal-tail spars from the boom skin and `TS-V` fin spar from the top of `TM-1`, each out
+- `TS-HR`, `TS-HL` horizontal-tail spars from the tail root (boom or fuselage skin, R20) and `TS-V` fin spar from
+  the fin start (top of `TM-1`, or the skin), each out
   to the tip or to where the tail's depth stops admitting it, short of the first rib too thin for its hole (the
   tail ribs' own rule). A tube's end faces are square to its axis, which
-  leans (taper), so a tail spar starts just far enough off the boom skin / mount plate for its rim to clear it.
+  leans (taper), so a tail spar starts just far enough off its root surface for its rim to clear it.
 Linear stock (balsa, `stringer_density_kg_m3`): `ST-1…` stringers in the former notches from the first former
 after the firewall to the aft face of the last former; `LE-…` / `TE-…` strips per wing panel and tail surface.
 Covering: film over both faces of the wing and tails (2 x planform), fuselage cover over the pod's lateral area.
@@ -56,7 +57,7 @@ from src.tools.fabrication.kit import (
     TubeRole,
     Vec3,
 )
-from src.tools.fabrication.rib_outline import Hole, camber_point, keeps_web, notched_profile
+from src.tools.fabrication.rib_outline import camber_point, keeps_web, notched_profile
 from src.tools.fabrication.tubes import FIT_EPS_M, SparPlan, depth_limit_m, joint_y_m, plan_spar
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
@@ -65,6 +66,7 @@ from src.tools.fabrication.wing_parts import (
     spar_depth_at,
     tail_ribs,
     tail_root_radius_m,
+    tail_spar_hole,
     tail_spar_tube,
     wing_rib_stations,
     wing_ribs,
@@ -167,10 +169,9 @@ def _first_rib_without_hole(surface: SurfacePlanform, start_m: float, airfoil: A
                             settings: FabricationSettings) -> Optional[float]:
     """Station of the first rib too thin to carry the spar hole with the minimum web (the rule `tail_ribs`
     drills by), or None when every rib carries it."""
-    for s in wing_rib_stations(start_m, surface.semi_span_m):
-        chord = surface.chord_at(s)
-        hole = Hole(*camber_point(airfoil, chord, SPAR_CHORD_STATION), tube.od_m + settings.fit_clearance_m)
-        if not keeps_web(notched_profile(airfoil, chord, settings), hole, []):
+    for index, s in enumerate(wing_rib_stations(start_m, surface.semi_span_m)):
+        hole = tail_spar_hole(surface, airfoil, tube, index, s, settings)
+        if not keeps_web(notched_profile(airfoil, surface.chord_at(s), settings), hole, []):
             return s
     return None
 

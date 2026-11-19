@@ -50,6 +50,7 @@ from src.tools.fabrication.rib_outline import (
     drill,
     keeps_web,
     lightening_holes,
+    oblique_diameter_m,
     rect_face,
 )
 from src.tools.fabrication.tubes import BISECTION_ITERATIONS, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
@@ -334,9 +335,7 @@ def _oblique_diameter_m(layout: AircraftLayout, fraction: float, od_m: float, th
     slightly longer ellipse (od / cos) that also walks across the thickness (t tan)."""
     span = layout.wing.semi_span_m
     (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, span, fraction)
-    lean = math.hypot(x1 - x0, z1 - z0) / span  # off-normal travel per unit span
-    cos_lean = 1.0 / math.hypot(1.0, lean)
-    return od_m / cos_lean + thickness_m * lean
+    return oblique_diameter_m(od_m, thickness_m, math.hypot(x1 - x0, z1 - z0) / span)
 
 
 def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, y_m: float) -> tuple[Hole, Hole]:
