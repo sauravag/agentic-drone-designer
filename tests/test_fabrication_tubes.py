@@ -78,12 +78,8 @@ def test_step_down_with_no_nested_tube_is_unavailable():
 
 def test_tip_depth_is_checked():
     depth = lambda y: 0.03 if y < 1.4 - 1e-9 else 0.012
-    try:
-        plan = plan_spar(5.0, 1.4, 0.06, depth, None, DEFAULT_FABRICATION)
-    except KitUnavailable as exc:
-        assert "no stock tube fits the wing at y = 1.400" in str(exc)
-    else:
-        assert plan.segments[-1].tube.od_m <= 0.012
+    with pytest.raises(KitUnavailable, match="no stock tube fits the wing at y = 1.400"):
+        plan_spar(5.0, 1.4, 0.06, depth, None, DEFAULT_FABRICATION)
 
 
 def test_no_step_plan_is_one_segment_to_the_tip():
@@ -132,7 +128,7 @@ def _wing_depth(case: str):
     diameter = layout.fuselage_diameter_m
     depth = lambda y: usable_depth_m(ratio * layout.wing.chord_at(y), DEFAULT_FABRICATION)
     joint = joint_y_m(diameter / 2.0, WING_Z_FRACTION * diameter)
-    boom_y = layout.vtol_booms[0].y_m if layout.vtol_booms else None
+    boom_y = max(abs(b.y_m) for b in layout.vtol_booms) if layout.vtol_booms else None
     return sizing, layout, depth, joint, boom_y
 
 
@@ -148,3 +144,20 @@ def test_reference_designs_get_a_spar(case, root_mm):
         assert seg.tube.od_m <= depth(seg.y_end_m) + 1e-9
     if case == "g1":
         assert plan.segments[-1].tube.od_m <= 0.006 + 1e-9
+
+
+def test_several_steps_fit_between_two_rib_stations():
+    def depth(y: float) -> float:
+        return 0.050 - 0.028 * min(max((y - 1.45) / 0.10, 0.0), 1.0)
+
+    plan = plan_spar(25.0, 2.1, 0.1, depth, None, DEFAULT_FABRICATION)
+    inside = [s for s in plan.segments if 1.45 <= s.y_start_m <= 1.55]
+    assert len(inside) >= 2
+    for seg in plan.segments:
+        assert seg.y_end_m > seg.y_start_m
+        assert seg.tube.od_m <= depth(seg.y_end_m) + 1e-9
+
+
+def test_negative_boom_distance_is_rejected():
+    with pytest.raises(ValueError, match="boom_y_m"):
+        plan_spar(5.0, 1.4, 0.06, lambda y: 0.030, -0.5, DEFAULT_FABRICATION)

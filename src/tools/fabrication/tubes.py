@@ -146,6 +146,8 @@ def plan_spar(
     settings: FabricationSettings,
 ) -> SparPlan:
     """Size a telescoping tube spar from the fuselage joint to the tip, plus its socket."""
+    if boom_y_m is not None and boom_y_m < 0.0:
+        raise ValueError(f"boom_y_m must be a distance from the centreline, got {boom_y_m}")
     root_moment = _moment_at(mtow_kg, semi_span_m, joint_y_m, boom_y_m, settings)
     root_depth = depth_at(joint_y_m)
     root = next(
@@ -157,20 +159,17 @@ def plan_spar(
 
     segments: list[SparSegment] = []
     current, start = root, joint_y_m
-    stations = _stations(joint_y_m, semi_span_m)
-    for inboard, y in zip(stations, stations[1:]):
-        depth = depth_at(y)
-        if depth >= current.od_m - FIT_EPS_M:
-            continue
-        y_step = _step_position(depth_at, current.od_m, max(inboard, start), y)
-        if y_step <= start + FIT_EPS_M:
-            raise _unavailable_at(y)
-        moment = _moment_at(mtow_kg, semi_span_m, y_step, boom_y_m, settings)
-        smaller = _step_down(current, depth, moment, settings)
-        if smaller is None:
-            raise _unavailable_at(y)
-        segments.append(SparSegment(current, start, y_step))
-        current, start = smaller, y_step
+    for y in _stations(joint_y_m, semi_span_m)[1:]:
+        while depth_at(y) < current.od_m - FIT_EPS_M:
+            y_step = _step_position(depth_at, current.od_m, start, y)
+            if y_step <= start + FIT_EPS_M:
+                raise _unavailable_at(y)
+            moment = _moment_at(mtow_kg, semi_span_m, y_step, boom_y_m, settings)
+            smaller = _step_down(current, depth_at(y_step), moment, settings)
+            if smaller is None:
+                raise _unavailable_at(y)
+            segments.append(SparSegment(current, start, y_step))
+            current, start = smaller, y_step
     segments.append(SparSegment(current, start, semi_span_m))
 
     centre_moment = _moment_at(mtow_kg, semi_span_m, 0.0, boom_y_m, settings)
