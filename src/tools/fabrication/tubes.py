@@ -89,10 +89,10 @@ def _unavailable_at(y_m: float) -> KitUnavailable:
 
 
 def _stations(joint_m: float, semi_span_m: float) -> list[float]:
-    """Every rib pitch outboard of the joint, strictly inside the span, then the tip."""
+    """Joint, every rib pitch outboard strictly inside the span, then the tip."""
     count = int(math.floor((semi_span_m - joint_m) / RIB_PITCH_M))
     inner = [joint_m + k * RIB_PITCH_M for k in range(1, count + 1)]
-    return [y for y in inner if y < semi_span_m - FIT_EPS_M] + [semi_span_m]
+    return [joint_m] + [y for y in inner if y < semi_span_m - FIT_EPS_M] + [semi_span_m]
 
 
 def _step_down(
@@ -138,16 +138,20 @@ def plan_spar(
 
     segments: list[SparSegment] = []
     current, start = root, joint_y_m
-    for y in _stations(joint_y_m, semi_span_m):
+    stations = _stations(joint_y_m, semi_span_m)
+    for inboard, y in zip(stations, stations[1:]):
         depth = depth_at(y)
         if depth >= current.od_m - FIT_EPS_M:
             continue
-        moment = _moment_at(mtow_kg, semi_span_m, y, boom_y_m, settings)
+        # The bay [inboard, y] must already hold the thinner tube, so the step sits at `inboard`.
+        if inboard <= start + FIT_EPS_M:
+            raise _unavailable_at(y)
+        moment = _moment_at(mtow_kg, semi_span_m, inboard, boom_y_m, settings)
         smaller = _step_down(current, depth, moment, settings)
         if smaller is None:
             raise _unavailable_at(y)
-        segments.append(SparSegment(current, start, y))
-        current, start = smaller, y
+        segments.append(SparSegment(current, start, inboard))
+        current, start = smaller, inboard
     segments.append(SparSegment(current, start, semi_span_m))
 
     centre_moment = _moment_at(mtow_kg, semi_span_m, ROOT_SPAN_M, boom_y_m, settings)

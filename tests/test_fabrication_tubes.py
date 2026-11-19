@@ -84,3 +84,18 @@ def test_no_step_plan_is_one_segment_to_the_tip():
     plan = plan_spar(5.0, 1.4, 0.06, lambda y: 0.030, None, DEFAULT_FABRICATION)
     assert len(plan.segments) == 1
     assert plan.segments[0].y_end_m == pytest.approx(1.4)
+
+
+@pytest.mark.parametrize(
+    "depth",
+    [
+        lambda y: 0.030 if y < 0.8 else 0.017,
+        lambda y: 0.030 if y < 1.4 - 1e-9 else 0.017,
+    ],
+)
+def test_every_segment_fits_its_outboard_end(depth):
+    plan = plan_spar(5.0, 1.4, 0.06, depth, None, DEFAULT_FABRICATION)
+    for seg in plan.segments:
+        assert seg.y_end_m > seg.y_start_m
+        assert seg.tube.od_m <= depth(seg.y_end_m) + 1e-9
+    assert plan.segments[-1].y_end_m == pytest.approx(1.4)
