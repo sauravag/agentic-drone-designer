@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Final, Optional
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
+from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M
 from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.units import G0
 
@@ -68,6 +69,19 @@ def bending_stress_pa(tube: TubeStock, moment_nm: float) -> float:
 def joint_y_m(fuselage_radius_m: float, wing_z_m: float) -> float:
     """Span station where the wing spar meets the fuselage skin."""
     return math.sqrt(max(fuselage_radius_m**2 - wing_z_m**2, 0.0))
+
+
+def boom_tube(diameter_m: float, settings: FabricationSettings) -> TubeStock:
+    """Stock tube for a boom of layout `diameter_m`: the largest tube of at least MIN_BOOM_DIAMETER_M that is no
+    wider than the layout boom, or, when the layout boom is thinner than that floor, the smallest floor tube."""
+    floor_m = MIN_BOOM_DIAMETER_M - FIT_EPS_M
+    within = [t for t in settings.tubes if floor_m <= t.od_m <= diameter_m + FIT_EPS_M]
+    if within:
+        return within[-1]  # tubes are sorted by OD
+    floor = next((t for t in settings.tubes if t.od_m >= floor_m), None)
+    if floor is None:
+        raise KitUnavailable(f"no stock tube for a {diameter_m * 1e3:.0f} mm boom")
+    return floor
 
 
 def usable_depth_m(local_thickness_m: float, settings: FabricationSettings) -> float:

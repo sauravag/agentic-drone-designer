@@ -11,9 +11,12 @@
   r(station) - cover.
 - Firewall `FW-1a`, `FW-1b`: two solid discs laminated face to face at the first station. The cruise motor is a
   tractor ahead of the nose (outside the pod), so the firewall takes the former station nearest to it.
-- Wing-mount side plates `WM-L`, `WM-R`: vertical plates (xz plane) standing on the crutch, carrying the socket
-  tube that spans the fuselage between them and the wing's anti-rotation pin. Formers they cross get a matching
-  notch. Local X -> x, local Y -> z; WM-R extrudes toward -y from its outer face, WM-L is its mirror.
+- Wing-box side plates `WM-L`, `WM-R`: vertical plates (xz plane) in the upper fuselage, from the forward socket
+  former to a former just aft of the root pin, tabbed into both; formers in between get the plate's section cut
+  out. Each carries its wing's socket tube (coaxial with that wing's spar, so following the dihedral; the two
+  meet at the centreline) and the anti-rotation pin. They stop MIN_WEB_M under the socket hole, so components
+  on the axis pass underneath. Local X -> x, local Y -> z; WM-R extrudes toward -y from its outer face, WM-L is
+  its mirror.
 
 Openings, slots and notches keep a `MIN_WEB_M` web; anything that would break a part raises `KitUnavailable`.
 Slots are cut at the mating stock's nominal thickness; kerf is applied at DXF export.
@@ -45,7 +48,7 @@ from src.tools.fabrication.rib_outline import (
     lightening_holes,
     rect_face,
 )
-from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan
+from src.tools.fabrication.tubes import BISECTION_ITERATIONS, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, pin_hole_m
 
 FORMER_PITCH_M: Final[float] = 0.12
@@ -60,9 +63,9 @@ FORMER_TAB_INSET_M: Final[float] = 0.003  # tab outer edge inboard of the former
 CRUTCH_TAIL_MARGIN_M: Final[float] = 0.010  # crutch runs this far past the last former's aft face
 BOOM_SLOT_LEAD_M: Final[float] = 0.010  # crutch slot for the tail boom starts this far ahead of its first sleeve
 BOOM_SLEEVE_FORMERS: Final[int] = 2
-MOUNT_EDGE_MARGIN_M: Final[float] = 0.004  # wing-mount plate edge beyond the socket / pin holes
-MOUNT_TAB_LENGTH_M: Final[float] = 0.010
-MOUNT_TAB_INSET_M: Final[float] = 0.004  # tab start from each plate end
+PIN_FORMER_GAP_M: Final[float] = 0.010  # the wing-box's aft former sits this far aft of the root pin
+MOUNT_TAB_INSET_M: Final[float] = 0.004  # wing-box tabs are this much shorter than the plate, top and bottom
+MOUNT_TAB_MIN_HEIGHT_M: Final[float] = 0.004
 LIGHTENING_POLAR: Final[tuple[tuple[float, float], ...]] = ((0.50, 90.0), (0.62, 35.0), (0.62, 145.0))  # (r/R, deg)
 AREA_EPS_M2: Final[float] = 1e-10
 REACH_FACTOR: Final[float] = 2.0  # half-plane cutters extend this many radii
@@ -73,15 +76,17 @@ DOWN: Final[int] = -1
 
 @dataclass(frozen=True)
 class _Mount:
-    """Wing-mount side plate: x/z extent (aircraft), y of its faces (right side), holes in (x, z)."""
+    """Wing-box side plate (right side; the left is its mirror). x runs from the forward socket former's front face
+    to the pin former's aft face: the plate body spans the gap between the two, its tabs fill their slots."""
 
     x_min_m: float
     x_max_m: float
-    z_top_m: float
+    body_x_m: tuple[float, float]
+    z_m: tuple[float, float]  # plate bottom, top
+    tab_z_m: tuple[float, float]
     y_inner_m: float
     y_outer_m: float
-    holes: tuple[Hole, Hole]  # socket, pin
-    tabs: tuple[tuple[float, float], tuple[float, float]]  # x ranges of the two crutch tabs
+    holes: tuple[Hole, Hole]  # socket, pin, in (x, z)
 
 
 @dataclass(frozen=True)
@@ -166,61 +171,110 @@ def _station_location(x_m: float) -> bd.Location:
 
 
 # ------------------------------------------------------------------------------------- stations ---
-def _root_camber_point(layout: AircraftLayout, fraction: float) -> tuple[float, float]:
+def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0, fraction: float = SPAR_CHORD_STATION) -> tuple[float, float]:
+    """(x, z) where a wing's spar axis (or, with `fraction`, its chord line at that fraction on the camber line)
+    crosses span station y. Each socket tube is coaxial with its own wing's spar, so it follows the dihedral and
+    meets the other at the centreline (y = 0)."""
     wing = layout.wing
-    dx, dz = camber_point(load_airfoil(layout.airfoil), wing.root_chord_m, fraction)
-    return wing.x_le_root_m + dx, wing.z_root_m + dz
+    chord = wing.chord_at(y_m)
+    dx, dz = camber_point(load_airfoil(layout.airfoil), chord, fraction)
+    return wing.x_le_root_m + dx, wing.z_at(y_m) + dz
 
 
-def socket_axis_m(layout: AircraftLayout) -> tuple[float, float]:
-    """(x, z) of the socket tube axis: the wing spar point at the root (25 % root chord on the camber line)."""
-    return _root_camber_point(layout, SPAR_CHORD_STATION)
+def _mount_stations(layout: AircraftLayout, spar: SparPlan) -> tuple[float, float, float]:
+    """(fore, aft, pin) former stations: either side of the x band the two socket tubes sweep (OD/2 + 10 mm
+    clear), and just aft of the root pin, where the wing-box plates end."""
+    xs = [socket_axis_m(layout, y)[0] for y in (0.0, spar.joint_y_m)]
+    offset = spar.socket.od_m / 2.0 + SOCKET_FORMER_GAP_M
+    pin = socket_axis_m(layout, 0.0, PIN_CHORD_FRACTION)[0] + PIN_FORMER_GAP_M  # the root is the widest chord
+    return min(xs) - offset, max(xs) + offset, pin
 
 
 def former_stations(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> tuple[float, ...]:
-    """Every FORMER_PITCH_M from FIRST_FORMER_FRACTION to TAIL_BOOM_START_FRACTION of the length, plus a station
-    either side of the socket (socket OD/2 + 10 mm from its axis). Regular stations within STATION_MERGE_M of
-    those two, or between them, are dropped so no former meets the socket. (`settings` keeps the part-builder
-    signature uniform; stations do not depend on it.)"""
+    """Every FORMER_PITCH_M from FIRST_FORMER_FRACTION to TAIL_BOOM_START_FRACTION of the length, plus the two
+    socket stations and the pin station (`_mount_stations`). Regular stations within STATION_MERGE_M of those,
+    or between the two socket stations, are dropped so no former meets the socket. (`settings` keeps the
+    part-builder signature uniform; stations do not depend on it.)"""
     length = layout.fuselage_length_m
     first, last = FIRST_FORMER_FRACTION * length, TAIL_BOOM_START_FRACTION * length
     count = math.floor((last - first) / FORMER_PITCH_M + STATION_EPS) + 1
-    x_s = socket_axis_m(layout)[0]
-    offset = spar.socket.od_m / 2.0 + SOCKET_FORMER_GAP_M
-    fore, aft = x_s - offset, x_s + offset
+    fore, aft, pin = _mount_stations(layout, spar)
+
+    def is_kept(x: float) -> bool:
+        near = any(abs(x - m) < STATION_MERGE_M for m in (fore, aft, pin))
+        return not (near or fore < x < aft)
+
     regular = (first + k * FORMER_PITCH_M for k in range(count))
-    kept = [x for x in regular if not fore - STATION_MERGE_M < x < aft + STATION_MERGE_M]
-    return tuple(sorted((*kept, fore, aft)))
+    return tuple(sorted((*(x for x in regular if is_kept(x)), fore, aft, pin)))
 
 
 # ------------------------------------------------------------------------------- wing-mount plates ---
+def _oblique_diameter_m(layout: AircraftLayout, fraction: float, od_m: float, thickness_m: float) -> float:
+    """Round hole that clears a rod of `od_m` crossing a plate of `thickness_m` along that wing's line at
+    `fraction` chord: the line leans off the plate normal (y) by dihedral and taper sweep, so its section is a
+    slightly longer ellipse (od / cos) that also walks across the thickness (t tan)."""
+    (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, 1.0, fraction)
+    lean = math.hypot(x1 - x0, z1 - z0)  # off-normal travel per metre of span
+    cos_lean = 1.0 / math.hypot(1.0, lean)
+    return od_m / cos_lean + thickness_m * lean
+
+
+def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, y_m: float) -> tuple[Hole, Hole]:
+    """Socket and pin holes (x, z) where each wing's spar axis / pin line crosses the plate mid-plane at y, sized
+    for the rod's oblique crossing plus the fit clearance."""
+    t = settings.sheet_for("plate").thickness_m
+    socket_d = _oblique_diameter_m(layout, SPAR_CHORD_STATION, spar.socket.od_m, t) + settings.fit_clearance_m
+    pin_d = _oblique_diameter_m(layout, PIN_CHORD_FRACTION, pin_hole_m(settings) - settings.fit_clearance_m, t)
+    socket = Hole(*socket_axis_m(layout, y_m), socket_d)
+    pin = Hole(*socket_axis_m(layout, y_m, PIN_CHORD_FRACTION), pin_d + settings.fit_clearance_m)
+    return socket, pin
+
+
+def _plate_outer_y(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, rim_m: float) -> float:
+    """Outer face y: as far out as possible (never past the skin joint) while both holes keep MIN_WEB_M below the
+    rim line sqrt(rim^2 - y^2), which keeps a MIN_WEB_M web on every former the plate passes through."""
+    t = settings.sheet_for("plate").thickness_m
+
+    def fits(y: float) -> bool:
+        top = max(h.y_m + h.diameter_m / 2.0 for h in _plate_holes(layout, spar, settings, y - t / 2.0)) + MIN_WEB_M
+        return y < rim_m and math.sqrt(rim_m**2 - y**2) >= top
+
+    lo, hi = t, spar.joint_y_m
+    if fits(hi):
+        return hi
+    if not fits(lo):
+        raise KitUnavailable(f"the wing-box plates do not fit under the skin at the socket ({rim_m * 1e3:.0f} mm rim)")
+    for _ in range(BISECTION_ITERATIONS):
+        lo, hi = ((lo + hi) / 2.0, hi) if fits((lo + hi) / 2.0) else (lo, (lo + hi) / 2.0)
+    return lo
+
+
 def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> _Mount:
-    """Plate from just ahead of the socket hole to just aft of the pin hole, standing on the crutch, its outer
-    face as far out as the formers it crosses allow (a MIN_WEB_M rim above its top corner) and never outboard
-    of the skin joint, so the socket (|y| <= joint) passes through it."""
-    (x_s, z_s), (x_p, z_p) = socket_axis_m(layout), _root_camber_point(layout, PIN_CHORD_FRACTION)
-    socket = Hole(x_s, z_s, spar.socket.od_m + settings.fit_clearance_m)
-    pin = Hole(x_p, z_p, pin_hole_m(settings))
-    x0 = socket.x_m - socket.diameter_m / 2.0 - MOUNT_EDGE_MARGIN_M
-    x1 = pin.x_m + pin.diameter_m / 2.0 + MOUNT_EDGE_MARGIN_M
-    z_top = max(socket.y_m + socket.diameter_m / 2.0, pin.y_m + pin.diameter_m / 2.0) + MOUNT_EDGE_MARGIN_M
-    skin = min(fuselage_radius_at(layout, x) for x in (x0, x1, *_profile_corners(layout, x0, x1)))
-    rim = skin - settings.fuselage_cover_thickness_m - MIN_WEB_M
-    if rim <= z_top:
-        raise KitUnavailable(f"the wing-mount plates do not fit inside the fuselage at x = {x_s:.3f} m")
-    y_outer = min(math.sqrt(rim**2 - z_top**2), spar.joint_y_m)
-    y_inner = y_outer - settings.sheet_for("plate").thickness_m
-    if y_inner <= 0.0:
-        raise KitUnavailable(f"the fuselage is too narrow for the wing-mount plates at x = {x_s:.3f} m")
-    tab_fore = (x0 + MOUNT_TAB_INSET_M, x0 + MOUNT_TAB_INSET_M + MOUNT_TAB_LENGTH_M)
-    tab_aft = (x1 - MOUNT_TAB_INSET_M - MOUNT_TAB_LENGTH_M, x1 - MOUNT_TAB_INSET_M)
-    return _Mount(x0, x1, z_top, y_inner, y_outer, (socket, pin), (tab_fore, tab_aft))
+    """R12 wing-box plate: from the forward socket former to the pin former (tabbed into both), z from below the
+    socket hole (MIN_WEB_M under it) up to the rim line, so components on the axis pass underneath."""
+    fore, _, pin_station = _mount_stations(layout, spar)
+    t_former, t_plate = settings.sheet_for("former").thickness_m, settings.sheet_for("plate").thickness_m
+    x_max = pin_station + t_former
+    corners = _profile_corners(layout, fore, x_max)
+    rim = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *corners)) - settings.fuselage_cover_thickness_m - MIN_WEB_M
+    y_outer = _plate_outer_y(layout, spar, settings, rim)
+    socket, pin = _plate_holes(layout, spar, settings, y_outer - t_plate / 2.0)
+    z_bottom, z_top = socket.y_m - socket.diameter_m / 2.0 - MIN_WEB_M, math.sqrt(rim**2 - y_outer**2)
+    if z_bottom <= settings.sheet_for("crutch").thickness_m / 2.0:
+        raise KitUnavailable("the wing-box plates would reach down to the crutch")
+    tab_z = (z_bottom + MOUNT_TAB_INSET_M, z_top - MOUNT_TAB_INSET_M)
+    if tab_z[1] - tab_z[0] < MOUNT_TAB_MIN_HEIGHT_M:
+        raise KitUnavailable(f"the wing-box plates are too shallow ({(z_top - z_bottom) * 1e3:.1f} mm) for their tabs")
+    return _Mount(fore, x_max, (fore + t_former, pin_station), (z_bottom, z_top), tab_z,
+                  y_outer - t_plate, y_outer, (socket, pin))
 
 
 def _mount_plates(frame: _Frame) -> tuple[KitPart, KitPart]:
-    m, half_t = frame.mount, frame.crutch_t_m / 2.0
-    body = rect_face(m.x_min_m, half_t, m.x_max_m, m.z_top_m)
-    outline = _single_face(body.fuse(*(rect_face(x0, -half_t, x1, half_t) for x0, x1 in m.tabs)).clean(), "WM-R")
+    m = frame.mount
+    body = rect_face(m.body_x_m[0], m.z_m[0], m.body_x_m[1], m.z_m[1])
+    tabs = (rect_face(m.x_min_m, m.tab_z_m[0], m.body_x_m[0], m.tab_z_m[1]),
+            rect_face(m.body_x_m[1], m.tab_z_m[0], m.x_max_m, m.tab_z_m[1]))
+    outline = _single_face(body.fuse(*tabs).clean(), "WM-R")
     socket, pin = m.holes
     for hole, others, name in ((socket, [], "socket"), (pin, [socket], "pin")):
         if not keeps_web(outline, hole, others):
@@ -273,13 +327,28 @@ def _former_cuts(frame: _Frame, x_m: float, sign: int, has_sleeve: bool) -> list
     cuts = [(c.name, _component_opening(c)) for c in frame.components if c.is_internal and _crosses(c, x_m, x1)]
     boom = frame.layout.tail_boom
     if has_sleeve and boom is not None:
-        sleeve = _disc((boom.diameter_m + frame.settings.fit_clearance_m) / 2.0, boom.y_m, boom.z_m)
+        sleeve = _disc(_sleeve_diameter_m(frame) / 2.0, boom.y_m, boom.z_m)
         cuts.append(("tail boom", sleeve))
-    m = frame.mount
-    if sign == UP and m.x_min_m < x1 and m.x_max_m > x_m:
-        cuts += [("wing-mount plate", rect_face(y0, 0.0, y1, m.z_top_m))
-                 for y0, y1 in ((m.y_inner_m, m.y_outer_m), (-m.y_outer_m, -m.y_inner_m))]
-    return cuts
+    return cuts + _plate_cuts(frame, x_m, sign)
+
+
+def _plate_cuts(frame: _Frame, x_m: float, sign: int) -> list[tuple[str, bd.Face]]:
+    """Wing-box plate section where the plate passes this upper former, or its tab slot where it ends in it."""
+    m, x1 = frame.mount, x_m + frame.former_t_m
+    if sign != UP or not (m.x_min_m < x1 and m.x_max_m > x_m):
+        return []
+    passes = m.body_x_m[0] < x1 and m.body_x_m[1] > x_m
+    z0, z1 = m.z_m if passes else m.tab_z_m
+    sides = ((m.y_inner_m, m.y_outer_m), (-m.y_outer_m, -m.y_inner_m))
+    return [("wing-box plate", rect_face(y0, z0, y1, z1)) for y0, y1 in sides]
+
+
+def _sleeve_diameter_m(frame: _Frame) -> float:
+    """Tail-boom sleeve: the stock boom tube (R13) plus the fit clearance."""
+    boom = frame.layout.tail_boom
+    if boom is None:
+        raise ValueError("tail-boom sleeve requested on a layout without a tail boom")
+    return boom_tube(boom.diameter_m, frame.settings).od_m + frame.settings.fit_clearance_m
 
 
 def _lightening_centres(radius_m: float, sign: int, half_t_m: float) -> list[tuple[float, float]]:
@@ -343,20 +412,17 @@ def _crutch_voids(frame: _Frame) -> tuple[list[tuple[str, bd.Face]], list[bd.Fac
     boom, open_slots = frame.layout.tail_boom, []
     if boom is not None:
         start = frame.former_stations[-BOOM_SLEEVE_FORMERS] - BOOM_SLOT_LEAD_M
-        half = (boom.diameter_m + frame.settings.fit_clearance_m) / 2.0
+        half = _sleeve_diameter_m(frame) / 2.0
         open_slots.append(rect_face(start, boom.y_m - half, x1 + FAR_M, boom.y_m + half))
     return openings, open_slots
 
 
 def _crutch_slots(frame: _Frame) -> list[tuple[str, bd.Face]]:
-    """Slots for the former tabs and the wing-mount plate tabs, each as wide as the mating sheet."""
+    """Slots for the former tabs, each as wide as the former sheet (the wing-box plates sit in the formers)."""
     slots = []
     for i, x in enumerate(frame.former_stations, start=1):
         y0, y1 = _tab_span(frame.inner_radius(x))
         slots += [(f"F-{i:02d}", rect_face(x, a, x + frame.former_t_m, b)) for a, b in ((y0, y1), (-y1, -y0))]
-    m = frame.mount
-    for x0, x1 in m.tabs:
-        slots += [("WM", rect_face(x0, a, x1, b)) for a, b in ((m.y_inner_m, m.y_outer_m), (-m.y_outer_m, -m.y_inner_m))]
     return slots
 
 

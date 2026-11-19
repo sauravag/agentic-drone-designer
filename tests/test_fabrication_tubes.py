@@ -9,6 +9,7 @@ from tests.reference_designs import CASES
 
 from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
 from src.tools.fabrication.tubes import (
+    boom_tube,
     MIN_WEB_M,
     KitUnavailable,
     bending_stress_pa,
@@ -181,3 +182,13 @@ def test_usable_depth_allows_for_webs_and_hole_clearance():
     t = 0.030
     expected = t - 2 * MIN_WEB_M - DEFAULT_FABRICATION.fit_clearance_m
     assert usable_depth_m(t, DEFAULT_FABRICATION) == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.parametrize("diameter_m, od_mm, id_mm", [(0.0385, 36, 32), (0.062, 40, 36)])
+def test_boom_tube_is_the_largest_stock_within_the_layout_diameter(diameter_m, od_mm, id_mm):
+    tube = boom_tube(diameter_m, DEFAULT_FABRICATION)
+    assert (round(tube.od_m * 1e3), round(tube.id_m * 1e3)) == (od_mm, id_mm)
+
+
+def test_boom_tube_below_all_stock_takes_the_minimum_boom_floor():
+    assert boom_tube(0.010, DEFAULT_FABRICATION).od_m == pytest.approx(0.020)
