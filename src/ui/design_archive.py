@@ -21,10 +21,9 @@ from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, RunLineage, SizingOutput
 from src.ui.agent_service import AgentRunView
 
-DESIGN_FORMAT: Final[str] = "isr-forge-design"
-FORMAT_VERSION: Final[int] = 1
 RECORD_FILE: Final[str] = "design.json"
 ZIP_MIME: Final[str] = "application/zip"
+ZIP_LABEL: Final[str] = "Download all files (.zip)"
 _CAD_PATHS: Final[tuple[str, ...]] = ("oml_vsp3_path", "oml_step_path", "assembly_step_path", "viewer_model_path")
 _FCS_PATHS: Final[tuple[str, ...]] = ("param_path", "sitl_report_path")
 
@@ -73,7 +72,7 @@ def _relative_paths(model: Optional[BaseModel], fields: tuple[str, ...], root: P
     """A copy of an artifact model with its (set) path fields made run-folder relative."""
     if model is None:
         return None
-    update = {name: _relative(value, root) for name in fields if (value := getattr(model, name)) is not None}
+    update: dict[str, str] = {name: _relative(value, root) for name in fields if (value := getattr(model, name)) is not None}
     return model.model_copy(update=update)
 
 
@@ -88,7 +87,8 @@ def design_record(view: AgentRunView, now: Optional[datetime] = None) -> DesignR
         run_id=view.run_id, requirements=view.requirements, sizing=view.sizing, bom=view.bom, aero=view.aero,
         cad=_relative_paths(view.cad, _CAD_PATHS, root), fcs=_relative_paths(view.fcs, _FCS_PATHS, root),
         iterations=view.iterations, warnings=view.warnings, assumptions=view.assumptions, gates=view.gates,
-        critic_log=view.critic_log, report_path=None if view.report_path is None else _relative(view.report_path, root),
+        critic_log=view.critic_log,
+        report_path=None if view.report_path is None else _relative(view.report_path, root),
         used_llm=view.used_llm, design_assumptions=view.design_assumptions, explorer_mode=view.explorer_mode,
         options=view.options, options_explanation=view.options_explanation, explorer_note=view.explorer_note,
         lineage=view.lineage,
@@ -104,8 +104,8 @@ def _run_files(root: Path) -> list[Path]:
     resolving outside the folder) are skipped. The folder's own design.json is replaced by the fresh record."""
     files: list[Path] = []
     for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root)
-        under_link = any((root / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts)))
+        relative: Path = path.relative_to(root)
+        under_link: bool = any((root / Path(*relative.parts[:i])).is_symlink() for i in range(1, len(relative.parts)))
         if path.is_symlink() or under_link or not path.is_file() or relative == Path(RECORD_FILE):
             continue
         if path.resolve().is_relative_to(root):
@@ -120,7 +120,7 @@ def build_zip(view: AgentRunView, now: Optional[datetime] = None) -> bytes:
     root: Path = Path(view.out_dir).resolve()  # type: ignore[arg-type]  # design_record checked it is set
     if not root.is_dir():
         raise FileNotFoundError(f"the run folder {root.name} no longer exists")
-    buffer = io.BytesIO()
+    buffer: io.BytesIO = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(f"{record.run_id}/{RECORD_FILE}", record.model_dump_json(indent=2))
         for path in _run_files(root):

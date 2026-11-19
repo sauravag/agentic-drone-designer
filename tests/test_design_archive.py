@@ -13,7 +13,8 @@ from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, Requi
 from src.schemas.state import CADArtifacts, FCSArtifacts, RunLineage
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui.agent_service import AgentRunView
-from src.ui.design_archive import DesignRecord, build_zip, design_record, zip_name
+from src.ui import design_archive
+from src.ui.design_archive import ZIP_LABEL, DesignRecord, build_zip, design_record, zip_name
 from tests.reference_designs import G1_ELECTRIC_FW
 
 
@@ -139,7 +140,7 @@ def test_design_json_is_not_written_to_the_run_folder(tmp_path: Path) -> None:
     assert not (run_dir / "design.json").exists()
 
 
-ZIP_BUTTON = "Download all files (.zip)"
+ZIP_BUTTON = ZIP_LABEL
 
 
 def _app_with(view: AgentRunView, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -179,3 +180,24 @@ def test_files_tab_warns_when_the_run_cannot_be_zipped(tmp_path: Path, monkeypat
 def test_files_tab_has_no_zip_for_a_deleted_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     at = _app_with(_failed_view(tmp_path / "gone"), tmp_path, monkeypatch)
     assert not _zip_buttons(at)
+
+
+def test_files_tab_builds_the_zip_only_when_clicked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    real = design_archive.build_zip
+    monkeypatch.setattr(design_archive, "build_zip", lambda view, now=None: calls.append("zip") or real(view, now))
+    at = _app_with(_failed_view(_run_folder(tmp_path)), tmp_path, monkeypatch)
+    assert len(_zip_buttons(at)) == 1
+    assert calls == []  # deferred: the ~10 MB archive is built on click, not on every rerun
+    assert _zip_buttons(at)[0].proto.HasField("deferred_file_id")
+
+
+def test_an_unreadable_run_file_does_not_break_the_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = _run_folder(tmp_path)
+    locked = run_dir / "sitl" / "log.bin"
+    locked.chmod(0)
+    try:
+        at = _app_with(_failed_view(run_dir), tmp_path, monkeypatch)
+        assert len(_zip_buttons(at)) == 1
+    finally:
+        locked.chmod(0o644)

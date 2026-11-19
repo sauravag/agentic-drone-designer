@@ -43,8 +43,7 @@ GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
 EXAMPLE_PROMPT: Final[str] = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, "
                               "6-hour endurance, and 80 km datalink radius")
-ZIP_LABEL: Final[str] = "Download all files (.zip)"
-DESIGN_TABS: Final[tuple[str, ...]] =("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
+DESIGN_TABS: Final[tuple[str, ...]] = ("Sizing", "Components", "Aero & CAD", "3D", "Flight test")
 COMPANION_CUBE_KEY: Final[str] = "companion_computer_cube"  # editable box (Cube); writes "companion_computer"
 COMPANION_ARK_KEY: Final[str] = "companion_computer_ark"  # greyed, ticked box shown for the ARK stack
 PENDING_DESIGN_KEY: Final[str] = "pending_design"  # set by Design aircraft inside the box; main() runs it
@@ -306,16 +305,20 @@ def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: 
 
 
 def _zip_download(view: AgentRunView) -> None:
-    """Every file of the run plus design.json in one zip; nothing when the run folder is gone."""
+    """Every file of the run plus design.json in one zip; nothing when the run folder is gone.
+
+    The record is checked now (cheap) so a broken run shows a warning; the archive itself (tens of MB) is built
+    only when the button is clicked, on Streamlit's download thread, not on every rerun of the page."""
     if view.out_dir is None or not Path(view.out_dir).is_dir():
         return
     try:
-        data: bytes = design_archive.build_zip(view)
-    except (ValueError, FileNotFoundError) as exc:
+        design_archive.design_record(view)
+    except ValueError as exc:
         logger.warning("run %s cannot be zipped: %s", view.run_id, exc)
         st.warning(f"This run's files cannot be zipped: {exc}")
         return
-    st.download_button(ZIP_LABEL, data=data, file_name=design_archive.zip_name(view), mime=design_archive.ZIP_MIME,
+    st.download_button(design_archive.ZIP_LABEL, data=lambda: design_archive.build_zip(view),
+                       file_name=design_archive.zip_name(view), mime=design_archive.ZIP_MIME,
                        type="primary", key=f"dl-zip-{view.run_id}")
 
 
