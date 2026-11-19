@@ -21,7 +21,7 @@
 - Defaults verbatim from the spec: bed 600 × 400 mm, margin 5 mm, kerf 0.15 mm; birch ply 3 mm and 1.5 mm at
   680 kg/m³; stringers 3 × 3 mm balsa 160 kg/m³; LE 6 × 6 mm balsa; TE 5 × 15 mm triangular balsa; film
   0.09 kg/m²; fuselage covering 0.24 kg/m²; glue/hardware 10 % of structure; carbon 1600 kg/m³; σ_allow 500 MPa;
-  FS 1.5; n_limit 4.0; spar insertion 20 % of semi-span per side; fit clearance ≤ 0.2 mm; tube list thin-wall
+  FS 1.5; n_limit 4.0; minimum spar insertion (skin to centreline) 3 × spar OD; fit clearance ≤ 0.2 mm; tube list thin-wall
   6×4 … 25×23 (2 mm OD steps, 1 mm wall) and thick-wall 20×16, 24×20, 28×24, 32×28, 36×32, 40×36 (each ID equals
   the next smaller OD, so every tube has a nested partner); rods 3, 4, 5 mm. (Ruling while planning: the spec's
   thick-wall list 25×21, 30×26, 35×31 had no nested partners, so no socket could ever be found for those spars;
@@ -91,7 +91,7 @@ Tests: `tests/test_fabrication_settings.py`, `tests/test_fabrication_tubes.py`, 
   tubes=…, rods_m=(0.003, 0.004, 0.005), stringer_side_m=0.003, stringer_density_kg_m3=160.0,
   le_side_m=0.006, te_height_m=0.005, te_chord_m=0.015, film_kg_m2=0.09, fuselage_cover_kg_m2=0.24,
   fuselage_cover_thickness_m=0.0015, glue_fraction=0.10, carbon_density_kg_m3=1600.0,
-  sigma_allow_pa=500e6, safety_factor=1.5, n_limit=4.0, insertion_fraction=0.20, fit_clearance_m=0.0002)`.
+  sigma_allow_pa=500e6, safety_factor=1.5, n_limit=4.0, min_insertion_diameters=3.0, fit_clearance_m=0.0002)`.
   Validators: every `PartFamily` covered by exactly one sheet; tubes sorted by OD after validation.
   Method `sheet_for(family: PartFamily) -> SheetStock`.
 - `DEFAULT_FABRICATION: Final[FabricationSettings]`.
@@ -103,7 +103,7 @@ def test_defaults_match_the_spec():
     s = DEFAULT_FABRICATION
     assert (s.bed_width_m, s.bed_height_m, s.margin_m, s.kerf_m) == (0.600, 0.400, 0.005, 0.00015)
     assert s.sheet_for("rib").thickness_m == 0.0015 and s.sheet_for("former").thickness_m == 0.003
-    assert {(round(t.od_m * 1e3), round(t.id_m * 1e3)) for t in s.tubes} >= {(25, 23), (35, 31), (40, 36), (6, 4)}
+    assert {(round(t.od_m * 1e3), round(t.id_m * 1e3)) for t in s.tubes} >= {(25, 23), (36, 32), (40, 36), (6, 4)}
 
 def test_every_family_needs_exactly_one_sheet():
     three_mm = DEFAULT_FABRICATION.sheet_for("former")

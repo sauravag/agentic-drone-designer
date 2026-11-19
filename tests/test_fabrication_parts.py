@@ -58,17 +58,19 @@ def test_rib_hole_matches_the_tube_through_it(g1_kit_inputs, ribs):
     spar, settings = g1_kit_inputs[2], g1_kit_inputs[3]
     y = _station(outer, settings)
     tube = next(s.tube for s in spar.segments if s.y_start_m < y <= s.y_end_m)  # inboard member on a step
-    assert hole_diameters(outer.outline)[0] == pytest.approx(tube.od_m + 0.0002, abs=1e-6)  # outside insertion
+    assert hole_diameters(outer.outline)[0] == pytest.approx(tube.od_m + 0.0002, abs=1e-6)
 
 
-def test_every_rib_hole_matches_its_segment(g1_kit_inputs, ribs):
-    _, _, spar, settings = g1_kit_inputs
+@pytest.mark.parametrize("inputs", ["g1_kit_inputs", "g2_kit_inputs"])
+def test_every_wing_rib_hole_is_its_spar_member_plus_clearance(inputs, request):
+    """The socket stays inside the fuselage, so no rib carries a socket hole (R11)."""
+    kit_inputs = request.getfixturevalue(inputs)
+    _, _, spar, settings = kit_inputs
+    ribs = wing_ribs(*kit_inputs)
     for rib in _main_ribs(ribs, "WR-"):
         y = _station(rib, settings)
-        if y < spar.joint_y_m + spar.insertion_m:
-            continue
-        tube = next(s.tube for s in spar.segments if s.y_start_m < y <= s.y_end_m)  # step on a rib: inboard member
-        assert hole_diameters(rib.outline)[0] == pytest.approx(tube.od_m + settings.fit_clearance_m, abs=TOL_M)
+        tube = next(s.tube for s in spar.segments if y <= s.y_end_m + 1e-12)  # step on a rib: inboard member
+        assert hole_diameters(rib.outline)[0] == pytest.approx(tube.od_m + settings.fit_clearance_m, abs=TOL_M), rib.label
 
 
 def _assert_mirrored(parts, right_prefix: str, left_prefix: str, settings) -> None:
@@ -117,9 +119,10 @@ def test_no_two_wing_or_tail_parts_intersect(g1_kit_inputs, ribs, tails):
         assert volume < 1e-12, f"{la} intersects {lb}: {volume:.3e} m^3"
 
 
-def test_oversized_socket_breaking_the_web_is_unavailable(g1_kit_inputs):
+def test_oversized_spar_tube_breaking_the_web_is_unavailable(g1_kit_inputs):
     layout, airfoil, spar, settings = g1_kit_inputs
-    fat = dataclasses.replace(spar, socket=TubeStock(od_m=0.016, id_m=0.014))  # inside the rib, web < 2 mm
+    root = dataclasses.replace(spar.segments[0], tube=TubeStock(od_m=0.016, id_m=0.014))  # inside the rib, web < 2 mm
+    fat = dataclasses.replace(spar, segments=(root, *spar.segments[1:]))
     with pytest.raises(KitUnavailable, match="WR-01"):
         wing_ribs(layout, airfoil, fat, settings)
 
@@ -171,11 +174,6 @@ def test_every_rib_keeps_a_minimum_web(ribs, tails):
     _assert_minimum_webs([*ribs, *tails])
 
 
-@pytest.mark.xfail(
-    strict=True, raises=KitUnavailable,
-    reason="g2: the 32x28 socket (32.2 mm hole) does not fit WR-02 (31.7 mm thick), and the insertion zone "
-    "(to 0.470 m) runs past the 28x24 root segment's end (0.255 m); spar plan does not size against these — controller ruling pending",
-)
 def test_g2_wing_ribs_keep_a_minimum_web(g2_kit_inputs):
     ribs = wing_ribs(*g2_kit_inputs)
     assert len(ribs) > 0
@@ -196,17 +194,6 @@ def test_root_rib_is_a_3mm_doubler_with_pin_hole(g1_kit_inputs, ribs):
     assert hole_centre(pin).Y == pytest.approx(camber_at(airfoil, 0.70) * chord, abs=TOL_M)
     assert 2 * pin.edges()[0].radius == pytest.approx(0.004 + settings.fit_clearance_m, abs=TOL_M)
     assert all(p.family == "rib" for p in _main_ribs(ribs, "WR-")[1:])
-
-
-def test_ribs_over_the_socket_have_socket_holes(g1_kit_inputs, ribs):
-    _, _, spar, settings = g1_kit_inputs
-    socket_hole = spar.socket.od_m + settings.fit_clearance_m
-    over = 0
-    for rib in _main_ribs(ribs, "WR-"):
-        is_over = _station(rib, settings) < spar.joint_y_m + spar.insertion_m
-        over += is_over
-        assert (hole_diameters(rib.outline)[0] == pytest.approx(socket_hole, abs=TOL_M)) == is_over, rib.label
-    assert over >= 1
 
 
 def test_rib_count_follows_the_20cm_pitch(g1_kit_inputs, ribs):

@@ -60,10 +60,23 @@ def test_joint_is_on_the_skin():
     assert joint_y_m(0.10, 0.06) == pytest.approx(0.08)
 
 
-def test_insertion_is_a_fraction_of_the_semi_span():
+def test_insertion_runs_from_the_skin_to_the_centreline():
     plan = plan_spar(5.0, 1.4, 0.06, lambda y: 0.030, None, DEFAULT_FABRICATION)
-    assert plan.insertion_m == pytest.approx(0.20 * 1.4)
+    assert plan.insertion_m == pytest.approx(0.06)
     assert plan.joint_y_m == 0.06
+
+
+def test_g1_insertion_clears_three_spar_diameters():
+    sizing, layout, depth, joint, boom_y = _wing_depth("g1")
+    plan = plan_spar(sizing.mtow_kg, layout.wing.semi_span_m, joint, depth, boom_y, DEFAULT_FABRICATION)
+    assert plan.insertion_m == pytest.approx(joint)
+    assert plan.insertion_m / plan.segments[0].tube.od_m == pytest.approx(3.88, abs=0.05)  # 54 mm / 14 mm
+
+
+def test_insertion_shorter_than_three_diameters_is_unavailable():
+    # 25 kg needs a 32 mm root tube: 3 x 32 = 96 mm of insertion, but the skin is only 50 mm from the centreline.
+    with pytest.raises(KitUnavailable, match=r"insertion 50 mm .* 96 mm"):
+        plan_spar(25.0, 2.1, 0.05, lambda y: 0.050, None, DEFAULT_FABRICATION)
 
 
 def test_missing_socket_is_unavailable():

@@ -54,3 +54,10 @@ def test_second_moment_of_a_tube() -> None:
 
 def test_area_of_solid_rod() -> None:
     assert TubeStock(od_m=0.004, id_m=0.0).area_m2 == pytest.approx(math.pi / 4 * 0.004**2)
+
+
+def test_minimum_insertion_defaults_to_three_spar_diameters() -> None:
+    assert DEFAULT_FABRICATION.min_insertion_diameters == 3.0
+    assert not hasattr(DEFAULT_FABRICATION, "insertion_fraction")
+    with pytest.raises(ValidationError, match="min_insertion_diameters"):
+        FabricationSettings(min_insertion_diameters=0.0)

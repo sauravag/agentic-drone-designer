@@ -26,8 +26,8 @@ airframe mass" as a lump); none of it can be bought or cut.
    - mounting plates: payload/gimbal, battery tray, avionics tray, and for hybrids fuel-tank and generator plates;
    - quadplane: boom clamp plates (saddle the spar and the boom) and lift-motor mount plates.
 2. **Detachable left and right wings**: the fuselage carries a carbon **socket tube** fixed across it in the two
-   wing-mount side plates and protruding from each side by the spar insertion length; each wing's spar root plugs
-   into it (the wing's inboard ribs over the protruding socket have socket-sized holes). The socket is the larger,
+   wing-mount side plates, spanning the fuselage only; each wing's spar root plugs into it from the skin to the
+   centreline (no rib carries a socket hole). The socket is the larger,
    stronger tube, so the weakest member at the joint is the spar, which is sized for the root load. Plus a carbon
    anti-rotation pin near the trailing edge; a nylon wing bolt into a captive-nut plate at each root; 3 mm ply root-rib doublers; a wiring connector at each root
    (listed on the build sheet, not modelled). On quadplanes each lift boom clamps to its wing and comes off with it.
@@ -92,7 +92,7 @@ Machine "Hobby 600 × 400 laser": usable bed 600 × 400 mm, 5 mm edge and part s
 Other defaults: stringers 3 × 3 mm balsa (160 kg/m³); LE 6 × 6 mm balsa, TE 5 × 15 mm triangular balsa; wing and
 tail covering iron-on film 0.09 kg/m²; fuselage covering 1.5 mm balsa sheet (0.24 kg/m²); glue/hardware allowance
 10 % of structure mass; carbon tube density 1600 kg/m³; carbon allowable bending stress 500 MPa with safety
-factor 1.5; limit load factor 4.0; spar insertion into the socket 20 % of semi-span per side, measured from the fuselage skin; tube fit
+factor 1.5; limit load factor 4.0; minimum spar insertion (fuselage skin to centreline) 3 × spar OD; tube fit
 clearance ≤ 0.2 mm.
 
 Default tube stock list (OD × ID, mm): thin-wall 6×4, 8×6, 10×8, 12×10, 14×12, 16×14, 18×16, 20×18, 22×20,

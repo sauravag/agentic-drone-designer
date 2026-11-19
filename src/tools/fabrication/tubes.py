@@ -125,6 +125,16 @@ def _pick_socket(root: TubeStock, moment_nm: float, settings: FabricationSetting
     )
 
 
+def _check_insertion(insertion_m: float, root: TubeStock, settings: FabricationSettings) -> None:
+    """The spar root must reach far enough into the socket (skin to centreline) to carry its moment."""
+    needed = settings.min_insertion_diameters * root.od_m
+    if insertion_m < needed - FIT_EPS_M:
+        raise KitUnavailable(
+            f"spar insertion {insertion_m * 1e3:.0f} mm (fuselage skin to centreline) is shorter than the "
+            f"{needed * 1e3:.0f} mm needed for the {root.od_m * 1e3:.0f} mm spar tube"
+        )
+
+
 def _step_position(depth_at: Callable[[float], float], od_m: float, inboard_m: float, outboard_m: float) -> float:
     """Outermost y in [inboard, outboard) where the depth still admits `od_m` (depth is non-increasing)."""
     lo, hi = inboard_m, outboard_m
@@ -174,4 +184,6 @@ def plan_spar(
 
     centre_moment = _moment_at(mtow_kg, semi_span_m, 0.0, boom_y_m, settings)
     socket = _pick_socket(root, centre_moment, settings)
-    return SparPlan(tuple(segments), socket, joint_y_m, settings.insertion_fraction * semi_span_m)
+    _check_insertion(joint_y_m, root, settings)
+    # The socket spans the fuselage only; each spar root plugs in from the skin to the centreline.
+    return SparPlan(tuple(segments), socket, joint_y_m, joint_y_m)

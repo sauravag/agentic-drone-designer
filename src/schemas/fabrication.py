@@ -103,7 +103,10 @@ class FabricationSettings(BaseModel):
     sigma_allow_pa: float = Field(500e6, gt=0.0, description="Allowable carbon stress (Pa).")
     safety_factor: float = Field(1.5, ge=1.0, description="Ultimate-load safety factor.")
     n_limit: float = Field(4.0, gt=0.0, description="Limit load factor (g).")
-    insertion_fraction: float = Field(0.20, ge=0.0, le=1.0, description="Spar insertion depth as a fraction of its length.")
+    min_insertion_diameters: float = Field(
+        3.0, gt=0.0,
+        description="Minimum spar insertion into the fuselage socket (skin to centreline), in root-tube diameters.",
+    )
     fit_clearance_m: float = Field(0.0002, ge=0.0, description="Slot / hole clearance for press fits (m).")
 
     @model_validator(mode="after")

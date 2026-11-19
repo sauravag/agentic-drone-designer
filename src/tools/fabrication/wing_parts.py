@@ -1,7 +1,7 @@
 """Wing and tail rib parts for the laser-cut kit (frame convention: see `kit.py`).
 
 Wing ribs start at the spar joint on the fuselage skin and repeat every `RIB_PITCH_M` to the tip. Each rib
-has the spar hole (socket-sized over the socket insertion), a wiring hole inboard of the aileron servo,
+has the spar hole sized to the spar tube at its station, a wiring hole inboard of the aileron servo,
 lightening holes, and is split at the hinge inside the aileron span. The root rib is a 3 mm doubler with
 an anti-rotation pin hole. Tail ribs carry one stock tube spar wherever it fits the local depth.
 """
@@ -27,6 +27,7 @@ from src.tools.aero_cad.structure import RIB_PITCH_M, SPAR_CHORD_STATION, STATIO
 from src.tools.fabrication.kit import KitPart
 from src.tools.fabrication.rib_outline import (
     Hole,
+    airfoil_face,
     camber_point,
     contains,
     drill,
@@ -56,8 +57,14 @@ FLAT_ROTATION_DEG: Final[tuple[float, float, float]] = (0.0, 0.0, 0.0)
 
 
 def spar_depth_at(surface: SurfacePlanform, airfoil: AirfoilShape, settings: FabricationSettings) -> Callable[[float], float]:
-    """Usable tube depth at span station y: airfoil thickness at the spar chord station minus the webs."""
-    ratio = float(airfoil.to_asb().local_thickness(SPAR_CHORD_STATION))
+    """Usable tube depth at span station y, measured the way the rib's web check measures it.
+
+    The local "thickness" is the diameter of the largest circle centred on the camber line at the spar
+    station (twice its distance to the outline). That is slightly less than the vertical thickness, because
+    the surfaces slope, so a tube sized to it always keeps the minimum web around its hole.
+    """
+    centre = bd.Vertex(*camber_point(airfoil, 1.0, SPAR_CHORD_STATION), 0.0)
+    ratio = 2.0 * centre.distance_to(airfoil_face(airfoil, 1.0).outer_wire())  # unit chord; scales with chord
     return lambda y: usable_depth_m(ratio * surface.chord_at(y), settings)
 
 
@@ -108,9 +115,7 @@ def _mirrored(part: KitPart, side_from: str, side_to: str, settings: Fabrication
 
 
 def _spar_hole_m(spar: SparPlan, y_m: float, settings: FabricationSettings) -> float:
-    """Socket over the insertion length; elsewhere the segment at y (the inboard one on a step)."""
-    if y_m < spar.joint_y_m + spar.insertion_m - FIT_EPS_M:
-        return spar.socket.od_m + settings.fit_clearance_m
+    """The spar segment at y (the inboard one on a step); the socket stays inside the fuselage."""
     seg = next(s for s in spar.segments if s.y_start_m - FIT_EPS_M <= y_m <= s.y_end_m + FIT_EPS_M)
     return seg.tube.od_m + settings.fit_clearance_m
 
