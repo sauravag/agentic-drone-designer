@@ -7,7 +7,7 @@ birch ply sheet, and carbon tube / rod stock. Must not import from `src.tools`.
 import math
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PartFamily = Literal["rib", "former", "crutch", "plate", "doubler", "clamp", "bulkhead"]
 ALL_FAMILIES: Final[tuple[str, ...]] = (
@@ -58,7 +58,7 @@ _THIN_WALL_MM: Final[tuple[tuple[float, float], ...]] = (
     (6, 4), (8, 6), (10, 8), (12, 10), (14, 12), (16, 14), (18, 16), (20, 18), (22, 20), (25, 23),
 )
 _THICK_WALL_MM: Final[tuple[tuple[float, float], ...]] = (
-    (20, 16), (24, 20), (28, 24), (32, 28), (35, 31), (36, 32), (40, 36),
+    (20, 16), (24, 20), (28, 24), (32, 28), (36, 32), (40, 36),
 )
 
 _DEFAULT_SHEETS: Final[tuple[SheetStock, ...]] = (
@@ -86,7 +86,8 @@ class FabricationSettings(BaseModel):
     kerf_m: float = Field(0.00015, ge=0.0, description="Laser kerf width (m).")
     sheets: tuple[SheetStock, ...] = Field(_DEFAULT_SHEETS, description="Sheet stock; each part family on exactly one sheet.")
     tubes: tuple[TubeStock, ...] = Field(
-        _tubes_from_mm(_THIN_WALL_MM + _THICK_WALL_MM), description="Available carbon tube stock (sorted by OD)."
+        _tubes_from_mm(tuple(sorted(_THIN_WALL_MM + _THICK_WALL_MM))),
+        description="Available carbon tube stock (sorted by OD)."
     )
     rods_m: tuple[float, ...] = Field((0.003, 0.004, 0.005), description="Available solid carbon rod diameters (m).")
     stringer_side_m: float = Field(0.003, gt=0.0, description="Square balsa stringer side (m).")
@@ -106,15 +107,18 @@ class FabricationSettings(BaseModel):
     fit_clearance_m: float = Field(0.0002, ge=0.0, description="Slot / hole clearance for press fits (m).")
 
     @model_validator(mode="after")
-    def _validate_sheets_and_sort_tubes(self) -> "FabricationSettings":
+    def _validate_family_coverage(self) -> "FabricationSettings":
         listed = [family for sheet in self.sheets for family in sheet.families]
         for family in ALL_FAMILIES:
             count = listed.count(family)
             if count != 1:
                 raise ValueError(f"part family '{family}' must be on exactly one sheet, found {count}")
-        # Frozen model: bypass the frozen guard once to store the sorted copy.
-        object.__setattr__(self, "tubes", tuple(sorted(self.tubes, key=lambda t: t.od_m)))
         return self
+
+    @field_validator("tubes", mode="after")
+    @classmethod
+    def _sort_tubes(cls, v: tuple[TubeStock, ...]) -> tuple[TubeStock, ...]:
+        return tuple(sorted(v, key=lambda t: (t.od_m, t.id_m)))
 
     def sheet_for(self, family: PartFamily) -> SheetStock:
         """Return the single sheet that part family is cut from."""

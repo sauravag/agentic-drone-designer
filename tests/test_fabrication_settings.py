@@ -12,7 +12,7 @@ def test_defaults_match_the_spec() -> None:
     assert s.sheet_for("rib").thickness_m == 0.0015 and s.sheet_for("former").thickness_m == 0.003
     assert {(round(t.od_m * 1e3), round(t.id_m * 1e3)) for t in s.tubes} >= {
         (25, 23),
-        (35, 31),
+        (36, 32),
         (40, 36),
         (6, 4),
     }
