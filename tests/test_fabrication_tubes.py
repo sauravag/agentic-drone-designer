@@ -192,3 +192,29 @@ def test_boom_tube_is_the_largest_stock_within_the_layout_diameter(diameter_m, o
 
 def test_boom_tube_below_all_stock_takes_the_minimum_boom_floor():
     assert boom_tube(0.010, DEFAULT_FABRICATION).od_m == pytest.approx(0.020)
+
+
+# ------------------------------------------------------------------------------- R21 lift booms ---
+from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M  # noqa: E402
+from src.tools.fabrication.tubes import KitUnavailable as _Unavailable, bending_stress_pa, lift_boom_tube  # noqa: E402
+
+
+def _passes_r21(tube, moment_nm, settings) -> bool:
+    return bending_stress_pa(tube, moment_nm) <= settings.sigma_allow_pa / settings.safety_factor
+
+
+@pytest.mark.parametrize("thrust_n, arm_m", [(60.0, 0.4), (120.0, 0.55), (20.0, 0.2)])
+def test_lift_boom_is_the_smallest_stock_tube_that_carries_the_hub_moment(thrust_n, arm_m):
+    settings, cap = DEFAULT_FABRICATION, 0.040
+    tube = lift_boom_tube(thrust_n, arm_m, cap, settings)
+    moment = thrust_n * arm_m
+    assert _passes_r21(tube, moment, settings)
+    assert MIN_BOOM_DIAMETER_M - 1e-9 <= tube.od_m <= cap + 1e-9
+    smaller = [t for t in settings.tubes if (t.od_m, t.area_m2) < (tube.od_m, tube.area_m2)
+               and t.od_m >= MIN_BOOM_DIAMETER_M - 1e-9]
+    assert not any(_passes_r21(t, moment, settings) for t in smaller)
+
+
+def test_lift_boom_wider_than_the_layout_boom_is_unavailable():
+    with pytest.raises(_Unavailable, match="lift boom"):
+        lift_boom_tube(400.0, 0.6, 0.020, DEFAULT_FABRICATION)

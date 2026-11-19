@@ -84,6 +84,21 @@ def boom_tube(diameter_m: float, settings: FabricationSettings) -> TubeStock:
     return floor
 
 
+def lift_boom_tube(thrust_n: float, arm_m: float, max_diameter_m: float, settings: FabricationSettings) -> TubeStock:
+    """R21: the smallest stock tube (lighter wall first at equal OD) whose bending stress under one lift motor's
+    thrust at `arm_m` from the clamp is within sigma_allow / safety_factor, no wider than the layout boom (or the
+    MIN_BOOM_DIAMETER_M floor when the layout boom is thinner than that)."""
+    floor_m, moment = MIN_BOOM_DIAMETER_M - FIT_EPS_M, thrust_n * max(arm_m, 0.0)
+    cap_m = max(max_diameter_m, MIN_BOOM_DIAMETER_M) + FIT_EPS_M
+    fits = sorted((t for t in settings.tubes if floor_m <= t.od_m <= cap_m), key=lambda t: (t.od_m, t.area_m2))
+    tube = next((t for t in fits if _passes(t, moment, settings)), None)
+    if tube is None:
+        raise KitUnavailable(
+            f"no stock lift boom up to {cap_m * 1e3:.0f} mm carries {thrust_n:.0f} N at a {arm_m * 1e3:.0f} mm arm"
+        )
+    return tube
+
+
 def usable_depth_m(local_thickness_m: float, settings: FabricationSettings) -> float:
     """Room for a spar tube once the top and bottom webs and the hole's fit clearance are reserved."""
     return local_thickness_m - 2.0 * MIN_WEB_M - settings.fit_clearance_m

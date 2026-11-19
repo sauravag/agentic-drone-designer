@@ -143,6 +143,7 @@ def test_spar_members_telescope_with_bonded_overlaps(case, request):
     by = {t.label: t for t in kit.tubes}
     for side, name in ((1.0, "R"), (-1.0, "L")):
         assert f"SP-{name}{len(spar.segments) + 1}" not in by
+        previous_end = _axis_point(layout, side, 0.0)
         for k, seg in enumerate(spar.segments):
             member = by[f"SP-{name}{k + 1}"]
             assert member.role == "spar" and member.tube == seg.tube
@@ -150,9 +151,9 @@ def test_spar_members_telescope_with_bonded_overlaps(case, request):
             assert np.allclose(np.cross(end - _axis_point(layout, side, 0.0), member.axis), 0.0, atol=1e-9)
             assert seg.y_end_m - RIM_ALLOWANCE_M <= abs(end[1]) <= seg.y_end_m + 1e-9  # trimmed clear of a rib
             overlap = 0.0 if k == 0 else SETTINGS.min_insertion_diameters * seg.tube.od_m
-            inboard = 0.0 if k == 0 else seg.y_start_m
-            start = _axis_point(layout, side, inboard) - overlap * np.array(member.axis)
+            start = previous_end - overlap * np.array(member.axis)  # from the outer member's actual end
             assert member.start_m == pytest.approx(tuple(start), abs=1e-9)
+            previous_end = end
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
@@ -200,7 +201,7 @@ def test_tail_spars_run_out_as_far_as_the_tail_depth_admits(case, request):
     for label, surface, coord, origin in (("TS-HR", layout.htail, 1, 0.0), ("TS-V", layout.vtail, 2, layout.vtail.z_root_m)):
         spar = by[label]
         reach = _tube_end(spar)[coord] - origin
-        depth = spar_depth_at(surface, tail, SETTINGS)
+        depth = spar_depth_at(surface, tail, SETTINGS, root_doubler_m=None)
         assert depth(reach) >= spar.tube.od_m - 1e-6, label
         assert reach == pytest.approx(surface.semi_span_m, abs=1e-6) or depth(reach + 0.005) < spar.tube.od_m, label
 
@@ -302,3 +303,44 @@ def test_residual_gear_item_is_the_gear_fraction_over_the_pod(designs, g2_kit_in
     expected = mp.cylinder_item("landing_gear", item.mass_kg, item.cg_m, layout.fuselage_length_m,
                                 layout.fuselage_diameter_m)
     assert np.allclose(item.inertia_kgm2, expected.inertia_kgm2, rtol=1e-12, atol=0.0)
+
+
+# ------------------------------------------------------------------------------------ fix round ---
+import dataclasses  # noqa: E402
+
+from src.schemas.fabrication import TubeStock  # noqa: E402
+from src.tools.fabrication.build_kit import _spar_tubes  # noqa: E402
+from src.tools.fabrication.kit import Kit  # noqa: E402
+from src.tools.fabrication.tubes import SparPlan, SparSegment  # noqa: E402
+from src.tools.fabrication.wing_parts import wing_rib_stations  # noqa: E402
+
+
+def test_kit_requires_its_covering_and_derives_the_areas(g1_kit):
+    field = next(f for f in dataclasses.fields(Kit) if f.name == "covering")
+    assert field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
+    assert {f.name for f in dataclasses.fields(Kit)}.isdisjoint({"film_area_m2", "fuselage_cover_area_m2"})
+    assert g1_kit.film_area_m2 == sum(c.area_m2 for c in g1_kit.covering if c.kind == "film")
+    assert g1_kit.fuselage_cover_area_m2 == sum(c.area_m2 for c in g1_kit.covering if c.kind == "fuselage")
+
+
+def test_inner_member_overlap_survives_a_trimmed_outer_end(g1_kit_inputs):
+    """R18 after a trim: a step just inboard of a rib pulls the outer end in; the inner member still reaches
+    min_insertion_diameters x its OD inside the outer member's actual end."""
+    layout, _, spar, settings = g1_kit_inputs
+    joint, semi = spar.joint_y_m, layout.wing.semi_span_m
+    station = wing_rib_stations(joint, semi)[2]
+    step = station - settings.sheet_for("rib").thickness_m / 2.0 + 0.0002  # the rib's inner face is inboard of it
+    outer, inner = TubeStock(od_m=0.012, id_m=0.010), TubeStock(od_m=0.010, id_m=0.008)
+    plan = SparPlan((SparSegment(outer, joint, step), SparSegment(inner, step, semi)), spar.socket, joint, joint)
+    by = {t.label: t for t in _spar_tubes(layout, plan, settings)}
+    end = _tube_end(by["SP-R1"])
+    assert end[1] < step - 1e-6  # trimmed
+    axis = np.array(by["SP-R2"].axis)
+    overlap = float(np.dot(end - np.array(by["SP-R2"].start_m), axis))
+    assert overlap >= settings.min_insertion_diameters * inner.od_m - 1e-9
+
+
+def test_g2_lift_booms_are_strength_sized(g2_kit):
+    lift = [t for t in g2_kit.tubes if t.role == "lift_boom"]
+    mass = sum(t.tube.area_m2 * t.length_m * SETTINGS.carbon_density_kg_m3 for t in lift)
+    assert len(lift) == 2 and mass < 1.0  # R13's widest stock tube weighed 1.18 kg

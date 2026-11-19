@@ -1,7 +1,8 @@
 """Boom tubes, boom clamps and motor mount plates for the laser-cut kit (frame convention: see `kit.py`).
 
-- Boom tubes (R13): `boom_tube(layout diameter)` stock. The tail boom `TB-1` sits where the layout puts it. Each lift
-  boom `LB-R` / `LB-L` keeps its layout x, y and length; its top sits one plate thickness under the rotor hub plane
+- Boom tubes: the tail boom `TB-1` is `boom_tube(layout diameter)` stock (R13) where the layout puts it. Each lift boom
+  is the smallest stock tube that carries one lift motor's thrust at its farthest hub from the clamp (R21).
+  `LB-R` / `LB-L` keep their layout x, y and length; its top sits one plate thickness under the rotor hub plane
   (the layout boom's top), so the motor plates carry the motors at the layout height. Where the spar member is too
   low for that (the clamp needs a MIN_WEB_M web between the two tubes), the boom drops further and the motor plates
   sit under the hub plane by the difference.
@@ -23,13 +24,13 @@ from typing import Final, Optional, Sequence
 
 import build123d as bd
 
-from src.schemas.fabrication import FabricationSettings
+from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.tools.aero_cad.components import PlacedComponent
 from src.tools.aero_cad.layout import AircraftLayout, Boom
 from src.tools.fabrication.fuselage_parts import socket_axis_m, station_location
 from src.tools.fabrication.kit import KitPart, TubePart, TubeRole
 from src.tools.fabrication.rib_outline import Hole, circle_face, drill, keeps_web, largest_face, rect_face
-from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
+from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube, lift_boom_tube
 from src.tools.fabrication.wing_parts import spar_hole_m, wing_rib_stations
 
 CLAMP_LABELS: Final[tuple[str, ...]] = ("BC-R1", "BC-R2", "BC-L1", "BC-L2")
@@ -85,7 +86,7 @@ def _lift_motor_diameter_m(components: Sequence[PlacedComponent], index: int) ->
     return 0.0 if motor is None else motor.size_m[0]
 
 
-def _motor_plates(layout: AircraftLayout, boom_z: dict[int, float], tube_od_m: float,
+def _motor_plates(layout: AircraftLayout, boom_z: dict[int, float], boom_od: dict[int, float],
                   components: Sequence[PlacedComponent], settings: FabricationSettings) -> list[KitPart]:
     """`MP-k` on top of its boom under rotor hub k (hub z is the motor's underside)."""
     t, plates = settings.sheet_for("plate").thickness_m, []
@@ -93,7 +94,7 @@ def _motor_plates(layout: AircraftLayout, boom_z: dict[int, float], tube_od_m: f
         side = RIGHT if y > 0 else LEFT
         if side not in boom_z:
             raise KitUnavailable(f"MP-{k}: rotor hub at y = {y:.3f} m has no lift boom under it")
-        top = boom_z[side] + tube_od_m / 2.0
+        top = boom_z[side] + boom_od[side] / 2.0
         if top + t > z_hub + FIT_EPS_M:  # equal by construction when the spar doesn't force the boom down
             raise KitUnavailable(f"MP-{k}: the motor plate on the lowered boom would reach into the lift motor")
         outline = motor_plate_outline(motor_plate_diameter_m(_lift_motor_diameter_m(components, k - 1)))
@@ -138,10 +139,11 @@ def _seat_z(layout: AircraftLayout, spar: SparPlan, settings: FabricationSetting
     return z0 - radius * stretch, z1 - radius * stretch
 
 
-def _clamp(boom: Boom, layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> _Clamp:
+def _clamp(boom: Boom, tube: TubeStock, layout: AircraftLayout, spar: SparPlan,
+           settings: FabricationSettings) -> _Clamp:
     side, y_boom = (RIGHT if boom.y_m > 0 else LEFT), abs(boom.y_m)
     label = f"BC-{'R' if side == RIGHT else 'L'}1"
-    od = boom_tube(boom.diameter_m, settings).od_m
+    od = tube.od_m
     hole_d = od + settings.fit_clearance_m
     reach = hole_d / 2.0 + CLAMP_CHEEK_M
     span = _clear_of_ribs(label, y_boom, (y_boom - reach, y_boom + reach), od, spar, layout, settings)
@@ -174,33 +176,44 @@ def _clamp_plates(clamp: _Clamp, settings: FabricationSettings) -> list[KitPart]
 
 
 # ------------------------------------------------------------------------------------------- tubes ---
-def _tube(label: str, role: TubeRole, boom: Boom, z_m: float, settings: FabricationSettings) -> TubePart:
-    return TubePart(label, role, boom_tube(boom.diameter_m, settings), boom.length_m,
-                    (boom.x_start_m, boom.y_m, z_m), X_AXIS)
+def _tube(label: str, role: TubeRole, tube: TubeStock, boom: Boom, z_m: float) -> TubePart:
+    return TubePart(label, role, tube, boom.length_m, (boom.x_start_m, boom.y_m, z_m), X_AXIS)
 
 
 def _tail_tubes(layout: AircraftLayout, settings: FabricationSettings) -> list[TubePart]:
     boom: Optional[Boom] = layout.tail_boom
-    return [] if boom is None else [_tube("TB-1", "tail_boom", boom, boom.z_m, settings)]
+    return [] if boom is None else [_tube("TB-1", "tail_boom", boom_tube(boom.diameter_m, settings), boom, boom.z_m)]
+
+
+def _lift_tube(boom: Boom, layout: AircraftLayout, thrust_n: float, settings: FabricationSettings) -> TubeStock:
+    """R21: sized for one motor's thrust at the hub on this boom farthest from the clamp (the spar axis)."""
+    clamp_x = socket_axis_m(layout, abs(boom.y_m))[0]
+    hubs = [x for x, y, _ in layout.rotor_positions if (y > 0) == (boom.y_m > 0)]
+    arm = max((abs(x - clamp_x) for x in hubs), default=0.0)
+    return lift_boom_tube(thrust_n, arm, boom.diameter_m, settings)
 
 
 def boom_parts(
     layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
-    components: Sequence[PlacedComponent] = (),
+    components: Sequence[PlacedComponent] = (), lift_thrust_n: Optional[float] = None,
 ) -> tuple[tuple[KitPart, ...], tuple[TubePart, ...]]:
     """Clamp plates `BC-…`, motor plates `MP-1…4` and tubes (`TB-1`, `LB-R`, `LB-L`).
 
-    Fixed-wing layouts get only the tail-boom tube. `components` (optional) supplies the lift motors
-    (`vtol_motor_k`), whose diameter sizes the motor plates.
+    Fixed-wing layouts get only the tail-boom tube (R13). Lift booms are strength-sized (R21) from
+    `lift_thrust_n` (thrust per lift motor), which a layout with lift booms must supply. `components` (optional)
+    supplies the lift motors (`vtol_motor_k`), whose diameter sizes the motor plates.
     """
+    if layout.vtol_booms and lift_thrust_n is None:
+        raise ValueError("lift_thrust_n is required to size the lift booms (R21)")
     tubes, parts = _tail_tubes(layout, settings), []
     boom_z: dict[int, float] = {}
+    boom_od: dict[int, float] = {}
     for boom in layout.vtol_booms:
-        clamp = _clamp(boom, layout, spar, settings)
-        boom_z[clamp.side] = clamp.boom.y_m
+        stock = _lift_tube(boom, layout, lift_thrust_n, settings)  # type: ignore[arg-type]
+        clamp = _clamp(boom, stock, layout, spar, settings)
+        boom_z[clamp.side], boom_od[clamp.side] = clamp.boom.y_m, stock.od_m
         parts += _clamp_plates(clamp, settings)
-        tubes.append(_tube(f"LB-{'R' if clamp.side == RIGHT else 'L'}", "lift_boom", boom, clamp.boom.y_m, settings))
+        tubes.append(_tube(f"LB-{'R' if clamp.side == RIGHT else 'L'}", "lift_boom", stock, boom, clamp.boom.y_m))
     if layout.vtol_booms:
-        od = boom_tube(layout.vtol_booms[0].diameter_m, settings).od_m
-        parts += _motor_plates(layout, boom_z, od, components, settings)
+        parts += _motor_plates(layout, boom_z, boom_od, components, settings)
     return tuple(parts), tuple(tubes)

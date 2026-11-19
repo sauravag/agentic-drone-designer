@@ -85,8 +85,19 @@ class Kit:
     parts: tuple[KitPart, ...]
     tubes: tuple[TubePart, ...]
     linear: tuple[LinearStock, ...]
-    film_area_m2: float
-    fuselage_cover_area_m2: float
+    covering: tuple[CoverSurface, ...]  # film and fuselage cover: area and where it lies (mass placement)
     spar: SparPlan
     joins: tuple[str, ...]  # human-readable, e.g. "C-1a + C-1b at x = 0.512 m"
-    covering: tuple[CoverSurface, ...] = ()  # where the film and fuselage cover lie (mass placement)
+
+    def _covered_m2(self, kind: CoverKind) -> float:
+        return sum(c.area_m2 for c in self.covering if c.kind == kind)
+
+    @property
+    def film_area_m2(self) -> float:
+        """Film material area: both faces of the wing and tails (2 x planform)."""
+        return self._covered_m2("film")
+
+    @property
+    def fuselage_cover_area_m2(self) -> float:
+        """Fuselage cover area: the pod's lateral area."""
+        return self._covered_m2("fuselage")

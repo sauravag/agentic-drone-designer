@@ -3,7 +3,7 @@
 Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
 - `SP-R1…`, `SP-L1…` spar members, one per `SparPlan` segment. The root member `SP-x1` runs from the centreline
   (inside its socket) to the first step; each inner member reaches min_insertion_diameters x its own OD inboard
-  into its outer member (R18 bonded overlap), so it is that much longer than its segment.
+  of its outer member's actual end (R18 bonded overlap; that end may be trimmed inboard of the step, see below).
 - `SK-R`, `SK-L` socket tubes on each wing's spar axis from the centreline to the skin joint (R14). They, and the
   spar roots inside them, meet the other side's pair in a mitre at the centreline (`MITRE_LABELS`).
 - `PN-R`, `PN-L` 4 mm anti-rotation pins on the 70 % chord line, from the wing-box plate's inner face to
@@ -136,11 +136,12 @@ def _spar_tubes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSet
     tubes: list[TubePart] = []
     for side, name in SIDES:
         line = _wing_line(layout, side, SPAR_CHORD_STATION)
+        ends = [_member_end(line, spar, k, settings) for k in range(len(spar.segments))]
         for k, seg in enumerate(spar.segments):
-            inboard = 0.0 if k == 0 else seg.y_start_m
+            # R18: an inner member reaches its overlap past the outer member's actual (possibly trimmed) end
+            inboard = 0.0 if k == 0 else ends[k - 1]
             overlap = 0.0 if k == 0 else settings.min_insertion_diameters * seg.tube.od_m
-            end = _member_end(line, spar, k, settings)
-            tubes.append(_tube_on(f"SP-{name}{k + 1}", "spar", seg.tube, line, inboard, end, overlap))
+            tubes.append(_tube_on(f"SP-{name}{k + 1}", "spar", seg.tube, line, inboard, ends[k], overlap))
     return tubes
 
 
@@ -180,7 +181,7 @@ def _tail_spar(label: str, surface: SurfacePlanform, line: Line, root: float, be
                airfoil: AirfoilShape, settings: FabricationSettings) -> TubePart:
     """From just off the root surface (rim clear) out to the tip or where the depth stops admitting the tube, and
     short of the first rib without a hole (rim clear of its inner face, `below_m` inboard of its station)."""
-    depth, tip, radius = spar_depth_at(surface, airfoil, settings), surface.semi_span_m, tube.od_m / 2.0
+    depth, tip, radius = spar_depth_at(surface, airfoil, settings, root_doubler_m=None), surface.semi_span_m, tube.od_m / 2.0
     end = tip if depth(tip) >= tube.od_m - FIT_EPS_M else depth_limit_m(depth, tube.od_m, root, tip)
     blocked = _first_rib_without_hole(surface, root, airfoil, tube, settings)
     if blocked is not None:
@@ -275,7 +276,7 @@ def _plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
     radius = fuselage_radius_at(layout, socket_axis_m(layout, 0.0)[0])
     joint = joint_y_m(radius, WING_Z_FRACTION * layout.fuselage_diameter_m)
     boom_y = max((abs(b.y_m) for b in layout.vtol_booms), default=None)
-    depth = spar_depth_at(layout.wing, airfoil, settings)
+    depth = spar_depth_at(layout.wing, airfoil, settings, root_doubler_m=joint)
     return plan_spar(sizing.mtow_kg, layout.wing.semi_span_m, joint, depth, boom_y, settings)
 
 
@@ -293,7 +294,8 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, settings))
     fuselage = fuselage_parts(layout, spar, components, settings)
     trays = component_plates(components, layout, settings, spar=spar)
-    booms, boom_tubes = boom_parts(layout, spar, settings, components=components)
+    booms, boom_tubes = boom_parts(layout, spar, settings, components=components,
+                                   lift_thrust_n=sizing.vtol_thrust_per_motor_n)
     motor = cruise_motor_plate(components, layout, settings)
     parts = _split_all((*ribs, *fuselage, *trays, *booms, *motor), settings)
     tubes = (*_spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
@@ -301,9 +303,4 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     covering = _covering(layout)
-    return Kit(
-        parts=parts, tubes=tubes, linear=linear,
-        film_area_m2=sum(c.area_m2 for c in covering if c.kind == "film"),
-        fuselage_cover_area_m2=sum(c.area_m2 for c in covering if c.kind == "fuselage"),
-        spar=spar, joins=join_notes(parts), covering=covering,
-    )
+    return Kit(parts=parts, tubes=tubes, linear=linear, covering=covering, spar=spar, joins=join_notes(parts))

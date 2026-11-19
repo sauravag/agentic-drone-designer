@@ -68,7 +68,7 @@ def _kit_inputs(designs: dict, case: str) -> KitInputs:
     wing = layout.wing
     joint = joint_y_m(layout.fuselage_diameter_m / 2.0, wing.z_root_m)
     boom_y = max(abs(b.y_m) for b in layout.vtol_booms) if layout.vtol_booms else None
-    depth = spar_depth_at(wing, airfoil, DEFAULT_FABRICATION)
+    depth = spar_depth_at(wing, airfoil, DEFAULT_FABRICATION, root_doubler_m=joint)
     spar = plan_spar(sizing.mtow_kg, wing.semi_span_m, joint, depth, boom_y, DEFAULT_FABRICATION)
     return layout, airfoil, spar, DEFAULT_FABRICATION
 

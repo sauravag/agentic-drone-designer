@@ -622,7 +622,17 @@ def _lift_motors(designs, layout):
 @pytest.fixture(scope="module")
 def g2_booms(g2_kit_inputs, designs):
     layout, _, spar, settings = g2_kit_inputs
-    return boom_parts(layout, spar, settings, _lift_motors(designs, layout))
+    return boom_parts(layout, spar, settings, _lift_motors(designs, layout), lift_thrust_n=_thrust(designs))
+
+
+def _thrust(designs) -> float:
+    return designs["g2"][0].vtol_thrust_per_motor_n
+
+
+def test_quadplane_boom_parts_need_the_lift_thrust(g2_kit_inputs):
+    layout, _, spar, settings = g2_kit_inputs
+    with pytest.raises(ValueError, match="lift_thrust_n"):
+        boom_parts(layout, spar, settings)
 
 
 def test_fixed_wing_has_no_boom_clamps(g1_kit_inputs):
@@ -636,14 +646,19 @@ def test_fixed_wing_has_no_boom_clamps(g1_kit_inputs):
     assert tail.length_m == pytest.approx(layout.tail_boom.length_m)
 
 
-def test_boom_tube_is_the_r13_stock_tube(g2_kit_inputs, g2_booms):
+def test_lift_boom_is_the_r21_strength_sized_tube(g2_kit_inputs, g2_booms, designs):
+    """R21: sized for one motor's thrust at the farthest hub from the clamp; lighter than R13's widest tube."""
+    from src.tools.fabrication.tubes import lift_boom_tube
     layout, _, _, settings = g2_kit_inputs
     _, tubes = g2_booms
     lift = [t for t in tubes if t.role == "lift_boom"]
     assert len(lift) == 2
     for tube, boom in zip(sorted(lift, key=lambda t: -t.start_m[1]), layout.vtol_booms):
+        clamp_x = socket_axis_m(layout, abs(boom.y_m))[0]
+        arm = max(abs(x - clamp_x) for x, y, _ in layout.rotor_positions if (y > 0) == (boom.y_m > 0))
         assert tube.tube in settings.tubes
-        assert tube.tube == boom_tube(boom.diameter_m, settings)
+        assert tube.tube == lift_boom_tube(_thrust(designs), arm, boom.diameter_m, settings)
+        assert tube.tube.area_m2 < boom_tube(boom.diameter_m, settings).area_m2
         assert tube.start_m[:2] == pytest.approx((boom.x_start_m, boom.y_m))
         assert tube.axis == (1.0, 0.0, 0.0) and tube.length_m == pytest.approx(boom.length_m)
 
@@ -737,9 +752,9 @@ def test_lift_boom_keeps_its_layout_height_when_the_spar_allows(drop_m, g2_kit_i
     layout, _, spar, settings = g2_kit_inputs
     forced_z = next(t_ for t_ in g2_booms[1] if t_.role == "lift_boom").start_m[2]
     low = _lowered_quadplane(layout, drop_m)
-    parts, tubes = boom_parts(low, spar, settings, _lift_motors(designs, low))
+    parts, tubes = boom_parts(low, spar, settings, _lift_motors(designs, low), lift_thrust_n=_thrust(designs))
     t = settings.sheet_for("plate").thickness_m
-    od = boom_tube(low.vtol_booms[0].diameter_m, settings).od_m
+    od = next(t_ for t_ in tubes if t_.role == "lift_boom").tube.od_m
     under_hub = low.vtol_booms[0].z_m + low.vtol_booms[0].diameter_m / 2 - t - od / 2
     for tube in (t_ for t_ in tubes if t_.role == "lift_boom"):
         assert tube.start_m[2] == pytest.approx(min(under_hub, forced_z), abs=1e-9)
@@ -759,11 +774,11 @@ def test_g2_motor_plates_carry_their_motors(g2_kit_inputs, g2_booms):
         assert part_solid(by[f"MP-{k}"], settings).bounding_box().max.Z <= z_hub + 1e-9
 
 
-def test_one_sided_boom_set_is_unavailable(g2_kit_inputs):
+def test_one_sided_boom_set_is_unavailable(g2_kit_inputs, designs):
     layout, _, spar, settings = g2_kit_inputs
     one = dataclasses.replace(layout, vtol_booms=layout.vtol_booms[:1])
     with pytest.raises(KitUnavailable, match="MP-"):
-        boom_parts(one, spar, settings)
+        boom_parts(one, spar, settings, lift_thrust_n=_thrust(designs))
 
 
 def test_join_notes_ignore_labels_that_merely_contain_d():
@@ -778,3 +793,38 @@ def test_narrow_neck_far_from_the_joint_still_splits():
     part = KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)))
     parts = split_to_bed(part, DEFAULT_FABRICATION)
     assert len(_pieces(parts)) == 3 and len(_doublers(parts)) == 2
+
+
+# ------------------------------------------------------------------- fix round: root doubler depth ---
+from src.tools.fabrication.tubes import SparPlan, SparSegment, plan_spar  # noqa: E402
+from src.tools.fabrication.wing_parts import line_lean, spar_depth_at  # noqa: E402
+
+
+def test_root_station_depth_uses_the_doubler_thickness(g1_kit_inputs):
+    layout, airfoil, spar, settings = g1_kit_inputs
+    wing, joint = layout.wing, spar.joint_y_m
+    plain = spar_depth_at(wing, airfoil, settings, root_doubler_m=None)
+    root = spar_depth_at(wing, airfoil, settings, root_doubler_m=joint)
+    lean = line_lean(wing, airfoil, 0.25)
+    extra = (settings.sheet_for("doubler").thickness_m - settings.sheet_for("rib").thickness_m) * lean
+    assert root(joint) == pytest.approx(plain(joint) - extra / math.hypot(1.0, lean), abs=1e-12)
+    assert root(joint + 0.05) == plain(joint + 0.05)
+
+
+def test_a_root_tube_that_only_fits_a_thin_rib_is_never_planned(g1_kit_inputs):
+    """A tube between the 1.5 mm and 3 mm depths breaks WR-01's web, so the plan must not pick it as the root."""
+    layout, airfoil, spar, settings = g1_kit_inputs
+    wing, joint = layout.wing, spar.joint_y_m
+    plain = spar_depth_at(wing, airfoil, settings, root_doubler_m=None)(joint)
+    root = spar_depth_at(wing, airfoil, settings, root_doubler_m=joint)(joint)
+    od = 0.5 * (plain + root)
+    tube = TubeStock(od_m=od, id_m=0.5 * od)
+    rod = TubeStock(od_m=0.003, id_m=0.0)
+    plan = SparPlan((SparSegment(tube, joint, joint + 0.001), SparSegment(rod, joint + 0.001, wing.semi_span_m)),
+                    spar.socket, joint, joint)
+    with pytest.raises(KitUnavailable, match="WR-01"):
+        wing_ribs(layout, airfoil, plan, settings)
+    only = settings.model_copy(update={"tubes": (tube,)})
+    depth = spar_depth_at(wing, airfoil, only, root_doubler_m=joint)
+    with pytest.raises(KitUnavailable, match=f"y = {joint:.3f}"):
+        plan_spar(0.5, wing.semi_span_m, joint, depth, None, only)

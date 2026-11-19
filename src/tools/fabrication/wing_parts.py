@@ -58,19 +58,26 @@ RIB_ROTATION_DEG: Final[tuple[float, float, float]] = (90.0, 0.0, 0.0)  # local 
 FLAT_ROTATION_DEG: Final[tuple[float, float, float]] = (0.0, 0.0, 0.0)
 
 
-def spar_depth_at(surface: SurfacePlanform, airfoil: AirfoilShape, settings: FabricationSettings) -> Callable[[float], float]:
+def spar_depth_at(surface: SurfacePlanform, airfoil: AirfoilShape, settings: FabricationSettings, *,
+                  root_doubler_m: Optional[float]) -> Callable[[float], float]:
     """Usable tube depth at span station y, measured the way the rib's web check measures it.
 
     The local "thickness" is the diameter of the largest circle centred on the camber line at the spar
     station (twice its distance to the outline). That is slightly less than the vertical thickness, because
     the surfaces slope, so a tube sized to it always keeps the minimum web around its hole. The spar line leans
-    (taper, dihedral), so the depth is also reduced to the tube whose R19 oblique rib hole still fits.
+    (taper, dihedral), so the depth is also reduced to the tube whose R19 oblique rib hole still fits. At
+    `root_doubler_m` (the wing's root station, None for tails) the rib is the thicker root doubler.
     """
     centre = bd.Vertex(*camber_point(airfoil, 1.0, SPAR_CHORD_STATION), 0.0)
     ratio = 2.0 * centre.distance_to(airfoil_face(airfoil, 1.0).outer_wire())  # unit chord; scales with chord
     lean = line_lean(surface, airfoil, SPAR_CHORD_STATION)
-    walk = settings.sheet_for("rib").thickness_m * lean  # R19: the rib hole grows to OD/cos + t tan
-    return lambda y: (usable_depth_m(ratio * surface.chord_at(y), settings) - walk) / math.hypot(1.0, lean)
+    t_rib, t_root = settings.sheet_for("rib").thickness_m, settings.sheet_for("doubler").thickness_m
+
+    def depth(y: float) -> float:
+        on_root = root_doubler_m is not None and abs(y - root_doubler_m) <= FIT_EPS_M
+        walk = (t_root if on_root else t_rib) * lean  # R19: the rib hole grows to OD/cos + t tan
+        return (usable_depth_m(ratio * surface.chord_at(y), settings) - walk) / math.hypot(1.0, lean)
+    return depth
 
 
 def wing_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
@@ -276,7 +283,7 @@ def fin_start_m(layout: AircraftLayout, settings: FabricationSettings) -> float:
 def tail_spar_tube(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> TubeStock:
     """Smallest stock tube that fits the thinner tail root (no stress check: tail loads are small)."""
     root = tail_root_radius_m(layout)
-    depth = min(spar_depth_at(s, airfoil, settings)(root) for s in (layout.htail, layout.vtail))
+    depth = min(spar_depth_at(s, airfoil, settings, root_doubler_m=None)(root) for s in (layout.htail, layout.vtail))
     tube = next((t for t in settings.tubes if t.od_m <= depth + FIT_EPS_M), None)
     if tube is None:
         raise KitUnavailable(f"no stock tube fits the tail root ({depth * 1e3:.1f} mm usable depth)")
