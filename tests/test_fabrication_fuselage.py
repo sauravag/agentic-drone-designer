@@ -396,10 +396,11 @@ def _boom_solid(layout, settings) -> tuple[str, bd.Solid]:
 
 
 @pytest.mark.parametrize("inputs", ["g1_kit_inputs", "g2_kit_inputs"])
-def test_no_two_fuselage_parts_or_the_socket_intersect(inputs, request):
+def test_no_two_fuselage_parts_or_the_socket_intersect(inputs, request, designs):
+    """With the real payload, motor and a battery: forked crutch, split formers and moved firewall included."""
     kit_inputs = request.getfixturevalue(inputs)
     layout, _, spar, settings = kit_inputs
-    parts = _fuselage(kit_inputs)
+    parts = _fuselage(kit_inputs, components=_real_components(designs, inputs.split("_")[0], layout))
     extras = _socket_tubes(layout, spar) + _pin_rods(layout, spar, parts, settings) + [_boom_solid(layout, settings)]
     _assert_no_intersections([(p.label, part_solid(p, settings)) for p in parts] + extras)
     for part in parts:
@@ -408,3 +409,36 @@ def test_no_two_fuselage_parts_or_the_socket_intersect(inputs, request):
             assert hole.distance_to(part.outline.outer_wire()) >= MIN_WEB_M - TOL_M, part.label
             for other in holes[i + 1:]:
                 assert hole.distance_to(other) >= MIN_WEB_M - TOL_M, part.label
+
+
+def test_crutch_stops_at_the_boom_root(g1_kit_inputs):
+    """The last regular former lands within 10 mm of the boom root: the crutch must still stop at x_start."""
+    layout, _, spar, settings = g1_kit_inputs
+    t = settings.sheet_for("former").thickness_m
+    last = max(x for x in former_stations(layout, spar, settings) if x < layout.tail_boom.x_start_m)
+    boom = dataclasses.replace(layout.tail_boom, x_start_m=last + t + 0.005)
+    parts = fuselage_parts(dataclasses.replace(layout, tail_boom=boom), spar, (), settings)
+    crutch = part_solid(ribs_by_label(parts)["C-1"], settings).bounding_box()
+    assert crutch.max.X <= boom.x_start_m + 1e-9
+
+
+def test_components_outside_the_fuselage_do_not_move_the_firewall(g1_kit_inputs):
+    layout = g1_kit_inputs[0]
+    rotors = tuple(PlacedComponent(f"vtol_motor_{i}", "box", 0.2, (0.05, 0.05, 0.03), (0.0, y, 0.05), False)
+                   for i, y in enumerate((0.48, -0.48)))
+    parts = ribs_by_label(_fuselage(g1_kit_inputs, components=rotors))
+    assert parts["FW-1a"].location.position.X == pytest.approx(FIRST_FORMER_FRACTION * layout.fuselage_length_m)
+
+
+def test_component_eating_a_wing_box_tab_is_unavailable(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    plate = ribs_by_label(_fuselage(g1_kit_inputs, components=()))["WM-R"]
+    box = part_solid(plate, settings).bounding_box()
+    fore = _socket_band(layout, spar)[0]
+    t = settings.sheet_for("former").thickness_m
+    length = 0.004  # just aft of the fore former (so the former is clear), its opening reaching the tab root
+    x_min = fore + t + COMPONENT_GAP_M / 2 + 0.001
+    clip = PlacedComponent("cable_clip", "box", 0.005, (length, 0.002, box.max.Z - box.min.Z + 0.01),
+                           (x_min + length / 2, 0.5 * (box.min.Y + box.max.Y), 0.5 * (box.min.Z + box.max.Z)), False)
+    with pytest.raises(KitUnavailable, match="WM-R.*cable_clip"):
+        _fuselage(g1_kit_inputs, components=(clip,))

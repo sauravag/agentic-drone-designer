@@ -118,7 +118,8 @@ class _Frame:
     @property
     def crutch_x(self) -> tuple[float, float]:
         end = self.stations[-1] + self.former_t_m + CRUTCH_TAIL_MARGIN_M
-        return self.stations[0] + 2.0 * self.bulkhead_t_m, min(end, *self.boom_mounts)
+        boom = self.layout.tail_boom
+        return self.stations[0] + 2.0 * self.bulkhead_t_m, end if boom is None else min(end, boom.x_start_m)
 
 
 # ------------------------------------------------------------------------------------- geometry ---
@@ -160,20 +161,18 @@ def _cut_openings(base: bd.Face, rim: bd.Face, cuts: Sequence[Cut], region: Opti
     """Cut every opening from `base`; return the resulting pieces.
 
     An opening inside `rim` is a closed hole and must keep a MIN_WEB_M band of material (within `region`) all
-    round. An opening breaking through `rim` is a notch: it must only keep that band clear of the `protected`
-    features (tabs). Openings may merge with each other."""
+    round. An opening breaking through `rim` is a notch. Every opening must stay MIN_WEB_M clear of each
+    `protected` feature (tabs). Openings may merge with each other."""
     if not cuts:
         return [base]
     voids = [face for _, face in cuts]
     result = base.cut(*voids)
     for name, cut in cuts:
         message = f"{label}: the opening for the {name} leaves less than {WEB_TEXT} of the {part}"
-        if _area(cut.cut(rim)) <= AREA_EPS_M2:
-            _assert_web(result, cut, voids, region, message)
-            continue
-        band = bd.offset(cut, amount=MIN_WEB_M).cut(*voids)
-        if any(_area(zone.cut(result)) > AREA_EPS_M2 for zone in (_common(band, p) for p in protected) if zone):
+        if any(_area(_common(cut, bd.offset(p, amount=MIN_WEB_M))) > AREA_EPS_M2 for p in protected):
             raise KitUnavailable(message)
+        if _area(cut.cut(rim)) <= AREA_EPS_M2:  # a closed hole; a notch through the rim needs only the tab check
+            _assert_web(result, cut, voids, region, message)
     return list(result.faces())
 
 
@@ -244,12 +243,25 @@ def _mount_stations(layout: AircraftLayout, spar: SparPlan) -> tuple[float, floa
     return min(xs) - offset, max(xs) + offset, pin
 
 
+def _in_pod(layout: AircraftLayout, c: PlacedComponent) -> bool:
+    """The component's box reaches inside the fuselage skin: within the pod's length, and its yz box overlaps the
+    largest skin section over its x range (r is piecewise linear, so ends and profile corners bound it)."""
+    x0, x1 = max(c.x_min, 0.0), min(c.x_max, layout.fuselage_length_m)
+    if x0 >= x1:
+        return False
+    radius = max(fuselage_radius_at(layout, x) for x in (x0, x1, *_profile_corners(layout, x0, x1)))
+    _, ly, lz = c.size_m
+    box = rect_face(c.center_m[1] - ly / 2.0, c.center_m[2] - lz / 2.0, c.center_m[1] + ly / 2.0, c.center_m[2] + lz / 2.0)
+    return _area(_common(box, _disc(radius))) > AREA_EPS_M2
+
+
 def _firewall_station(layout: AircraftLayout, settings: FabricationSettings,
                       components: Sequence[PlacedComponent]) -> float:
     """FIRST_FORMER_FRACTION of the length, or earlier so the firewall pair ends COMPONENT_GAP_M ahead of the
-    foremost component in the pod (components wholly ahead of the nose, like the tractor motor, don't count)."""
+    foremost component in the pod (`_in_pod`: the tractor motor ahead of the nose and lift rotors out on the
+    booms don't count)."""
     station = FIRST_FORMER_FRACTION * layout.fuselage_length_m
-    in_pod = [c.x_min for c in components if c.x_max > 0.0]
+    in_pod = [c.x_min for c in components if _in_pod(layout, c)]
     if in_pod:
         station = min(station, min(in_pod) - COMPONENT_GAP_M - 2.0 * settings.sheet_for("bulkhead").thickness_m)
     if fuselage_radius_at(layout, station) <= settings.fuselage_cover_thickness_m:
@@ -393,8 +405,8 @@ def _mount_plate(frame: _Frame, side: int) -> KitPart:
     tabs = (rect_face(m.x_min_m, m.tab_z_m[0], m.body_x_m[0], m.tab_z_m[1]),
             rect_face(m.body_x_m[1], m.tab_z_m[0], m.x_max_m, m.tab_z_m[1]))
     plain = _single_face(body.fuse(*tabs).clean(), label)
-    outline = _single_face(bd.Compound(_cut_openings(plain, plain, _plate_component_cuts(frame, side), None, (),
-                                                     label, "plate")), label)
+    pieces = _cut_openings(plain, plain, _plate_component_cuts(frame, side), None, tabs, label, "plate")
+    outline = _single_face(bd.Compound(pieces), label)
     socket, pin = m.holes
     for hole, others, name in ((socket, [], "socket"), (pin, [socket], "pin")):
         if not keeps_web(outline, hole, others):
