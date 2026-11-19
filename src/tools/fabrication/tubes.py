@@ -24,6 +24,8 @@ BISECTION_ITERATIONS: Final[int] = 50
 HOVER_ARMS: Final[int] = 2  # two booms' thrust reacts through the spar per side
 HOVER_SHARE: Final[float] = 0.25  # each motor carries a quarter of the weight
 ROOT_SPAN_M: Final[float] = 0.0
+BOOM_DEFLECTION_FRACTION: Final[float] = 0.01  # R22: lift-boom tip deflection limit, fraction of its arm
+CANTILEVER_DEFLECTION_FACTOR: Final[float] = 3.0  # tip load: delta = P L^3 / (3 E I)
 
 
 class KitUnavailable(Exception):
@@ -84,17 +86,26 @@ def boom_tube(diameter_m: float, settings: FabricationSettings) -> TubeStock:
     return floor
 
 
+def cantilever_deflection_m(tube: TubeStock, load_n: float, arm_m: float, settings: FabricationSettings) -> float:
+    """Tip deflection of a tube cantilevered over `arm_m` under a tip load: P L^3 / (3 E I)."""
+    stiffness = CANTILEVER_DEFLECTION_FACTOR * settings.carbon_modulus_pa * tube.second_moment_m4
+    return load_n * max(arm_m, 0.0) ** 3 / stiffness
+
+
 def lift_boom_tube(thrust_n: float, arm_m: float, max_diameter_m: float, settings: FabricationSettings) -> TubeStock:
-    """R21: the smallest stock tube (lighter wall first at equal OD) whose bending stress under one lift motor's
-    thrust at `arm_m` from the clamp is within sigma_allow / safety_factor, no wider than the layout boom (or the
-    MIN_BOOM_DIAMETER_M floor when the layout boom is thinner than that)."""
+    """The smallest stock tube (lighter wall first at equal OD) that carries one lift motor's thrust at `arm_m` from
+    the clamp within sigma_allow / safety_factor (R21) and deflects at most BOOM_DEFLECTION_FRACTION x arm there
+    (R22), no wider than the layout boom (or the MIN_BOOM_DIAMETER_M floor when the layout boom is thinner)."""
     floor_m, moment = MIN_BOOM_DIAMETER_M - FIT_EPS_M, thrust_n * max(arm_m, 0.0)
     cap_m = max(max_diameter_m, MIN_BOOM_DIAMETER_M) + FIT_EPS_M
+    limit_m = BOOM_DEFLECTION_FRACTION * max(arm_m, 0.0)
     fits = sorted((t for t in settings.tubes if floor_m <= t.od_m <= cap_m), key=lambda t: (t.od_m, t.area_m2))
-    tube = next((t for t in fits if _passes(t, moment, settings)), None)
+    tube = next((t for t in fits if _passes(t, moment, settings)
+                 and cantilever_deflection_m(t, thrust_n, arm_m, settings) <= limit_m), None)
     if tube is None:
         raise KitUnavailable(
-            f"no stock lift boom up to {cap_m * 1e3:.0f} mm carries {thrust_n:.0f} N at a {arm_m * 1e3:.0f} mm arm"
+            f"no stock lift boom up to {cap_m * 1e3:.0f} mm carries {thrust_n:.0f} N at a {arm_m * 1e3:.0f} mm arm "
+            f"within the allowable stress and a {limit_m * 1e3:.1f} mm tip deflection"
         )
     return tube
 

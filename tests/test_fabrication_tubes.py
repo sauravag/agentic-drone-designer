@@ -212,9 +212,41 @@ def test_lift_boom_is_the_smallest_stock_tube_that_carries_the_hub_moment(thrust
     assert MIN_BOOM_DIAMETER_M - 1e-9 <= tube.od_m <= cap + 1e-9
     smaller = [t for t in settings.tubes if (t.od_m, t.area_m2) < (tube.od_m, tube.area_m2)
                and t.od_m >= MIN_BOOM_DIAMETER_M - 1e-9]
-    assert not any(_passes_r21(t, moment, settings) for t in smaller)
+    stiff = [t for t in smaller if _deflection_m(t, thrust_n, arm_m, settings) <= 0.01 * arm_m]  # R22 also applies
+    assert not any(_passes_r21(t, moment, settings) for t in stiff)
 
 
 def test_lift_boom_wider_than_the_layout_boom_is_unavailable():
     with pytest.raises(_Unavailable, match="lift boom"):
         lift_boom_tube(400.0, 0.6, 0.020, DEFAULT_FABRICATION)
+
+
+# ------------------------------------------------------------------------- R22 lift-boom stiffness ---
+from src.tools.fabrication.tubes import BOOM_DEFLECTION_FRACTION  # noqa: E402
+
+
+def _deflection_m(tube, thrust_n: float, arm_m: float, settings) -> float:
+    return thrust_n * arm_m**3 / (3.0 * settings.carbon_modulus_pa * tube.second_moment_m4)
+
+
+def test_carbon_modulus_and_deflection_limit_are_the_ruled_values():
+    assert DEFAULT_FABRICATION.carbon_modulus_pa == pytest.approx(70e9)
+    assert BOOM_DEFLECTION_FRACTION == pytest.approx(0.01)
+
+
+@pytest.mark.parametrize("thrust_n, arm_m", [(68.8, 0.691), (30.0, 0.45), (120.0, 0.55)])
+def test_lift_boom_tip_deflects_at_most_one_percent_of_its_arm(thrust_n, arm_m):
+    settings, cap = DEFAULT_FABRICATION, 0.040
+    tube = lift_boom_tube(thrust_n, arm_m, cap, settings)
+    assert _deflection_m(tube, thrust_n, arm_m, settings) <= BOOM_DEFLECTION_FRACTION * arm_m
+    smaller = [t for t in settings.tubes if (t.od_m, t.area_m2) < (tube.od_m, tube.area_m2)
+               and t.od_m >= MIN_BOOM_DIAMETER_M - 1e-9]
+    for t in smaller:
+        ok = _passes_r21(t, thrust_n * arm_m, settings) and \
+            _deflection_m(t, thrust_n, arm_m, settings) <= BOOM_DEFLECTION_FRACTION * arm_m
+        assert not ok, t
+
+
+def test_lift_boom_too_flexible_within_the_layout_diameter_is_unavailable():
+    with pytest.raises(_Unavailable, match="deflect"):
+        lift_boom_tube(68.8, 0.691, 0.025, DEFAULT_FABRICATION)  # strong enough, far too flexible

@@ -100,6 +100,9 @@ class FabricationSettings(BaseModel):
     fuselage_cover_thickness_m: float = Field(0.0015, gt=0.0, description="Fuselage skin thickness (m).")
     glue_fraction: float = Field(0.10, ge=0.0, le=1.0, description="Adhesive mass as a fraction of structure mass.")
     carbon_density_kg_m3: float = Field(1600.0, gt=0.0, description="Carbon tube / rod density (kg/m^3).")
+    carbon_modulus_pa: float = Field(
+        70e9, gt=0.0, description="Carbon tube / rod bending (Young's) modulus (Pa), for boom stiffness."
+    )
     sigma_allow_pa: float = Field(500e6, gt=0.0, description="Allowable carbon stress (Pa).")
     safety_factor: float = Field(1.5, ge=1.0, description="Ultimate-load safety factor.")
     n_limit: float = Field(4.0, gt=0.0, description="Limit load factor (g).")

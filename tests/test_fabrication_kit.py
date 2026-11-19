@@ -344,3 +344,9 @@ def test_g2_lift_booms_are_strength_sized(g2_kit):
     lift = [t for t in g2_kit.tubes if t.role == "lift_boom"]
     mass = sum(t.tube.area_m2 * t.length_m * SETTINGS.carbon_density_kg_m3 for t in lift)
     assert len(lift) == 2 and mass < 1.0  # R13's widest stock tube weighed 1.18 kg
+
+
+def test_g2_lift_booms_are_stiff_enough(g2_kit):
+    """R22: the hand estimate (68.8 N at 0.691 m needs I >= 1.56e-8 m^4) gives 32 x 28 mm."""
+    for tube in (t for t in g2_kit.tubes if t.role == "lift_boom"):
+        assert (round(tube.tube.od_m * 1e3), round(tube.tube.id_m * 1e3)) == (32, 28)
