@@ -83,9 +83,10 @@ def contains(face: bd.Face, hole: Hole) -> bool:
 
 
 def clearance_m(face: bd.Face, x_m: float, y_m: float, holes: Sequence[Hole]) -> float:
-    """Distance from a point inside `face` to its outline and to the edge of every hole (negative inside one)."""
-    point = bd.Vector(x_m, y_m, 0.0)
-    gaps = [bd.Vertex(x_m, y_m, 0.0).distance_to(face.outer_wire())]
+    """Distance from a point inside `face` to its outline, its existing openings and the edge of every hole
+    in `holes` (negative inside one)."""
+    point, vertex = bd.Vector(x_m, y_m, 0.0), bd.Vertex(x_m, y_m, 0.0)
+    gaps = [vertex.distance_to(wire) for wire in (face.outer_wire(), *face.inner_wires())]
     gaps += [(point - bd.Vector(h.x_m, h.y_m, 0.0)).length - h.diameter_m / 2.0 for h in holes]
     return min(gaps)
 

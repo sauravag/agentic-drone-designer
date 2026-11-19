@@ -1,4 +1,4 @@
-"""Task 3: kit model and wing/tail rib outlines (flat faces, metres, located into the aircraft frame)."""
+"""Tasks 3-4: kit model, wing/tail rib outlines and fuselage parts (flat faces, metres, located into the aircraft frame)."""
 
 import dataclasses
 import itertools
@@ -8,14 +8,31 @@ import build123d as bd
 import pytest
 
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil
-from src.tools.aero_cad.layout import AILERON_ETA, TAIL_AIRFOIL_NAME, TAIL_CONTROL_ETA
+from src.tools.aero_cad.components import PlacedComponent
+from src.tools.aero_cad.layout import (
+    AILERON_ETA,
+    TAIL_AIRFOIL_NAME,
+    TAIL_BOOM_START_FRACTION,
+    TAIL_CONTROL_ETA,
+    fuselage_radius_at,
+)
 from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.schemas.fabrication import TubeStock
+from src.tools.fabrication.fuselage_parts import (
+    FIRST_FORMER_FRACTION,
+    FORMER_PITCH_M,
+    STATION_MERGE_M,
+    former_stations,
+    fuselage_parts,
+    socket_axis_m,
+)
+from src.tools.fabrication.rib_outline import rect_face
 from src.tools.fabrication.tubes import MIN_WEB_M
 from src.tools.fabrication.wing_parts import (
     AILERON_HINGE_FRACTION,
     PIN_CHORD_FRACTION,
+    PIN_ROD_DIAMETER_M,
     TAIL_HINGE_FRACTION,
     tail_ribs,
     tail_spar_tube,
@@ -273,3 +290,200 @@ def test_fin_sits_on_a_mount_saddle_on_the_boom(g1_kit_inputs, tails):
     vt = layout.vtail
     assert (mount.min.X, mount.max.X) == pytest.approx((vt.x_le_root_m, vt.x_le_root_m + vt.root_chord_m), abs=1e-9)
     assert part_solid(by["V-01"], settings).bounding_box().min.Z == pytest.approx(r_boom + t_plate, abs=1e-9)
+
+
+# ------------------------------------------------------------------------------- Task 4: fuselage ---
+
+COVER_M = 0.0015
+AREA_TOL_M2 = 1e-10
+
+
+def _test_battery(layout, length_m: float = 0.10, width_frac: float = 0.5) -> PlacedComponent:
+    """A battery on the axis just aft of the wing-mount plates (clear of the socket, pin and tail boom)."""
+    wing = layout.wing
+    x_min = wing.x_le_root_m + PIN_CHORD_FRACTION * wing.root_chord_m + 0.02
+    size = (length_m, width_frac * layout.fuselage_diameter_m, 0.35 * layout.fuselage_diameter_m)
+    return PlacedComponent("battery", "box", 0.5, size, (x_min + length_m / 2, 0.0, 0.0))
+
+
+def _fuselage(inputs, components=None):
+    layout, _, spar, settings = inputs
+    placed = (_test_battery(layout),) if components is None else components
+    return fuselage_parts(layout, spar, placed, settings)
+
+
+@pytest.fixture(scope="module")
+def fuselage(g1_kit_inputs):
+    return _fuselage(g1_kit_inputs)
+
+
+def _formers(parts) -> list[KitPart]:
+    return [p for p in parts if p.label.startswith("F-")]
+
+
+def _slab_x(part: KitPart, settings) -> tuple[float, float]:
+    box = part_solid(part, settings).bounding_box()
+    return box.min.X, box.max.X
+
+
+def _yz_box(c: PlacedComponent) -> bd.Face:
+    _, ly, lz = c.size_m
+    return rect_face(c.center_m[1] - ly / 2, c.center_m[2] - lz / 2, c.center_m[1] + ly / 2, c.center_m[2] + lz / 2)
+
+
+def _overlap_area(a: bd.Face, b: bd.Face) -> float:
+    common = a.intersect(b)
+    if common is None:
+        return 0.0
+    return sum(f.area for shape in (common if isinstance(common, list) else [common]) for f in shape.faces())
+
+
+def test_former_stations_follow_the_pitch_and_clear_the_socket(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    stations = former_stations(layout, spar, settings)
+    x_s = socket_axis_m(layout)[0]
+    extra = spar.socket.od_m / 2 + 0.010
+    assert stations[0] == pytest.approx(FIRST_FORMER_FRACTION * layout.fuselage_length_m)
+    assert stations[-1] <= TAIL_BOOM_START_FRACTION * layout.fuselage_length_m + 1e-12
+    assert FORMER_PITCH_M == 0.12 and STATION_MERGE_M == 0.020
+    assert x_s - extra in stations and x_s + extra in stations
+    assert list(stations) == sorted(stations)
+    assert min(b - a for a, b in zip(stations, stations[1:])) >= STATION_MERGE_M - 1e-12
+    assert not any(x_s - extra < x < x_s + extra for x in stations)  # nothing between the socket stations
+
+
+def test_formers_follow_the_oml_minus_covering(g1_kit_inputs, fuselage):
+    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+    for label in ("F-03U", "F-03L"):
+        f = ribs_by_label(fuselage)[label]
+        box = f.outline.bounding_box()
+        radius = max(box.max.Y, -box.min.Y)  # local Y is aircraft z
+        assert radius == pytest.approx(fuselage_radius_at(layout, f.location.position.X) - COVER_M, abs=1e-5)
+        assert f.family == "former"
+
+
+def test_component_crossing_a_former_gets_an_opening(g1_kit_inputs, fuselage):
+    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+    battery = _test_battery(layout)
+    crossed = [f for f in _formers(fuselage) if _slab_x(f, settings)[1] > battery.x_min and _slab_x(f, settings)[0] < battery.x_max]
+    assert len(crossed) >= 2  # an upper and a lower half
+    for f in crossed:
+        assert _overlap_area(f.outline, _yz_box(battery)) < AREA_TOL_M2, f.label
+
+
+def test_crutch_has_an_opening_under_each_component(g1_kit_inputs, fuselage):
+    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+    crutch = ribs_by_label(fuselage)["C-1"]
+    battery = _test_battery(layout)
+    _, ly, _ = battery.size_m
+    origin = crutch.location.position  # the crutch is a flat plate: local XY is aircraft XY shifted
+    footprint = rect_face(battery.x_min - origin.X, -ly / 2, battery.x_max - origin.X, ly / 2)
+    assert crutch.family == "crutch"
+    assert _overlap_area(crutch.outline, footprint) < AREA_TOL_M2
+    solid = part_solid(crutch, settings).bounding_box()
+    assert (solid.min.Z, solid.max.Z) == pytest.approx((-0.0015, 0.0015), abs=1e-9)  # centred on z = 0
+
+
+def test_wing_mount_plates_carry_socket_and_pin_holes(g1_kit_inputs, fuselage):
+    layout, _, spar, settings = g1_kit_inputs
+    x_s, z_s = socket_axis_m(layout)
+    for label in ("WM-L", "WM-R"):
+        plate = ribs_by_label(fuselage)[label]
+        socket_d, pin_d = hole_diameters(plate.outline)  # fore to aft
+        assert socket_d == pytest.approx(spar.socket.od_m + settings.fit_clearance_m, abs=1e-9)
+        assert pin_d == pytest.approx(PIN_ROD_DIAMETER_M + settings.fit_clearance_m, abs=1e-9)
+        centres = sorted(((plate.location * bd.Location(tuple(hole_centre(w)))).position
+                          for w in plate.outline.inner_wires()), key=lambda v: v.X)
+        assert (centres[0].X, centres[0].Z) == pytest.approx((x_s, z_s), abs=1e-9)
+        wing = layout.wing
+        assert centres[1].X == pytest.approx(wing.x_le_root_m + PIN_CHORD_FRACTION * wing.root_chord_m, abs=1e-9)
+        box = part_solid(plate, settings).bounding_box()
+        assert box.max.Y - box.min.Y == pytest.approx(0.003, abs=1e-9)
+        assert max(abs(box.min.Y), abs(box.max.Y)) <= spar.joint_y_m  # the socket passes through the plate
+    left, right = (part_solid(ribs_by_label(fuselage)[k], settings).bounding_box() for k in ("WM-L", "WM-R"))
+    assert (left.min.Y, left.max.Y) == pytest.approx((-right.max.Y, -right.min.Y), abs=1e-9)
+
+
+def test_wing_mount_plates_stay_inside_the_covering(g1_kit_inputs, fuselage):
+    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+    for label in ("WM-L", "WM-R"):
+        box = part_solid(ribs_by_label(fuselage)[label], settings).bounding_box()
+        r = min(fuselage_radius_at(layout, box.min.X), fuselage_radius_at(layout, box.max.X)) - COVER_M
+        assert math.hypot(max(abs(box.min.Y), abs(box.max.Y)), box.max.Z) <= r
+
+
+def test_firewall_is_two_solid_layers(g1_kit_inputs, fuselage):
+    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+    by = ribs_by_label(fuselage)
+    a, b = by["FW-1a"], by["FW-1b"]
+    for wall in (a, b):
+        assert wall.outline.inner_wires() == [] and wall.family == "bulkhead"
+        radius = fuselage_radius_at(layout, a.location.position.X) - COVER_M
+        assert wall.outline.area == pytest.approx(math.pi * radius**2, rel=1e-3)
+    assert a.location.position.X == pytest.approx(FIRST_FORMER_FRACTION * layout.fuselage_length_m)
+    assert _slab_x(a, settings)[1] == pytest.approx(_slab_x(b, settings)[0], abs=1e-9)  # laminated face to face
+
+
+def test_slot_width_equals_mating_thickness(g1_kit_inputs, fuselage):
+    settings = g1_kit_inputs[3]
+    crutch = ribs_by_label(fuselage)["C-1"]
+    slots = [w.bounding_box() for w in crutch.outline.inner_wires() if len(w.edges()) == 4]
+    slots = [b for b in slots if min(b.size.X, b.size.Y) < 0.005]
+    half_formers = len(_formers(fuselage)) // 2
+    assert len(slots) == 2 * half_formers + 4  # two tabs per former station, two per wing-mount plate
+    for box in slots:
+        assert min(box.size.X, box.size.Y) == pytest.approx(0.003, abs=1e-9)
+
+
+def test_tail_boom_sleeves_in_the_last_two_formers(g1_kit_inputs):
+    layout = g1_kit_inputs[0]
+    fuselage = _fuselage(g1_kit_inputs, components=())  # no battery opening to clear the axis by accident
+    boom = layout.tail_boom
+    sleeve = bd.Face(bd.Wire([bd.Edge.make_circle(boom.diameter_m / 2)])).moved(bd.Location((boom.y_m, boom.z_m, 0)))
+    formers = _formers(fuselage)
+    last_two = sorted({f.location.position.X for f in formers})[-2:]
+    for f in formers:
+        cleared = _overlap_area(f.outline, sleeve) < AREA_TOL_M2
+        assert cleared == (f.location.position.X in last_two), f.label
+
+
+def test_empty_components_give_only_lightening_holes(g1_kit_inputs):
+    parts = _fuselage(g1_kit_inputs, components=())
+    formers = _formers(parts)
+    assert any(f.outline.inner_wires() for f in formers)
+    for f in formers:
+        for wire in f.outline.inner_wires():
+            assert len(wire.edges()) == 1 and wire.edges()[0].geom_type == bd.GeomType.CIRCLE, f.label
+
+
+def test_oversized_component_breaking_a_former_rim_is_unavailable(g1_kit_inputs):
+    layout = g1_kit_inputs[0]
+    fat = _test_battery(layout, width_frac=0.95)
+    with pytest.raises(KitUnavailable, match=r"F-\d\d[UL].*battery"):
+        _fuselage(g1_kit_inputs, components=(fat,))
+
+
+def _assert_no_intersections(solids) -> None:
+    for (la, a), (lb, b) in itertools.combinations(solids, 2):
+        ba, bb = a.bounding_box(), b.bounding_box()
+        if any(lo_a >= hi_b or lo_b >= hi_a for lo_a, hi_a, lo_b, hi_b in zip(ba.min, ba.max, bb.min, bb.max)):
+            continue
+        volume = _common_volume(a, b)
+        assert volume < 1e-12, f"{la} intersects {lb}: {volume:.3e} m^3"
+
+
+@pytest.mark.parametrize("inputs", ["g1_kit_inputs", "g2_kit_inputs"])
+def test_no_two_fuselage_parts_or_the_socket_intersect(inputs, request):
+    kit_inputs = request.getfixturevalue(inputs)
+    layout, _, spar, settings = kit_inputs
+    parts = _fuselage(kit_inputs)
+    x_s, z_s = socket_axis_m(layout)
+    socket_plane = bd.Plane(origin=(x_s, -spar.joint_y_m, z_s), z_dir=(0, 1, 0))
+    socket = bd.Solid.make_cylinder(spar.socket.od_m / 2, 2 * spar.joint_y_m, socket_plane)
+    _assert_no_intersections([(p.label, part_solid(p, settings)) for p in parts] + [("socket", socket)])
+    for part in parts:
+        holes = part.outline.inner_wires()
+        for i, hole in enumerate(holes):
+            assert hole.distance_to(part.outline.outer_wire()) >= MIN_WEB_M - TOL_M, part.label
+            for other in holes[i + 1:]:
+                assert hole.distance_to(other) >= MIN_WEB_M - TOL_M, part.label

@@ -143,7 +143,7 @@ def _wing_rib(
     spar_hole = _placed_hole(profile, airfoil, chord, (SPAR_CHORD_STATION,), _spar_hole_m(spar, y, settings), [], label)
     holes = [spar_hole]
     if is_root:
-        holes.append(_placed_hole(profile, airfoil, chord, (PIN_CHORD_FRACTION,), _pin_hole_m(settings), holes, label))
+        holes.append(_placed_hole(profile, airfoil, chord, (PIN_CHORD_FRACTION,), pin_hole_m(settings), holes, label))
     if y < servo_y:  # aileron servo leads run inboard from the servo bay
         holes.append(_placed_hole(profile, airfoil, chord, WIRING_CHORD_FRACTIONS, WIRING_HOLE_DIAMETER_M, holes, label))
     hinge = AILERON_HINGE_FRACTION * chord if _in_span(y / wing.semi_span_m, AILERON_ETA) else None
@@ -166,7 +166,7 @@ def _placed_hole(
     )
 
 
-def _pin_hole_m(settings: FabricationSettings) -> float:
+def pin_hole_m(settings: FabricationSettings) -> float:
     if not any(abs(r - PIN_ROD_DIAMETER_M) <= FIT_EPS_M for r in settings.rods_m):
         raise KitUnavailable(f"no {PIN_ROD_DIAMETER_M * 1e3:.0f} mm rod in stock for the wing pin")
     return PIN_ROD_DIAMETER_M + settings.fit_clearance_m
