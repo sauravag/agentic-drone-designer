@@ -293,7 +293,8 @@ from src.tools.fabrication.fittings import (  # noqa: E402
 )
 from src.tools.fabrication.fuselage_parts import firewall_station, fuselage_parts, socket_axis_m  # noqa: E402
 from src.tools.fabrication.rib_outline import Hole, circle_face, rect_face  # noqa: E402
-from src.tools.fabrication.tubes import boom_tube  # noqa: E402
+from src.tools.fabrication.tubes import FIT_EPS_M, boom_tube  # noqa: E402
+import numpy as np  # noqa: E402
 from src.tools.aero_cad.layout import fuselage_radius_at  # noqa: E402
 from tests.test_fabrication_fuselage import (  # noqa: E402
     _assert_no_intersections,
@@ -665,18 +666,25 @@ def _lowered_quadplane(layout, drop_m: float):
     return dataclasses.replace(layout, vtol_booms=booms, rotor_positions=rotors)
 
 
-def test_lift_boom_keeps_its_layout_height_when_the_spar_allows(g2_kit_inputs, designs):
+@pytest.mark.parametrize("drop_m", [round(float(d), 6) for d in np.linspace(0.0045, 0.054, 25)])
+def test_lift_boom_keeps_its_layout_height_when_the_spar_allows(drop_m, g2_kit_inputs, g2_booms, designs):
+    """Every drop builds. The boom sits one plate under the hub unless the spar forces it lower (g2's forced height,
+    unchanged by the drop; it stops forcing at about a 5 mm drop); then the motor plates carry the motors exactly."""
     layout, _, spar, settings = g2_kit_inputs
-    low = _lowered_quadplane(layout, 0.03)
+    forced_z = next(t_ for t_ in g2_booms[1] if t_.role == "lift_boom").start_m[2]
+    low = _lowered_quadplane(layout, drop_m)
     parts, tubes = boom_parts(low, spar, settings, _lift_motors(designs, low))
     t = settings.sheet_for("plate").thickness_m
-    for tube, boom in zip(sorted((t_ for t_ in tubes if t_.role == "lift_boom"), key=lambda t_: -t_.start_m[1]),
-                          low.vtol_booms):
-        z_hub = boom.z_m + boom.diameter_m / 2
-        assert tube.start_m[2] == pytest.approx(z_hub - t - tube.tube.od_m / 2, abs=1e-9)
+    od = boom_tube(low.vtol_booms[0].diameter_m, settings).od_m
+    under_hub = low.vtol_booms[0].z_m + low.vtol_booms[0].diameter_m / 2 - t - od / 2
+    for tube in (t_ for t_ in tubes if t_.role == "lift_boom"):
+        assert tube.start_m[2] == pytest.approx(min(under_hub, forced_z), abs=1e-9)
     by = ribs_by_label(parts)
     for k, (_, _, z_hub) in enumerate(low.rotor_positions, start=1):
-        assert part_solid(by[f"MP-{k}"], settings).bounding_box().max.Z == pytest.approx(z_hub, abs=1e-9)
+        top = part_solid(by[f"MP-{k}"], settings).bounding_box().max.Z
+        assert top <= z_hub + FIT_EPS_M
+        if under_hub <= forced_z:  # the spar no longer forces the boom: plates carry the motors exactly
+            assert top == pytest.approx(z_hub, abs=FIT_EPS_M)
 
 
 def test_g2_motor_plates_carry_their_motors(g2_kit_inputs, g2_booms):
@@ -698,3 +706,11 @@ def test_join_notes_ignore_labels_that_merely_contain_d():
     part = _plate(1.4, 0.12, label="X-Dummy")
     notes = join_notes(split_to_bed(part, DEFAULT_FABRICATION))
     assert len(notes) == 2 and notes[0].startswith("X-Dummya + X-Dummyb")
+
+
+def test_narrow_neck_far_from_the_joint_still_splits():
+    """A 3 mm neck near one end must not stop the doubler at the joint (only the band region is inset)."""
+    face = rect_face(0.0, 0.0, 1.4, 0.12).cut(rect_face(0.05, 0.003, 0.07, 0.2)).faces()[0]
+    part = KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)))
+    parts = split_to_bed(part, DEFAULT_FABRICATION)
+    assert len(_pieces(parts)) == 3 and len(_doublers(parts)) == 2

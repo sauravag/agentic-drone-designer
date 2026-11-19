@@ -29,7 +29,7 @@ from src.tools.aero_cad.layout import AircraftLayout, Boom
 from src.tools.fabrication.fuselage_parts import socket_axis_m, station_location
 from src.tools.fabrication.kit import KitPart, TubePart, TubeRole
 from src.tools.fabrication.rib_outline import Hole, circle_face, drill, keeps_web, largest_face, rect_face
-from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
+from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
 from src.tools.fabrication.wing_parts import spar_hole_m, wing_rib_stations
 
 CLAMP_LABELS: Final[tuple[str, ...]] = ("BC-R1", "BC-R2", "BC-L1", "BC-L2")
@@ -94,7 +94,7 @@ def _motor_plates(layout: AircraftLayout, boom_z: dict[int, float], tube_od_m: f
         if side not in boom_z:
             raise KitUnavailable(f"MP-{k}: rotor hub at y = {y:.3f} m has no lift boom under it")
         top = boom_z[side] + tube_od_m / 2.0
-        if top + t > z_hub:
+        if top + t > z_hub + FIT_EPS_M:  # equal by construction when the spar doesn't force the boom down
             raise KitUnavailable(f"MP-{k}: the motor plate on the lowered boom would reach into the lift motor")
         outline = motor_plate_outline(motor_plate_diameter_m(_lift_motor_diameter_m(components, k - 1)))
         plates.append(KitPart(f"MP-{k}", "plate", outline, bd.Location((x, y, top))))

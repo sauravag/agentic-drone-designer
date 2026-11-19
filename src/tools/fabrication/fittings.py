@@ -271,8 +271,17 @@ def _cut(face: bd.Face, joints: Sequence[_Joint]) -> Optional[list[bd.Face]]:
 
 
 def _doubler(face: bd.Face, joint: _Joint) -> Optional[bd.Face]:
+    """The part inside the doubler band, edges inset DOUBLER_EDGE_INSET_M. Only a slightly wider band is inset (then
+    trimmed back to the band), so the band ends keep their full lap and narrow necks elsewhere don't matter."""
     lo, hi = _doubler_band(joint)
-    inset = _faces(bd.offset(face, amount=-DOUBLER_EDGE_INSET_M))
+    pad = DOUBLER_EDGE_INSET_M
+    region = _faces(face.intersect(rect_face(lo - pad, -REACH_M, hi + pad, REACH_M)))
+    if len(region) != 1:
+        return None
+    try:
+        inset = _faces(bd.offset(region[0], amount=-DOUBLER_EDGE_INSET_M))
+    except RuntimeError:  # OCCT cannot offset this region: no doubler fits here
+        return None
     if len(inset) != 1:
         return None
     faces = _faces(inset[0].intersect(rect_face(lo, -REACH_M, hi, REACH_M)))
