@@ -104,7 +104,7 @@ def _description_form() -> bool:
                      help="The LLM extracts the requirements; every number is then computed by the physics tools.")
         if problem:
             st.caption(defang(problem))
-        return st.form_submit_button("Design from description", key="submit_prompt", disabled=problem is not None)
+        return st.form_submit_button("Design from description", type="primary", key="submit_prompt", disabled=problem is not None)
 
 
 def _number_inputs(title: str) -> None:

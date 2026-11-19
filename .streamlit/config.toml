@@ -1,0 +1,18 @@
+# Web form theme: a calm, modern light look (cool off-white page, white cards and inputs, one blue accent).
+# Read by `streamlit run` from the launch folder: the repo root on the host, /app in the Docker image.
+# tests/test_ui.py checks text contrast against WCAG AA, so recheck it after changing a color.
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"             # blue accent: primary buttons, focus rings, active tab
+backgroundColor = "#f6f8fb"          # page: cool off-white
+secondaryBackgroundColor = "#ffffff" # inputs, expanders and code sit on white, like cards
+textColor = "#0f172a"                # near-black slate
+linkColor = "#1d4ed8"
+borderColor = "#e2e8f0"
+showWidgetBorder = true
+dataframeHeaderBackgroundColor = "#eef2f7"
+codeBackgroundColor = "#eef2f7"
+baseRadius = "0.6rem"
+buttonRadius = "0.5rem"
+headingFontWeights = [700, 650, 600, 600, 600, 600]

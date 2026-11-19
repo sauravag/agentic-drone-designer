@@ -114,6 +114,7 @@ COPY src ./src
 RUN pip install --no-cache-dir --no-deps . && rm -rf build ./*.egg-info
 COPY tests ./tests
 COPY data/airfoils ./data/airfoils
+COPY .streamlit ./.streamlit
 # Regenerate the catalog from source so the image never ships a stale or missing DB.
 RUN python -m src.tools.database.seed_data
 
