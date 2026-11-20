@@ -25,6 +25,8 @@ from src.schemas.state import AeroStabilityOutput
 from src.tools.aero_cad.layout import QUARTER_CHORD, AircraftLayout
 from src.units import G0
 
+SM_MIN: Final[float] = 0.08  # static-margin band the design must land in (fractions of MAC)
+SM_MAX: Final[float] = 0.14
 LINEAR_ALPHA_WINDOW_DEG: Final[tuple[float, float]] = (-4.0, 4.0)
 MIN_LINEAR_POINTS: Final[int] = 2
 MIN_CL_ALPHA_PER_RAD: Final[float] = 1.0  # a real wing is ~4-6 /rad; below 1 the geometry is broken

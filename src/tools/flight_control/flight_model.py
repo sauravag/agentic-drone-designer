@@ -104,6 +104,7 @@ class FlightModel:
     izz_kgm2: float
     ixz_kgm2: float
     x_cg_m: float
+    static_margin: float
     wing_area_m2: float
     wingspan_m: float
     mean_chord_m: float
@@ -228,7 +229,8 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
     shaft_w: float = min(bom.cruise_motor.max_power_w, bom.cruise_propeller.max_power_w)
     model = FlightModel(
         mass_kg=cad.as_built_mass_kg, ixx_kgm2=cad.ixx_kgm2, iyy_kgm2=cad.iyy_kgm2, izz_kgm2=cad.izz_kgm2,
-        ixz_kgm2=cad.ixz_kgm2, x_cg_m=cad.x_cg_m, wing_area_m2=sizing.wing_area_m2, wingspan_m=sizing.wingspan_m,
+        ixz_kgm2=cad.ixz_kgm2, x_cg_m=cad.x_cg_m, static_margin=cad.static_margin,
+        wing_area_m2=sizing.wing_area_m2, wingspan_m=sizing.wingspan_m,
         mean_chord_m=sizing.mean_chord_m, fuselage_length_m=sizing.fuselage_length_m,
         fuselage_diameter_m=sizing.fuselage_diameter_m, tail_arm_m=sizing.tail_arm_m,
         aero=_coefficients(sizing, aero, cad, cl_cruise),

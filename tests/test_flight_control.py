@@ -22,6 +22,7 @@ from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel
                                                    build_flight_model, transition_time_s)
 from src.tools.flight_control.jsbsim_exporter import (TIP_BACK_ANGLE_DEG, export_jsbsim, gear_contacts,
                                                       lift_table, lift_thrust_curve)
+from src.tools.flight_control.perturbation import HOT, SLUGGISH, PlantCase, perturbed_model
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
 
 DATA = Path(__file__).parent / "data"
@@ -452,3 +453,34 @@ def test_runtime_errors_become_failed_attempts(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(sv, "fly", port_in_use)
     result, log = sv._attempt(None, {}, tmp_path / "a", 1.0, sv.SitlConfig())
     assert log is None and not result.passed and "Address already in use" in result.error
+
+
+# ---- perturbation ---
+
+def test_perturbed_model_scales_only_the_listed_terms(design: Any) -> None:
+    _, _, model = design
+    hot = perturbed_model(model, HOT)
+    a, h = model.aero, hot.aero
+    assert h.cl_delta_a == pytest.approx(1.3 * a.cl_delta_a) and h.cm_delta_e == pytest.approx(1.3 * a.cm_delta_e)
+    assert h.cl_p == pytest.approx(0.7 * a.cl_p) and h.cm_q == pytest.approx(0.7 * a.cm_q)
+    for name in ("ixx_kgm2", "iyy_kgm2", "izz_kgm2", "ixz_kgm2"):
+        assert getattr(hot, name) == pytest.approx(0.8 * getattr(model, name))
+    untouched = {"cl_alpha", "cl0", "cd0", "cn_beta", "cn_r", "cl_beta", "cn_delta_r", "cy_beta"}
+    assert all(getattr(h, k) == getattr(a, k) for k in untouched)
+    assert hot.lift_rotors == model.lift_rotors and hot.mass_kg == model.mass_kg
+    assert model.aero.cl_p == a.cl_p  # input not mutated
+
+
+def test_perturbed_model_moves_the_cg_to_the_case_margin(design: Any) -> None:
+    _, _, model = design
+    for case in (HOT, SLUGGISH):
+        p = perturbed_model(model, case)
+        assert p.static_margin == case.static_margin
+        assert p.aero.cm_alpha == pytest.approx(-model.aero.cl_alpha * case.static_margin)
+        assert p.aero.cm0 == pytest.approx(model.aero.cm0 + model.aero.cl0 * (model.static_margin - case.static_margin))
+
+
+def test_a_case_at_the_current_margin_leaves_pitch_stiffness_alone(design: Any) -> None:
+    _, _, model = design
+    same = PlantCase("same", 1.0, 1.0, 1.0, model.static_margin)
+    assert perturbed_model(model, same) == model
