@@ -240,6 +240,8 @@ doubler can fix raises `KitUnavailable` naming the check, and the run falls back
 New settings (defaults, all adjustable):
 - `carbon_shear_allow_pa` = 60 MPa (in-plane shear of roll-wrapped tube, conservative)
 - `ply_bearing_allow_pa` = 15 MPa (birch ply edge bearing, conservative)
+- `ply_shear_allow_pa` = 7 MPa (R33: birch aviation ply panel shear, conservative; used for shear-out checks such as
+  the R32 web under the socket, whose boss grows below the hole in steps until the web passes)
 - `overwrap_layer_thickness_m` = 0.25 mm (200 g/m² cloth, wet lay-up)
 - `overwrap_allow_pa` = 250 MPa (hand-laid 0/90 cloth, conservative)
 - `overwrap_density_kg_m3` = 1500

@@ -73,6 +73,7 @@ def test_structural_check_defaults_match_the_spec() -> None:
     assert s.overwrap_max_layers == 12  # R29
     assert s.epoxy_lap_shear_pa == 15e6
     assert s.crutch_rail_min_m == 0.008
+    assert s.ply_shear_allow_pa == 7e6  # R33
 
 
 def test_polar_moment_of_a_tube() -> None:

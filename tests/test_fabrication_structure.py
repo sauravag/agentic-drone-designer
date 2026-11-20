@@ -15,6 +15,10 @@ from src.tools.aero_cad import cad_packer
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.fuselage_parts import (
     PIN_BOSS_LABELS,
+    SOCKET_BOSS_DEPTH_STEP_M,
+    SOCKET_BOSS_MAX_DEPTH_M,
+    SOCKET_BOSS_WIDTH_M,
+    socket_boss_depth_m,
     former_stations,
     fuselage_parts,
     socket_axis_m,
@@ -337,20 +341,52 @@ def test_g2_pin_is_a_bossed_5_mm_rod_and_g1_keeps_4_mm(g1_kit, g2_kit):
 
 
 # ------------------------------------------------------------------------- downward socket web ---
+SHEAR_ALLOW = SETTINGS.ply_shear_allow_pa / SETTINGS.safety_factor
+WEB_LIMIT_N = SHEAR_ALLOW * 2 * MIN_WEB_M * PLATE_T  # plain web shear-out capacity under the socket
+
+
 def test_downward_load_on_the_socket_web_adds_the_socket_bosses(g1_kit_inputs):
     layout, _, spar, settings = g1_kit_inputs
-    web_limit = PIN_ALLOW * 2 * MIN_WEB_M * PLATE_T
-    plain = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 0.9 * web_limit))
+    plain = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 0.9 * WEB_LIMIT_N))
     assert not [p for p in plain if p.label in ("WM-RD", "WM-LD")]
-    bossed = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 1.1 * web_limit))
+    bossed = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 1.1 * WEB_LIMIT_N))
     assert {"WM-RD", "WM-LD"} <= {p.label for p in bossed}
-    with pytest.raises(KitUnavailable, match="downward"):
-        fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 100.0 * web_limit))
+    with pytest.raises(KitUnavailable, match="socket web shear"):
+        fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 100.0 * WEB_LIMIT_N))
+
+
+def test_socket_web_shear_uses_the_shear_allowable_not_the_bearing_allowable(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    between = 0.5 * (SHEAR_ALLOW + PIN_ALLOW) * 2 * MIN_WEB_M * PLATE_T  # over the shear limit, under bearing
+    assert SETTINGS.ply_shear_allow_pa < SETTINGS.ply_bearing_allow_pa
+    assert socket_boss_depth_m(spar, settings, PlateLoads(0.0, between)) is not None
+    lenient = settings.model_copy(update={"ply_shear_allow_pa": settings.ply_bearing_allow_pa})
+    assert socket_boss_depth_m(spar, lenient, PlateLoads(0.0, between)) is None
+
+
+def test_socket_boss_grows_below_the_socket_in_steps_until_the_web_passes(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    t = PLATE_T
+    needed_depth = 0.015 - MIN_WEB_M  # a load the web carries with exactly 15 mm of material under the hole
+    load = SHEAR_ALLOW * 2 * (MIN_WEB_M + needed_depth) * t * 0.999
+    depth = socket_boss_depth_m(spar, settings, PlateLoads(0.0, load))
+    steps = math.ceil((needed_depth * 0.999 - SOCKET_BOSS_WIDTH_M) / SOCKET_BOSS_DEPTH_STEP_M - 1e-9)
+    assert depth == pytest.approx(SOCKET_BOSS_WIDTH_M + steps * SOCKET_BOSS_DEPTH_STEP_M)
+    assert load / (2 * (MIN_WEB_M + depth) * t) <= SHEAR_ALLOW
+    assert load / (2 * (MIN_WEB_M + depth - SOCKET_BOSS_DEPTH_STEP_M) * t) > SHEAR_ALLOW  # the smallest step
+    parts = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, load))
+    boss = next(p for p in parts if p.label == "WM-RD")
+    hole_wire = boss.outline.inner_wires()[0]
+    hole_bottom = hole_wire.bounding_box().min.Y
+    assert boss.outline.bounding_box().min.Y == pytest.approx(hole_bottom - depth, abs=1e-6)
+    beyond = SHEAR_ALLOW * 2 * (MIN_WEB_M + SOCKET_BOSS_MAX_DEPTH_M) * t * 1.01
+    with pytest.raises(KitUnavailable, match="socket web shear"):
+        socket_boss_depth_m(spar, settings, PlateLoads(0.0, beyond))
 
 
 def test_wing_box_floor_counts_the_socket_bosses(g1_kit_inputs):
     layout, _, spar, settings = g1_kit_inputs
-    web_limit = PIN_ALLOW * 2 * MIN_WEB_M * PLATE_T
+    web_limit = WEB_LIMIT_N
     bossed = PlateLoads(0.0, 1.1 * web_limit)
     parts = fuselage_parts(layout, spar, (), settings, loads=bossed)
     boss = next(p for p in parts if p.label == "WM-RD")

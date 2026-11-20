@@ -18,8 +18,10 @@
   meet at the centreline) and the anti-rotation pin. They stop MIN_WEB_M under the socket hole, so components
   on the axis pass underneath. Local X -> x, local Y -> z; WM-R extrudes toward -y from its outer face, WM-L is
   its mirror. When the plain plate cannot bear its wing's shear on the socket (R27: sigma_b = F / (OD t) <=
-  ply_bearing_allow_pa / FS), a socket-boss doubler `WM-RD` / `WM-LD` (an annulus SOCKET_BOSS_WIDTH_M wide, cut
-  from plate stock) is glued round the socket hole on each plate's inner face; none is cut when the plate suffices.
+  ply_bearing_allow_pa / FS) or its web under the socket shears out under the downward load (R32/R33:
+  F / (2 w t) <= ply_shear_allow_pa / FS), a socket-boss doubler `WM-RD` / `WM-LD` (an annulus SOCKET_BOSS_WIDTH_M
+  wide plus a skirt below the hole grown until the web passes, cut from plate stock) is glued round the socket hole
+  on each plate's inner face; none is cut when the plate suffices. R31 pin bosses `WM-RPD` / `WM-LPD` likewise.
 - Boom mounts `BM-1`, `BM-2`: 3 mm bulkheads in the tail cone carrying the stock tail-boom tube, one just aft of
   the boom root, one as far aft as a MIN_WEB_M rim around the boom hole allows (at least 30 mm apart).
 
@@ -91,6 +93,8 @@ UP: Final[int] = 1
 DOWN: Final[int] = -1
 WEB_TEXT: Final[str] = f"{MIN_WEB_M * 1e3:.0f} mm"
 SOCKET_BOSS_WIDTH_M: Final[float] = 0.006  # R27 boss annulus radial width (stays inside the socket-station formers)
+SOCKET_BOSS_DEPTH_STEP_M: Final[float] = 0.002  # R33: the boss's material below the socket grows in these steps
+SOCKET_BOSS_MAX_DEPTH_M: Final[float] = 0.030  # R33: deepest boss skirt below the socket hole
 RAIL_PROBE_INSET_M: Final[float] = 1e-4  # crutch rails are measured just inside each opening's fore and aft ends
 SPAN_REACH_M: Final[float] = 10.0  # probe lines run this far either side of any part
 BOSS_LABELS: Final[dict[int, str]] = {1: "WM-RD", -1: "WM-LD"}  # socket bosses
@@ -421,9 +425,10 @@ def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: Fabricati
     wrap_m = overwrap_layers(spar.centre_moment_nm, spar.socket, settings) * settings.overwrap_layer_thickness_m
     mount = _mount(layout, spar, settings)
     floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m]
-    if socket_bosses_needed(spar, settings, loads):
+    depth = socket_boss_depth_m(spar, settings, loads)
+    if depth is not None:
         hole = _inner_face_holes(layout, spar, settings, mount)[0]
-        floors.append(hole.y_m - hole.diameter_m / 2.0 - SOCKET_BOSS_WIDTH_M)
+        floors.append(hole.y_m - hole.diameter_m / 2.0 - depth)
     return min(floors)
 
 
@@ -459,24 +464,37 @@ def _stress_pa(load_n: float, area_m2: float) -> float:
     return load_n / area_m2
 
 
-def socket_bosses_needed(spar: SparPlan, settings: FabricationSettings, loads: PlateLoads) -> bool:
-    """Whether the wing-box plates need socket bosses: R27 bearing F_shear / (OD t), and R32 shear-out of the
-    MIN_WEB_M web under the socket by the downward load, F_down / (2 w t), each against ply_bearing_allow_pa / FS.
-    With a boss the bearing thickness doubles and the web gains the boss's SOCKET_BOSS_WIDTH_M below the hole;
-    raises `KitUnavailable` when even that fails."""
+def _web_shear_pa(load_n: float, boss_depth_m: float, thickness_m: float) -> float:
+    """R32 shear-out under the socket: two planes through the MIN_WEB_M plate web plus `boss_depth_m` of boss below
+    the hole, each `thickness_m` thick (plate and boss are the same stock)."""
+    return _stress_pa(load_n, 2.0 * (MIN_WEB_M + boss_depth_m) * thickness_m)
+
+
+def socket_boss_depth_m(spar: SparPlan, settings: FabricationSettings, loads: PlateLoads) -> Optional[float]:
+    """Boss material below the socket hole, or None when the plain plate suffices. Checks R27 bearing
+    F_shear / (OD t) <= ply_bearing_allow_pa / FS (a boss doubles t) and R32/R33 web shear-out F_down / (2 w t) <=
+    ply_shear_allow_pa / FS. A boss starts SOCKET_BOSS_WIDTH_M deep below the hole and grows by
+    SOCKET_BOSS_DEPTH_STEP_M until the web passes; raises `KitUnavailable` beyond SOCKET_BOSS_MAX_DEPTH_M, or when
+    even a boss cannot bear the socket."""
     t, od = settings.sheet_for("plate").thickness_m, spar.socket.od_m
-    allow = settings.ply_bearing_allow_pa / settings.safety_factor
-    bearing, web = _stress_pa(loads.shear_n, od * t), _stress_pa(loads.down_n, 2.0 * MIN_WEB_M * t)
-    if bearing <= allow and web <= allow:
-        return False
+    bearing_allow = settings.ply_bearing_allow_pa / settings.safety_factor
+    shear_allow = settings.ply_shear_allow_pa / settings.safety_factor
+    if _stress_pa(loads.shear_n, od * t) <= bearing_allow and _web_shear_pa(loads.down_n, 0.0, t) <= shear_allow:
+        return None
     bossed_bearing = _stress_pa(loads.shear_n, od * BOSS_THICKNESS_FACTOR * t)
-    bossed_web = _stress_pa(loads.down_n, 2.0 * (MIN_WEB_M + SOCKET_BOSS_WIDTH_M) * t)
-    for name, stress in (("socket bearing", bossed_bearing), ("socket bearing (downward, web under the socket)",
-                                                              bossed_web)):
-        if stress > allow:
-            raise KitUnavailable(f"{name}: {stress / 1e6:.1f} MPa on the wing-box plate even with a boss doubler "
-                                 f"(allowable {allow / 1e6:.1f} MPa)")
-    return True
+    if bossed_bearing > bearing_allow:
+        raise KitUnavailable(f"socket bearing: {bossed_bearing / 1e6:.1f} MPa on the wing-box plate even with a boss "
+                             f"doubler (allowable {bearing_allow / 1e6:.1f} MPa)")
+    steps = math.ceil((SOCKET_BOSS_MAX_DEPTH_M - SOCKET_BOSS_WIDTH_M) / SOCKET_BOSS_DEPTH_STEP_M - FIT_EPS_M)
+    for k in range(steps + 1):
+        depth = min(SOCKET_BOSS_WIDTH_M + k * SOCKET_BOSS_DEPTH_STEP_M, SOCKET_BOSS_MAX_DEPTH_M)
+        if _web_shear_pa(loads.down_n, depth, t) <= shear_allow:
+            return depth
+    raise KitUnavailable(
+        f"socket web shear: {loads.down_n:.0f} N down on the socket shears out the web under it even with a "
+        f"{SOCKET_BOSS_MAX_DEPTH_M * 1e3:.0f} mm boss ({_web_shear_pa(loads.down_n, SOCKET_BOSS_MAX_DEPTH_M, t) / 1e6:.1f}"
+        f" MPa > {shear_allow / 1e6:.2f} MPa)"
+    )
 
 
 def _inner_face_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
@@ -486,29 +504,37 @@ def _inner_face_holes(layout: AircraftLayout, spar: SparPlan, settings: Fabricat
     return _plate_holes(layout, spar, settings, mount.y_inner_m - t / 2.0)
 
 
-def _bosses(frame: _Frame, hole: Hole, width_m: float, labels: dict[int, str],
-            clip: Optional[bd.Face]) -> list[KitPart]:
-    """A boss doubler of plate stock on each plate's inner face: an annulus `width_m` wide round `hole`, clipped to
-    `clip` when given (the plate body, so it adds no height)."""
+def _socket_boss_outline(hole: Hole, depth_m: float) -> bd.Face:
+    """The socket boss before drilling: an annulus SOCKET_BOSS_WIDTH_M wide round the hole, plus a skirt as wide as
+    the annulus reaching `depth_m` below the hole (R33; it grows only downward, clear of the socket formers)."""
+    radius = hole.diameter_m / 2.0 + SOCKET_BOSS_WIDTH_M
+    ring = circle_face(Hole(hole.x_m, hole.y_m, 2.0 * radius))
+    skirt = rect_face(hole.x_m - radius, hole.y_m - hole.diameter_m / 2.0 - depth_m, hole.x_m + radius, hole.y_m)
+    return _single_face(ring.fuse(skirt).clean(), BOSS_LABELS[1])
+
+
+def _bosses(frame: _Frame, hole: Hole, blank: bd.Face, labels: dict[int, str]) -> list[KitPart]:
+    """A boss doubler of plate stock on each plate's inner face: `blank` drilled with `hole`."""
     t, m = frame.settings.sheet_for("plate").thickness_m, frame.mount
-    ring = circle_face(Hole(hole.x_m, hole.y_m, hole.diameter_m + 2.0 * width_m))
-    if clip is not None:
-        ring = _single_face(_common(ring, clip), labels[1])
     origins = {1: m.y_inner_m, -1: -m.y_inner_m + t}  # both extrude toward -y, onto the plate's inner face
-    return [KitPart(label, "plate", drill(ring, (hole,), label),
+    return [KitPart(label, "plate", drill(blank, (hole,), label),
                     _plane_location((0.0, origins[side], 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
             for side, label in sorted(labels.items())]
 
 
 def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads) -> list[KitPart]:
-    """R27/R32 socket bosses (full annuli) and R31 pin bosses (clipped to the plate body), each only when needed."""
+    """R27/R32/R33 socket bosses (annulus + skirt below) and R31 pin bosses (an annulus clipped to the plate body, so
+    it adds no height), each only when needed."""
     socket, pin = _inner_face_holes(frame.layout, spar, frame.settings, frame.mount)
-    m = frame.mount
-    parts = _bosses(frame, socket, SOCKET_BOSS_WIDTH_M, BOSS_LABELS, None) \
-        if socket_bosses_needed(spar, frame.settings, loads) else []
+    m, depth = frame.mount, socket_boss_depth_m(spar, frame.settings, loads)
+    if depth is not None and socket.y_m - socket.diameter_m / 2.0 - depth <= frame.crutch_t_m / 2.0:
+        raise KitUnavailable("socket web shear: the socket boss would reach down to the crutch")
+    parts = [] if depth is None else _bosses(frame, socket, _socket_boss_outline(socket, depth), BOSS_LABELS)
     if spar.pin.plate_boss:
         body = rect_face(m.x_min_m, m.z_m[0], m.x_max_m, m.z_m[1])
-        parts += _bosses(frame, pin, PIN_BOSS_WIDTH_M, dict(zip((1, -1), PIN_BOSS_LABELS)), body)
+        ring = circle_face(Hole(pin.x_m, pin.y_m, pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
+        labels = dict(zip((1, -1), PIN_BOSS_LABELS))
+        parts += _bosses(frame, pin, _single_face(_common(ring, body), labels[1]), labels)
     return parts
 
 

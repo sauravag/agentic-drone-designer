@@ -120,6 +120,9 @@ class FabricationSettings(BaseModel):
         60e6, gt=0.0, description="Allowable in-plane shear of roll-wrapped carbon tube (Pa), for spar torsion."
     )
     ply_bearing_allow_pa: float = Field(15e6, gt=0.0, description="Allowable birch-ply edge bearing stress (Pa).")
+    ply_shear_allow_pa: float = Field(
+        7e6, gt=0.0, description="Allowable birch aviation-ply panel shear stress (Pa), for shear-out checks (R33)."
+    )
     overwrap_layer_thickness_m: float = Field(
         0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m), 200 g/m^2 cloth."
     )
