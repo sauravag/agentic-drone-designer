@@ -224,11 +224,20 @@ doubler can fix raises `KitUnavailable` naming the check, and the run falls back
     integrated from the tip inboard. q_max is set by the design's maximum speed. Cm0 comes from the airfoil
     when it is known; otherwise use a named conservative default.
   - Shear stress: τ = T·(OD/2)/J, J = π(OD⁴ − ID⁴)/32.
+- **Tail-surface load (R35).** A tail surface lifts at most q_max·S·`TAIL_CL_MAX` (q_max at V_A, R30), with no
+  extra n_limit factor: CL_max at V_A is already the ceiling of tail lift, and FS applies through the allowable.
+  Limitation: high-speed gust cases on the tails are not modelled and could exceed this load.
 - **Tail boom strength.** Today the boom is chosen by diameter alone (R13); now it is also checked:
-  - Bending: M = n_limit·q_max·S_tail·`TAIL_CL_MAX` × the tail arm from the boom mount, using the horizontal
+  - Bending: M = q_max·S_tail·`TAIL_CL_MAX` (R35) × the tail arm from the boom mount, using the horizontal
     and vertical tails' resultant.
   - Torsion: the fin's load × the height of its centre of pressure above the boom.
   - Same interaction check as the spar. If the largest tube ≤ layout diameter fails, the kit is unavailable.
+- **Tail spar strength (R35).** Each surface's spar (horizontal tail, fin) carries its R35 load spread elliptically
+  over its semi-span (each horizontal-tail panel half of S_h, the fin all of S_v over its height). The bending
+  moment at the spar's root (the tail root, R20, or the fin start) must pass the tube check. The spar is the
+  smallest stock tube or rod that passes and fits the root's usable depth; it runs out to where the depth stops
+  admitting it (the moment only falls outboard). If none passes and fits, `KitUnavailable("tail spar …")` names
+  the surface and the station.
 - **Socket bearing in the side plates.** Each plate carries its wing's shear load: F = n_limit·MTOW·g/2 in
   flight (and the hover equivalent). The check is σ_b = F/(OD·t_plate) ≤ `ply_bearing_allow_pa`/FS.
   - If it fails, add a 3 mm socket-boss doubler (`WM-RD`, `WM-LD`) glued over the hole, an annulus of

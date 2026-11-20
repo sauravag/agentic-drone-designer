@@ -10,17 +10,18 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
   wing-box plate's inner face to PIN_REACH_M outboard of the root doubler (R18).
 - `TB-1`, `LB-R`, `LB-L` booms as `boom_parts` places them.
 - `TS-HR`, `TS-HL` horizontal-tail spars from the tail root (boom or fuselage skin, R20) and `TS-V` fin spar from
-  the fin start (top of `TM-1`, or the skin), each out
+  the fin start (top of `TM-1`, or the skin), each the surface's strength-sized stock (R35, `tail_spar_tubes`), out
   to the tip or to where the tail's depth stops admitting it, short of the first rib too thin for its hole (the
   tail ribs' own rule). A tube's end faces are square to its axis, which
   leans (taper), so a tail spar starts just far enough off its root surface for its rim to clear it.
 Linear stock (balsa, `stringer_density_kg_m3`): `ST-1…` stringers in the former notches from the first former
 after the firewall to the aft face of the last former; `LE-…` / `TE-…` strips per wing panel and tail surface.
 Covering: film over both faces of the wing and tails (2 x planform), fuselage cover over the pod's lateral area.
-Structural checks (R24-R32): the spar is sized against bending and torsion (`kit_spar_torsion`) and its pin for the
-root torque, the tail boom is checked, the plates get socket bosses when bearing or the downward web load needs them
-(and pin bosses when the pin needs them), and the centreline mitre gets its overwrap
-(`Kit.overwrap`), which must fit between the plates' (or bosses') inner faces. Part and tube labels are unique.
+Structural checks (R24-R35): the spar is sized against bending and torsion (`kit_spar_torsion`) and its pin for the
+root torque, the tail boom is checked and the tail spars sized for the tail-surface load (R35), the plates get socket
+bosses when bearing or the downward web load needs them (and pin bosses when the pin needs them), and the centreline
+mitre gets its overwrap (`Kit.overwrap`), which must fit between the plates' (or bosses') inner faces. Part and tube
+labels are unique.
 """
 
 import math
@@ -86,8 +87,9 @@ from src.tools.fabrication.wing_parts import (
     spar_depth_at,
     tail_ribs,
     tail_root_radius_m,
+    TailSpars,
     tail_spar_hole,
-    tail_spar_tube,
+    tail_spar_tubes,
     wing_rib_stations,
     wing_ribs,
 )
@@ -209,13 +211,15 @@ def _tail_spar(label: str, surface: SurfacePlanform, line: Line, root: float, be
     return _tube_on(label, "tail_spar", tube, line, root + _rim_clearance(line, root, end, radius), end)
 
 
-def _tail_spars(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> list[TubePart]:
-    tube, t_rib = tail_spar_tube(layout, airfoil, settings), settings.sheet_for("rib").thickness_m
+def _tail_spars(layout: AircraftLayout, airfoil: AirfoilShape, tails: TailSpars,
+                settings: FabricationSettings) -> list[TubePart]:
+    t_rib = settings.sheet_for("rib").thickness_m
     ht, vt, root = layout.htail, layout.vtail, tail_root_radius_m(layout)
     spars = [_tail_spar(f"TS-H{name}", ht, _surface_line(ht, airfoil, side, SPAR_CHORD_STATION), root, t_rib / 2.0,
-                        tube, airfoil, settings) for side, name in SIDES]  # tail ribs are centred on their station
+                        tails.htail, airfoil, settings) for side, name in SIDES]  # tail ribs centred on their station
     fin_line = _surface_line(vt, airfoil, 1.0, SPAR_CHORD_STATION)
-    fin = _tail_spar("TS-V", vt, fin_line, fin_start_m(layout, settings), 0.0, tube, airfoil, settings)  # fin ribs extrude up
+    fin = _tail_spar("TS-V", vt, fin_line, fin_start_m(layout, settings), 0.0, tails.fin, airfoil,
+                     settings)  # fin ribs extrude up
     return spars + [fin]
 
 
@@ -357,7 +361,8 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     spar = kit_spar_plan(sizing, layout, airfoil, settings)
     _check_tail_boom(sizing, layout, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
-    ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, settings))
+    tails = tail_spar_tubes(sizing, layout, tail, settings)
+    ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, tails, settings))
     fuselage = fuselage_parts(layout, spar, components, settings, loads=plate_loads(sizing, settings))
     overwrap = _overwrap(spar, fuselage, settings)
     trays = component_plates(components, layout, settings, spar=spar)
@@ -366,7 +371,7 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     motor = cruise_motor_plate(components, layout, settings)
     parts = _split_all((*ribs, *fuselage, *trays, *booms, *motor), settings)
     tubes = (*_spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
-             *boom_tubes, *_tail_spars(layout, tail, settings))
+             *boom_tubes, *_tail_spars(layout, tail, tails, settings))
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     _assert_unique_labels(parts, tubes)

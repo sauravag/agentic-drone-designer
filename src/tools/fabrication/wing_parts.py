@@ -5,16 +5,19 @@ has the spar hole sized to the spar tube at its station, a wiring hole inboard o
 lightening holes, and is split at the hinge inside the aileron span. The root rib is a 3 mm doubler with
 an anti-rotation pin hole (the R31 rod); when the pin needs one, a pin boss doubler `WR-PD` / `WL-PD`
 (an annulus PIN_BOSS_WIDTH_M wide round the pin hole, doubler stock) is glued to the root rib's outboard face.
-Tail ribs carry one stock tube spar wherever it fits the local depth.
+Each tail surface's ribs carry its own stock spar, strength-sized at the root for the R35 tail load
+(`tail_spar_tubes`), wherever it fits the local depth.
 """
 
 import dataclasses
 import math
+from dataclasses import dataclass
 from typing import Callable, Final, Optional, Sequence
 
 import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings, PartFamily, TubeStock
+from src.schemas.state import SizingOutput
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape
 from src.tools.aero_cad.layout import (
     FUSELAGE_PROFILE,
@@ -42,7 +45,16 @@ from src.tools.fabrication.rib_outline import (
     rect_face,
     split_at,
 )
-from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, usable_depth_m
+from src.tools.fabrication.tubes import (
+    FIT_EPS_M,
+    MIN_WEB_M,
+    KitUnavailable,
+    SparPlan,
+    elliptic_root_moment_nm,
+    smallest_passing,
+    tail_surface_load_n,
+    usable_depth_m,
+)
 
 AILERON_HINGE_FRACTION: Final[float] = 1.0 - AILERON_CHORD_FRACTION
 TAIL_HINGE_FRACTION: Final[float] = 1.0 - TAIL_CONTROL_CHORD_FRACTION
@@ -305,14 +317,56 @@ def fin_start_m(layout: AircraftLayout, settings: FabricationSettings) -> float:
     return top - layout.vtail.z_root_m
 
 
-def tail_spar_tube(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> TubeStock:
-    """Smallest stock tube that fits the thinner tail root (no stress check: tail loads are small)."""
-    root = tail_root_radius_m(layout)
-    depth = min(spar_depth_at(s, airfoil, settings, root_doubler_m=None)(root) for s in (layout.htail, layout.vtail))
-    tube = next((t for t in settings.tubes if t.od_m <= depth + FIT_EPS_M), None)
+@dataclass(frozen=True)
+class TailSpars:
+    """Stock spar of each tail surface (R35): both horizontal-tail panels share `htail`; the fin has `fin`."""
+
+    htail: TubeStock
+    fin: TubeStock
+
+
+@dataclass(frozen=True)
+class TailSparLoads:
+    """Bending moment at each tail spar's root (N m): one horizontal-tail panel, and the fin."""
+
+    htail_nm: float
+    fin_nm: float
+
+
+def tail_spar_loads(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> TailSparLoads:
+    """R35: each surface lifts q_max S CL_max (`tail_surface_load_n`), elliptically over its semi-span (each
+    horizontal-tail panel half of S_h, the fin all of S_v over its height); the spar's moment is taken where it
+    starts, at the tail root (R20) or the fin start."""
+    half_h = tail_surface_load_n(sizing, sizing.horizontal_tail_area_m2, settings) / 2.0
+    fin = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, settings)
+    ht, vt = layout.htail, layout.vtail
+    return TailSparLoads(htail_nm=elliptic_root_moment_nm(half_h, ht.semi_span_m, tail_root_radius_m(layout)),
+                         fin_nm=elliptic_root_moment_nm(fin, vt.semi_span_m, fin_start_m(layout, settings)))
+
+
+def _tail_spar_tube(name: str, station: str, surface: SurfacePlanform, root_m: float, moment_nm: float,
+                    airfoil: AirfoilShape, settings: FabricationSettings) -> TubeStock:
+    """The smallest stock tube or rod that carries `moment_nm` at the root and fits the root's usable depth."""
+    depth = spar_depth_at(surface, airfoil, settings, root_doubler_m=None)(root_m)
+    tube = smallest_passing(((moment_nm, 0.0),), depth, settings)
     if tube is None:
-        raise KitUnavailable(f"no stock tube fits the tail root ({depth * 1e3:.1f} mm usable depth)")
+        raise KitUnavailable(
+            f"tail spar: no stock tube or rod carries the {name} load ({moment_nm:.1f} N·m) within its "
+            f"{depth * 1e3:.1f} mm root depth at {station} = {root_m:.3f} m"
+        )
     return tube
+
+
+def tail_spar_tubes(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
+                    settings: FabricationSettings) -> TailSpars:
+    """R35: each tail surface's spar, strength-sized at its root (`tail_spar_loads`). A spar runs out to where the
+    depth stops admitting it (`_tail_surface_ribs`); the moment falls outboard, so the root check covers it."""
+    loads = tail_spar_loads(sizing, layout, settings)
+    htail = _tail_spar_tube("horizontal tail", "y", layout.htail, tail_root_radius_m(layout), loads.htail_nm,
+                            airfoil, settings)
+    fin = _tail_spar_tube("fin", "height", layout.vtail, fin_start_m(layout, settings), loads.fin_nm,
+                          airfoil, settings)
+    return TailSpars(htail=htail, fin=fin)
 
 
 def _tail_surface_ribs(
@@ -361,15 +415,15 @@ def _fin_mount(layout: AircraftLayout, settings: FabricationSettings) -> tuple[K
     return (KitPart("TM-1", "plate", outline, location),)
 
 
-def tail_ribs(layout: AircraftLayout, airfoil: AirfoilShape, settings: FabricationSettings) -> tuple[KitPart, ...]:
+def tail_ribs(layout: AircraftLayout, airfoil: AirfoilShape, spars: TailSpars,
+              settings: FabricationSettings) -> tuple[KitPart, ...]:
     """Horizontal-tail ribs `HR-…`/`HL-…`, fin ribs `V-…` (split at the hinge) and, where the boom limits the fin
-    root, the fin mount `TM-1` (R20).
+    root, the fin mount `TM-1` (R20). Each surface's ribs carry its own spar from `spars` (`tail_spar_tubes`).
 
     `airfoil` is the tail section (`layout.TAIL_AIRFOIL_NAME` for OpenVSP-built tails). Fin ribs start on top of
     the mount plate, or on the fuselage skin.
     """
     radius = tail_root_radius_m(layout)
-    tube = tail_spar_tube(layout, airfoil, settings)
     ht, vt = layout.htail, layout.vtail
     t_rib = settings.sheet_for("rib").thickness_m
     fin_start = fin_start_m(layout, settings)
@@ -380,7 +434,7 @@ def tail_ribs(layout: AircraftLayout, airfoil: AirfoilShape, settings: Fabricati
     def fin_at(index: int, h: float) -> bd.Location:
         return bd.Location((vt.x_le_root_m, 0.0, vt.z_root_m + h), FLAT_ROTATION_DEG)
 
-    right = _tail_surface_ribs("HR-", ht, htail_at, radius, airfoil, tube, settings)
-    fin = _tail_surface_ribs("V-", vt, fin_at, fin_start, airfoil, tube, settings)
+    right = _tail_surface_ribs("HR-", ht, htail_at, radius, airfoil, spars.htail, settings)
+    fin = _tail_surface_ribs("V-", vt, fin_at, fin_start, airfoil, spars.fin, settings)
     left = [_mirrored(p, "HR-", "HL-", settings) for p in right]
     return (*right, *left, *fin, *_fin_mount(layout, settings))

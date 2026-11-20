@@ -7,12 +7,15 @@ FS * sqrt((sigma / sigma_allow)^2 + (tau / tau_allow)^2) <= 1 (R25), which with 
   spar, integrated from the tip inboard, at the manoeuvre dynamic pressure, R30);
 - hover (quadplane): the boom reaction moment with the pitch-control torque of one rotor at full thrust and its
   fore/aft partner at zero, carried inboard of the boom clamp.
-Also here: the centreline overwrap that carries the socket mitre (R24/R29), the tail-boom check (R26), the loads each
-wing-box plate bears (R27/R32) and the anti-rotation pin that reacts the spar's root torque (R31). All values SI.
-Must not import from the schemas' consumers.
+Also here: the centreline overwrap that carries the socket mitre (R24/R29), the tail-surface load (R35) that the
+tail-boom check (R26) and the tail spars use, the loads each wing-box plate bears (R27/R32) and the anti-rotation pin
+that reacts the spar's root torque (R31). All values SI. Must not import from the schemas' consumers.
 
-Limitation (R30): flight loads use q at max(V_A, the loiter speed). SizingOutput carries no cruise or dash speed,
-so a design flown faster than V_A = V_stall sqrt(n_limit) has its flight torsion and tail loads under-estimated.
+Limitations:
+- R30: flight loads use q at max(V_A, the loiter speed). SizingOutput carries no cruise or dash speed, so a design
+  flown faster than V_A = V_stall sqrt(n_limit) has its flight torsion and tail loads under-estimated.
+- R35: a tail surface's load is q_A S CL_max with no extra n_limit factor (CL_max at V_A is already the ceiling of
+  tail lift). High-speed gust cases on the tails are not modelled and could exceed it.
 """
 
 import math
@@ -123,15 +126,17 @@ LoadCase = tuple[float, float]  # (bending moment N m, torque N m)
 
 
 # ------------------------------------------------------------------------------------- stresses ---
-def elliptic_moment_nm(mtow_kg: float, n: float, semi_span_m: float, y_m: float) -> float:
-    """Bending moment at span station y (from the centreline) for an elliptic lift distribution.
-
-    M = (2 P b / 3 pi) [(2 + xi^2) sqrt(1 - xi^2) - 3 xi acos(xi)], P = n W / 2, xi = y / b.
-    """
+def elliptic_root_moment_nm(lift_n: float, semi_span_m: float, y_m: float) -> float:
+    """Bending moment at station y (from the panel's root line) of a panel carrying `lift_n` spread elliptically
+    over its semi-span b: M = (2 P b / 3 pi) [(2 + xi^2) sqrt(1 - xi^2) - 3 xi acos(xi)], xi = y / b."""
     xi = min(max(y_m / semi_span_m, 0.0), 1.0)
-    half_lift = n * mtow_kg * G0 * HALF_WING_FRACTION
     shape = (ELLIPTIC_SQUARE_OFFSET + xi**2) * math.sqrt(1.0 - xi**2) - ELLIPTIC_ACOS_FACTOR * xi * math.acos(xi)
-    return ELLIPTIC_MOMENT_FACTOR * half_lift * semi_span_m * shape
+    return ELLIPTIC_MOMENT_FACTOR * lift_n * semi_span_m * shape
+
+
+def elliptic_moment_nm(mtow_kg: float, n: float, semi_span_m: float, y_m: float) -> float:
+    """Wing bending moment at span station y (from the centreline): the elliptic moment of P = n W / 2."""
+    return elliptic_root_moment_nm(n * mtow_kg * G0 * HALF_WING_FRACTION, semi_span_m, y_m)
 
 
 def hover_moment_nm(mtow_kg: float, arm_m: float) -> float:
@@ -265,16 +270,30 @@ def lift_boom_tube(thrust_n: float, arm_m: float, max_diameter_m: float, setting
     return tube
 
 
+def tail_surface_load_n(sizing: SizingOutput, area_m2: float, settings: FabricationSettings) -> float:
+    """R35: the most a tail surface of `area_m2` can lift, q_max S CL_max (q_max at V_A, R30), with no n_limit
+    factor; the safety factor applies through the allowable. High-speed gusts are not modelled (module docstring)."""
+    return flight_dynamic_pressure_pa(sizing, settings) * area_m2 * TAIL_CL_MAX
+
+
+def smallest_passing(cases: tuple[LoadCase, ...], depth_m: float,
+                     settings: FabricationSettings) -> Optional[TubeStock]:
+    """The smallest stock tube or rod (by OD, then lighter) no wider than `depth_m` that carries the load cases."""
+    rods = tuple(TubeStock(od_m=r, id_m=0.0) for r in settings.rods_m)
+    stock = sorted((*settings.tubes, *rods), key=lambda t: (t.od_m, t.area_m2))
+    return next((t for t in stock if t.od_m <= depth_m + FIT_EPS_M and _passes(t, cases, settings)), None)
+
+
 def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> LoadCase:
-    """(moment, torque) on the tail boom (R26): n_limit q_max S CL_max on each tail (q_max at V_A, R30); the
-    horizontal and vertical forces' resultant bends the boom over the arm from its root (where the cone first holds
-    it, conservative) to the tails' aerodynamic centre, and the fin force twists it at its centre-of-pressure height
+    """(moment, torque) on the tail boom (R26, loads per R35): q_max S CL_max on each tail; the horizontal and
+    vertical forces' resultant bends the boom over the arm from its root (where the cone first holds it,
+    conservative) to the tails' aerodynamic centre, and the fin force twists it at its centre-of-pressure height
     (the fin MAC station) above the boom axis. (0, 0) when the tail sits on the fuselage."""
     boom = layout.tail_boom
     if boom is None:
         return 0.0, 0.0
-    per_area = settings.n_limit * flight_dynamic_pressure_pa(sizing, settings) * TAIL_CL_MAX
-    h_force, v_force = per_area * sizing.horizontal_tail_area_m2, per_area * sizing.vertical_tail_area_m2
+    h_force = tail_surface_load_n(sizing, sizing.horizontal_tail_area_m2, settings)
+    v_force = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, settings)
     arm = max(layout.htail.x_ac_m, layout.vtail.x_ac_m) - boom.x_start_m
     height = layout.vtail.z_root_m + layout.vtail.y_mac_m - boom.z_m
     return math.hypot(h_force, v_force) * max(arm, 0.0), v_force * max(height, 0.0)

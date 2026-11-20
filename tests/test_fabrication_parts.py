@@ -18,7 +18,7 @@ from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
     TAIL_HINGE_FRACTION,
     tail_ribs,
-    tail_spar_tube,
+    tail_spar_tubes,
     wing_ribs,
 )
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
@@ -33,9 +33,15 @@ def ribs(g1_kit_inputs):
 
 
 @pytest.fixture(scope="module")
-def tails(g1_kit_inputs):
+def g1_tail_spars(designs, g1_kit_inputs):
     layout, _, _, settings = g1_kit_inputs
-    return tail_ribs(layout, load_airfoil(TAIL_AIRFOIL_NAME), settings)
+    return tail_spar_tubes(designs["g1"][0], layout, load_airfoil(TAIL_AIRFOIL_NAME), settings)
+
+
+@pytest.fixture(scope="module")
+def tails(g1_kit_inputs, g1_tail_spars):
+    layout, _, _, settings = g1_kit_inputs
+    return tail_ribs(layout, load_airfoil(TAIL_AIRFOIL_NAME), g1_tail_spars, settings)
 
 
 def _main_ribs(parts, prefix: str) -> list[KitPart]:
@@ -246,18 +252,12 @@ def test_tail_ribs_split_at_65_percent(g1_kit_inputs, tails):
                 assert _x_range(aft.outline)[0] == pytest.approx(hinge, abs=TOL_M)
 
 
-def test_tail_spar_is_the_smallest_tube_that_fits(g1_kit_inputs, tails):
-    layout, _, _, settings = g1_kit_inputs
-    tube = tail_spar_tube(layout, load_airfoil(TAIL_AIRFOIL_NAME), settings)
-    assert tube == settings.tubes[0]
-    root = ribs_by_label(tails)["HR-01"]
-    assert tube.od_m + settings.fit_clearance_m <= hole_diameters(root.outline)[0] <= tube.od_m + 0.001  # R19
-
-
-def test_tail_too_thin_for_any_tube_is_unavailable(g1_kit_inputs):
-    layout, _, _, settings = g1_kit_inputs
-    with pytest.raises(KitUnavailable, match="tail"):
-        tail_spar_tube(layout, load_airfoil(TAIL_AIRFOIL_NAME), settings.model_copy(update={"tubes": (settings.tubes[-1],)}))
+def test_each_tail_surface_root_rib_is_drilled_for_its_own_spar(g1_kit_inputs, g1_tail_spars, tails):
+    settings = g1_kit_inputs[3]
+    by = ribs_by_label(tails)
+    for label, tube in (("HR-01", g1_tail_spars.htail), ("V-01", g1_tail_spars.fin)):
+        hole = hole_diameters(by[label].outline)[0]
+        assert tube.od_m + settings.fit_clearance_m <= hole <= tube.od_m + 0.001, label  # R19
 
 
 def test_kit_part_area_is_the_outline_area(ribs):
@@ -280,12 +280,12 @@ def _skin_over(layout, x0: float, x1: float) -> float:
     return max(fuselage_radius_at(layout, x) for x in (x0, x1, *profile_corners(layout, x0, x1)))
 
 
-def test_fin_sits_on_a_mount_saddle_on_the_boom_where_the_boom_is_the_limit(g1_kit_inputs):
+def test_fin_sits_on_a_mount_saddle_on_the_boom_where_the_boom_is_the_limit(g1_kit_inputs, g1_tail_spars):
     """R9 / R20: a fin whose root chord lies aft of the fuselage sits on TM-1 on top of the boom."""
     layout, _, _, settings = g1_kit_inputs
     vt = dataclasses.replace(layout.vtail, x_le_root_m=layout.fuselage_length_m)
     aft = dataclasses.replace(layout, vtail=vt)
-    by = ribs_by_label(tail_ribs(aft, load_airfoil(TAIL_AIRFOIL_NAME), settings))
+    by = ribs_by_label(tail_ribs(aft, load_airfoil(TAIL_AIRFOIL_NAME), g1_tail_spars, settings))
     r_boom = aft.tail_boom.z_m + aft.tail_boom.diameter_m / 2
     t_plate = settings.sheet_for("plate").thickness_m
     mount = part_solid(by["TM-1"], settings).bounding_box()
