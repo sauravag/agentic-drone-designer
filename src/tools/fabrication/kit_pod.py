@@ -31,14 +31,13 @@ from src.tools.aero_cad.layout import (
 )
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, kit_spar_plan
 from src.tools.fabrication.fuselage_parts import wing_box_floor_m
-from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, plate_loads
+from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, plate_loads
 
 logger = logging.getLogger(__name__)
 
 STRUCTURE_CLEARANCE_M: Final[float] = COMPONENT_GAP_M / 2.0  # = the kit's opening allowance round a component
 POD_GROWTH_STEP: Final[float] = 0.02  # fractional diameter step while looking for a pod the battery fits under
 MAX_POD_GROWTH: Final[float] = 1.5  # never widen a pod by more than half for the kit
-FIT_EPS_M: Final[float] = 1e-9  # float round-off on the seating equality
 POD_DIAMETER_TOLERANCE_M: Final[float] = 0.5e-3  # bisection stops once the bracket is this narrow
 SIZING_STATIONS: Final[tuple[float, ...]] = (DEFAULT_WING_STATION, *WING_STATION_SCAN)  # every station balancing tries
 

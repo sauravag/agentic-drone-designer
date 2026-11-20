@@ -2,22 +2,26 @@ import math
 
 import pytest
 
-from src.tools.aero_cad.airfoil_geometry import load_airfoil
-from src.tools.aero_cad.layout import WING_Z_FRACTION, layout_from_sizing
-from src.tools.sizing.mission_solver import size_aircraft
-from tests.reference_designs import CASES
-
 from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
+from src.tools.aero_cad.airfoil_geometry import load_airfoil
+from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M, WING_Z_FRACTION, layout_from_sizing
 from src.tools.fabrication.tubes import (
-    boom_tube,
+    BOOM_DEFLECTION_FRACTION,
     MIN_WEB_M,
     KitUnavailable,
     bending_stress_pa,
-    joint_y_m,
-    plan_spar,
+    boom_tube,
     elliptic_moment_nm,
+    hover_moment_nm,
+    joint_y_m,
+    lift_boom_tube,
+    load_cases,
+    plan_spar,
+    tube_ratio,
     usable_depth_m,
 )
+from src.tools.sizing.mission_solver import size_aircraft
+from tests.reference_designs import CASES
 
 
 def test_reviewer_numbers_25kg():
@@ -46,10 +50,45 @@ def test_socket_is_larger_than_the_spar():
 
 
 def test_hover_moment_governs_when_it_is_larger():
+    """D6: the hover moment is the two rotors' MTOW g / 4 each at the boom's arm from the joint, 1.2 - 0.08 m."""
     gentle = DEFAULT_FABRICATION.model_copy(update={"n_limit": 1.0})  # flight 23.6 N·m < hover 43.9 N·m
     flight = plan_spar(8.0, 1.5, 0.08, lambda y: 0.06, None, gentle)
     hover = plan_spar(8.0, 1.5, 0.08, lambda y: 0.06, 1.2, gentle)
     assert hover.segments[0].tube.od_m > flight.segments[0].tube.od_m
+    (_, _), (moment, _) = load_cases(8.0, 1.5, 0.08, 1.2, None, gentle)
+    assert moment == pytest.approx(hover_moment_nm(8.0, 1.2 - 0.08)) == pytest.approx(2 * 8.0 * 9.80665 / 4 * 1.12)
+    root = hover.segments[0].tube
+    assert tube_ratio(root, ((moment, 0.0),), gentle) <= 1.0
+    lighter = [t for t in gentle.tubes if (t.od_m, t.id_m) < (root.od_m, root.id_m)]
+    assert all(tube_ratio(t, ((moment, 0.0),), gentle) > 1.0 for t in lighter)
+
+
+def test_socket_is_sized_by_the_centreline_moment():
+    """D6: a wide fuselage puts the joint far out, so the centreline moment, not the joint's, sizes the socket."""
+    plan = plan_spar(10.0, 1.2, 0.3, lambda y: 0.05, None, DEFAULT_FABRICATION)
+    joint_moment = elliptic_moment_nm(10.0, DEFAULT_FABRICATION.n_limit, 1.2, 0.3)
+    assert plan.centre_moment_nm == pytest.approx(elliptic_moment_nm(10.0, DEFAULT_FABRICATION.n_limit, 1.2, 0.0))
+    assert plan.centre_moment_nm > joint_moment
+    root, socket = plan.segments[0].tube, plan.socket
+    sleeves = [t for t in DEFAULT_FABRICATION.tubes if root.od_m - 1e-9 <= t.id_m <= root.od_m + 0.0002 + 1e-9]
+    assert tube_ratio(socket, ((plan.centre_moment_nm, 0.0),), DEFAULT_FABRICATION) <= 1.0
+    assert tube_ratio(sleeves[0], ((joint_moment, 0.0),), DEFAULT_FABRICATION) <= 1.0  # enough at the joint...
+    assert sleeves[0] != socket  # ...but not at the centreline
+
+
+def test_a_socket_too_weak_for_the_centreline_is_unavailable():
+    """D6: the only stock that sleeves the root fails the centreline moment."""
+    stock = DEFAULT_FABRICATION.model_copy(update={"tubes": (TubeStock(od_m=0.012, id_m=0.010),
+                                                             TubeStock(od_m=0.014, id_m=0.012))})
+    with pytest.raises(KitUnavailable, match="sleeve the 12 mm spar tube .* centreline moment"):
+        plan_spar(6.0, 1.0, 0.25, lambda y: 0.0125, None, stock)  # joint 25 N·m, centre 50 N·m
+
+
+@pytest.mark.parametrize("semi_span_m", [0.06, 0.05])
+def test_a_wing_that_ends_inside_the_fuselage_is_unavailable(semi_span_m):
+    """D8: no exposed span, no spar (the last segment would have no length)."""
+    with pytest.raises(KitUnavailable, match="does not reach past the fuselage joint"):
+        plan_spar(5.0, semi_span_m, 0.06, lambda y: 0.03, None, DEFAULT_FABRICATION)
 
 
 def test_too_thin_wing_is_unavailable():
@@ -195,8 +234,6 @@ def test_boom_tube_below_all_stock_takes_the_minimum_boom_floor():
 
 
 # ------------------------------------------------------------------------------- R21 lift booms ---
-from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M  # noqa: E402
-from src.tools.fabrication.tubes import KitUnavailable as _Unavailable, bending_stress_pa, lift_boom_tube  # noqa: E402
 
 
 def _passes_r21(tube, moment_nm, settings) -> bool:
@@ -217,12 +254,11 @@ def test_lift_boom_is_the_smallest_stock_tube_that_carries_the_hub_moment(thrust
 
 
 def test_lift_boom_wider_than_the_layout_boom_is_unavailable():
-    with pytest.raises(_Unavailable, match="lift boom"):
+    with pytest.raises(KitUnavailable, match="lift boom"):
         lift_boom_tube(400.0, 0.6, 0.020, DEFAULT_FABRICATION)
 
 
 # ------------------------------------------------------------------------- R22 lift-boom stiffness ---
-from src.tools.fabrication.tubes import BOOM_DEFLECTION_FRACTION  # noqa: E402
 
 
 def _deflection_m(tube, thrust_n: float, arm_m: float, settings) -> float:
@@ -248,5 +284,11 @@ def test_lift_boom_tip_deflects_at_most_one_percent_of_its_arm(thrust_n, arm_m):
 
 
 def test_lift_boom_too_flexible_within_the_layout_diameter_is_unavailable():
-    with pytest.raises(_Unavailable, match="deflect"):
+    """D18: the message names the check that failed: deflection here (the boom is strong enough)."""
+    with pytest.raises(KitUnavailable, match="too flexible: .* deflects"):
         lift_boom_tube(68.8, 0.691, 0.025, DEFAULT_FABRICATION)  # strong enough, far too flexible
+
+
+def test_lift_boom_too_weak_names_the_stress():
+    with pytest.raises(KitUnavailable, match="too weak: .* MPa"):
+        lift_boom_tube(400.0, 0.6, 0.020, DEFAULT_FABRICATION)

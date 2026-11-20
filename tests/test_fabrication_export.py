@@ -6,7 +6,6 @@ import math
 import re
 import time
 from itertools import combinations
-from pathlib import Path
 
 import build123d as bd
 import ezdxf
@@ -14,6 +13,7 @@ import pytest
 from ezdxf import bbox as dxf_bbox
 
 from src.schemas.fabrication import DEFAULT_FABRICATION
+from src.tools.fabrication.build_kit import assert_unique_labels
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication import nesting
 from src.tools.fabrication.kit_export import (
@@ -259,10 +259,8 @@ def test_write_sheets_reports_a_kerf_failure_like_nest(tmp_path, monkeypatch):
 
 
 def test_build_kit_rejects_duplicate_labels():
-    from src.tools.fabrication.build_kit import _assert_unique_labels
-
     with pytest.raises(KitUnavailable, match="P-3"):
-        _assert_unique_labels([_plate("P-3", 0.05, 0.05), _plate("P-3", 0.05, 0.05)], [])
+        assert_unique_labels([_plate("P-3", 0.05, 0.05), _plate("P-3", 0.05, 0.05)], [])
 
 
 # ---------------------------------------------------------------------- Task 9: build sheet, parts list ---

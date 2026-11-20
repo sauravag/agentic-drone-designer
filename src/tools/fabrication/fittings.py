@@ -9,11 +9,12 @@
 - Cruise-motor plate `MP-C` (R17): a disc glued to the firewall's front face, motor diameter + 2 MIN_WEB_M, centre
   hole and slotted bolt cross as the lift-motor plates. It may overhang a small firewall on a pointed nose.
 - Boom clamps, lift-motor plates and boom tubes live in `boom_parts.py` (re-exported here).
-- `split_to_bed`: a part too long for the usable bed (bed - 2 margin each way) is cut across its long axis into the
-  fewest equal pieces that fit, each cut moved up to SPLIT_SEARCH_M so the joint keeps SPLIT_CLEARANCE_M from every
-  hole and slot. Pieces `<label>a, b, …` keep the part's location (they sit side by side as cut) and interlock with a
-  dovetail; a doubler `<label>-D<k>` of the same family is glued on the part's +Z face over joint k, lapping
-  DOUBLER_LAP_M either side of the dovetail (down to DOUBLER_MIN_LAP_M where holes crowd it). Its band stays clear of
+- `split_to_bed`: a part too long for the usable bed (bed - 2 margin each way, less one kerf) is cut across its long
+  axis into the fewest equal pieces that fit, each cut moved up to SPLIT_SEARCH_M so the joint keeps
+  SPLIT_CLEARANCE_M from every hole and slot. Pieces `<label>a, b, …` keep the part's location (they sit side by
+  side as cut) and interlock with a dovetail; a doubler `<label>-D<k>` of the same family is glued on the part's
+  +Z face over joint k, lapping DOUBLER_LAP_M either side of the dovetail (down to DOUBLER_MIN_LAP_M where holes
+  crowd it). Its band stays clear of
   the long-axis extent of every hole and slot (+ MIN_WEB_M), so it misses whatever passes through them (formers
   stand in the crutch's tab slots and span its width). Its edges are inset DOUBLER_EDGE_INSET_M from the part's
   outline: on a curved skin the doubler's outer face sits one sheet off the part's plane, where the skin is narrower
@@ -35,17 +36,12 @@ from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent, boom_obstacles, overlap_volume_m3
 from src.tools.aero_cad.layout import AircraftLayout, fuselage_radius_at
 from src.tools.fabrication.boom_parts import boom_parts, motor_plate_diameter_m, motor_plate_outline
-from src.tools.fabrication.fuselage_parts import (
-    firewall_station,
-    material_spans,
-    profile_corners,
-    socket_axis_m,
-    station_location,
-)
+from src.tools.fabrication.fuselage_parts import firewall_station, material_spans, station_location
 from src.tools.fabrication.kit import Box2, KitPart
 from src.tools.fabrication.rib_outline import rect_face
+from src.tools.fabrication.skin import profile_corners
 from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION
+from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, socket_axis_m
 
 __all__ = ["boom_parts", "component_plates", "cruise_motor_plate", "join_notes", "split_to_bed"]
 
@@ -197,10 +193,11 @@ class _Joint:
     rails: tuple[_Rail, ...]  # fore to aft in y; one dovetail and one doubler per rail
 
 
-def _usable_bed(settings: FabricationSettings) -> tuple[float, float]:
-    """(long, short) usable bed sides."""
-    sides = (settings.bed_width_m - 2.0 * settings.margin_m, settings.bed_height_m - 2.0 * settings.margin_m)
-    return max(sides), min(sides)
+def _split_bed(settings: FabricationSettings) -> tuple[float, float]:
+    """(long, short) sides a nominal outline may span: the usable bed less one kerf, which the nested (kerfed)
+    outline adds (kerf / 2 per side), so whatever splitting accepts, nesting places."""
+    w, h = settings.usable_bed_m
+    return max(w, h) - settings.kerf_m, min(w, h) - settings.kerf_m
 
 
 def _size(face: bd.Face) -> tuple[float, float]:
@@ -209,7 +206,7 @@ def _size(face: bd.Face) -> tuple[float, float]:
 
 
 def _fits(face: bd.Face, settings: FabricationSettings) -> bool:
-    (w, h), (long, short) = _size(face), _usable_bed(settings)
+    (w, h), (long, short) = _size(face), _split_bed(settings)
     return max(w, h) <= long and min(w, h) <= short
 
 
@@ -397,7 +394,7 @@ def _try_split(face: bd.Face, count: int, settings: FabricationSettings, opening
 
 
 def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings, openings: Sequence[Box2]) -> Split:
-    long = _usable_bed(settings)[0]
+    long = _split_bed(settings)[0]
     for count in range(max(2, math.ceil(_size(face)[0] / long)), MAX_SPLIT_PIECES + 1):
         result = _try_split(face, count, settings, openings)
         if result is not None:
@@ -428,7 +425,7 @@ def split_to_bed(part: KitPart, settings: FabricationSettings) -> tuple[KitPart,
     from the laser kerf (applied at DXF export), as tabs and slots do."""
     if _fits(part.outline, settings):
         return (part,)
-    (w, h), short = _size(part.outline), _usable_bed(settings)[1]
+    (w, h), short = _size(part.outline), _split_bed(settings)[1]
     if min(w, h) > short:
         raise KitUnavailable(f"{part.label} is wider than the {short * 1e3:.0f} mm usable bed")
     along_y = h > w

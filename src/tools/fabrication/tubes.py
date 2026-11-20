@@ -20,7 +20,7 @@ Limitations:
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Final, Optional
+from typing import Callable, Final, Optional, Sequence
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.schemas.state import SizingOutput
@@ -263,11 +263,29 @@ def lift_boom_tube(thrust_n: float, arm_m: float, max_diameter_m: float, setting
     tube = next((t for t in fits if _passes(t, ((moment, 0.0),), settings)
                  and cantilever_deflection_m(t, thrust_n, arm_m, settings) <= limit_m), None)
     if tube is None:
-        raise KitUnavailable(
-            f"no stock lift boom up to {cap_m * 1e3:.0f} mm carries {thrust_n:.0f} N at a {arm_m * 1e3:.0f} mm arm "
-            f"within the allowable stress and a {limit_m * 1e3:.1f} mm tip deflection"
-        )
+        raise KitUnavailable(_lift_boom_failure(fits, thrust_n, arm_m, cap_m, settings))
     return tube
+
+
+def _lift_boom_failure(fits: Sequence[TubeStock], thrust_n: float, arm_m: float, cap_m: float,
+                       settings: FabricationSettings) -> str:
+    """D18: why no lift boom fits, named by the check the stiffest candidate fails (stress first)."""
+    head = f"no stock lift boom up to {cap_m * 1e3:.0f} mm carries {thrust_n:.0f} N at a {arm_m * 1e3:.0f} mm arm"
+    if not fits:
+        return f"{head}: no stock tube of that size"
+    stiffest = max(fits, key=lambda t: t.second_moment_m4)
+    limit_m = BOOM_DEFLECTION_FRACTION * max(arm_m, 0.0)
+    if not _passes(stiffest, ((thrust_n * max(arm_m, 0.0), 0.0),), settings):
+        sigma = bending_stress_pa(stiffest, thrust_n * max(arm_m, 0.0))
+        allow = settings.sigma_allow_pa / settings.safety_factor
+        return f"{head}: too weak: even {_size(stiffest)} sees {sigma / 1e6:.0f} MPa (allowable {allow / 1e6:.0f} MPa)"
+    deflection = cantilever_deflection_m(stiffest, thrust_n, arm_m, settings)
+    return (f"{head}: too flexible: even {_size(stiffest)} deflects {deflection * 1e3:.1f} mm at the hub "
+            f"(limit {limit_m * 1e3:.1f} mm)")
+
+
+def _size(tube: TubeStock) -> str:
+    return f"{tube.od_m * 1e3:.0f}x{tube.id_m * 1e3:.0f} mm"
 
 
 def tail_surface_load_n(sizing: SizingOutput, area_m2: float, settings: FabricationSettings) -> float:
@@ -428,12 +446,14 @@ def _step_down(
 
 
 def _pick_socket(root: TubeStock, moment_nm: float, settings: FabricationSettings) -> TubeStock:
+    """The lightest stock tube that sleeves the root member and carries the centreline moment."""
     for tube in settings.tubes:
         sleeves = tube.id_m >= root.od_m - FIT_EPS_M and tube.id_m - root.od_m <= settings.fit_clearance_m + FIT_EPS_M
         if sleeves and _passes(tube, ((moment_nm, 0.0),), settings):
             return tube
     raise KitUnavailable(
-        f"no stock tube can sleeve the {root.od_m * 1e3:.0f} mm spar tube as a fuselage socket"
+        f"no stock tube can sleeve the {root.od_m * 1e3:.0f} mm spar tube as a fuselage socket and carry the "
+        f"{moment_nm:.0f} N·m centreline moment"
     )
 
 
@@ -482,7 +502,7 @@ def _members(root: TubeStock, joint_m: float, semi_span_m: float, depth_at: Call
 def plan_spar(
     mtow_kg: float,
     semi_span_m: float,
-    joint_y_m: float,
+    joint_m: float,
     depth_at: Callable[[float], float],
     boom_y_m: Optional[float],
     settings: FabricationSettings,
@@ -495,24 +515,27 @@ def plan_spar(
     `pin_arm_m` (R31), which `torsion` requires; with no torsion there is no torque and the pin is NOMINAL_PIN."""
     if boom_y_m is not None and boom_y_m < 0.0:
         raise ValueError(f"boom_y_m must be a distance from the centreline, got {boom_y_m}")
+    if semi_span_m <= joint_m + FIT_EPS_M:  # D8: no exposed span, so no spar member would have any length
+        raise KitUnavailable(f"the wing's semi-span ({semi_span_m:.3f} m) does not reach past the fuselage joint "
+                             f"(y = {joint_m:.3f} m)")
     if torsion is not None and pin_arm_m is None:
         raise ValueError("pin_arm_m is required with torsion: the anti-rotation pin reacts the root torque")
 
     def cases(y: float) -> tuple[LoadCase, ...]:
         return load_cases(mtow_kg, semi_span_m, y, boom_y_m, torsion, settings)
 
-    root_depth, root_cases = depth_at(joint_y_m), cases(joint_y_m)
+    root_depth, root_cases = depth_at(joint_m), cases(joint_m)
     # No torsion, no torque: the nominal rod, whose stock is checked where its holes are cut (`pin_hole_m`).
     pin = NOMINAL_PIN if pin_arm_m is None else pin_for_load(max(t for _, t in root_cases) / pin_arm_m, settings)
     root = next((t for t in settings.tubes
                  if t.od_m <= root_depth + FIT_EPS_M and _passes(t, root_cases, settings)), None)
     if root is None:
-        raise _unavailable_at(joint_y_m)
+        raise _unavailable_at(joint_m)
 
-    segments = _members(root, joint_y_m, semi_span_m, depth_at, cases, settings)
+    segments = _members(root, joint_m, semi_span_m, depth_at, cases, settings)
     # The socket carries the bending moment "as above" (flight vs the balanced hover reaction) at the centreline.
     centre_moment = max(m for m, _ in load_cases(mtow_kg, semi_span_m, ROOT_SPAN_M, boom_y_m, None, settings))
     socket = _pick_socket(root, centre_moment, settings)
-    _check_insertion(joint_y_m, root, settings)
+    _check_insertion(joint_m, root, settings)
     # The socket spans the fuselage only; each spar root plugs in from the skin to the centreline.
-    return SparPlan(segments, socket, joint_y_m, joint_y_m, centre_moment, pin)
+    return SparPlan(segments, socket, joint_m, joint_m, centre_moment, pin)

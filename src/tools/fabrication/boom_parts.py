@@ -31,7 +31,7 @@ from src.tools.fabrication.fuselage_parts import socket_axis_m, station_location
 from src.tools.fabrication.kit import KitPart, TubePart, TubeRole
 from src.tools.fabrication.rib_outline import Hole, circle_face, drill, keeps_web, largest_face, rect_face
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube, lift_boom_tube
-from src.tools.fabrication.wing_parts import spar_hole_m, wing_rib_stations
+from src.tools.fabrication.wing_parts import spar_hole_m, panel_rib_stations
 
 CLAMP_LABELS: Final[tuple[str, ...]] = ("BC-R1", "BC-R2", "BC-L1", "BC-L2")
 CLAMP_CHEEK_M: Final[float] = 0.005  # plate material beside and below the boom hole
@@ -108,7 +108,7 @@ def _rib_bands(spar: SparPlan, layout: AircraftLayout, settings: FabricationSett
     """(label, |y| from, |y| to) of each rib slab of one panel: centred on its station, the root doubler outboard."""
     t_rib, t_root = settings.sheet_for("rib").thickness_m, settings.sheet_for("doubler").thickness_m
     bands = []
-    for i, y in enumerate(wing_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)):
+    for i, y in enumerate(panel_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)):
         lo, hi = (y, y + t_root) if i == 0 else (y - t_rib / 2.0, y + t_rib / 2.0)
         bands.append((f"{prefix}{i + 1:02d}", lo, hi))
     return bands
@@ -193,6 +193,17 @@ def _lift_tube(boom: Boom, layout: AircraftLayout, thrust_n: float, settings: Fa
     return lift_boom_tube(thrust_n, arm, boom.diameter_m, settings)
 
 
+def _lift_thrust_n(layout: AircraftLayout, lift_thrust_n: Optional[float]) -> float:
+    """The thrust per lift motor that sizes the lift booms (R21): required, and positive (D19), when there are any;
+    0 for a fixed-wing layout, which has none."""
+    if not layout.vtol_booms:
+        return 0.0
+    if lift_thrust_n is None or lift_thrust_n <= 0.0:
+        raise ValueError(f"lift_thrust_n must be a positive thrust per lift motor to size the lift booms (R21), "
+                         f"got {lift_thrust_n}")
+    return lift_thrust_n
+
+
 def boom_parts(
     layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
     components: Sequence[PlacedComponent] = (), lift_thrust_n: Optional[float] = None,
@@ -203,13 +214,12 @@ def boom_parts(
     `lift_thrust_n` (thrust per lift motor), which a layout with lift booms must supply. `components` (optional)
     supplies the lift motors (`vtol_motor_k`), whose diameter sizes the motor plates.
     """
-    if layout.vtol_booms and lift_thrust_n is None:
-        raise ValueError("lift_thrust_n is required to size the lift booms (R21)")
+    thrust = _lift_thrust_n(layout, lift_thrust_n)
     tubes, parts = _tail_tubes(layout, settings), []
     boom_z: dict[int, float] = {}
     boom_od: dict[int, float] = {}
     for boom in layout.vtol_booms:
-        stock = _lift_tube(boom, layout, lift_thrust_n, settings)  # type: ignore[arg-type]
+        stock = _lift_tube(boom, layout, thrust, settings)
         clamp = _clamp(boom, stock, layout, spar, settings)
         boom_z[clamp.side], boom_od[clamp.side] = clamp.boom.y_m, stock.od_m
         parts += _clamp_plates(clamp, settings)

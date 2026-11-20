@@ -296,9 +296,25 @@ def test_downloadable_files_include_the_build_sheet_and_parts_list(tmp_path: Pat
     out.mkdir()
     _kit(out, {"birch-ply-3-mm": 1})
     (out / "design.json").write_text("{}")
-    names = {p.name for p in presenters.downloadable_files(out)}
-    assert {"design.json", "build_sheet.md", "parts.csv"} <= names
-    assert not any(n.endswith(".dxf") for n in names)
+    names = [p.name for p in presenters.downloadable_files(out)]
+    assert {"design.json", "build_sheet.md", "parts.csv"} <= set(names)
+    assert names[-1] == "birch-ply-3-mm-1.dxf"  # M2: the cut sheets are offered too, after the build sheet
+
+
+def test_downloadable_files_skip_a_symlinked_sheet_or_sheet_folder(tmp_path: Path) -> None:
+    out = tmp_path / "run"
+    (out / "kit" / "sheets").mkdir(parents=True)
+    secret = tmp_path / "secret.dxf"
+    secret.write_text("x")
+    (out / "kit" / "sheets" / "birch-ply-3-mm-1.dxf").symlink_to(secret)
+    assert presenters.downloadable_files(out) == []
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "birch-ply-3-mm-1.dxf").write_text("x")
+    (out / "kit" / "sheets" / "birch-ply-3-mm-1.dxf").unlink()
+    (out / "kit" / "sheets").rmdir()
+    (out / "kit" / "sheets").symlink_to(elsewhere)
+    assert presenters.downloadable_files(out) == []
 
 
 def test_downloadable_files_skip_a_symlinked_kit_file(tmp_path: Path) -> None:
@@ -350,14 +366,18 @@ def test_build_sheet_and_parts_list_are_offered_for_download(tmp_path: Path, mon
     assert {"build_sheet.md", "parts.csv"} <= labels
 
 
-def test_presenter_constants_match_the_kit_exporter() -> None:
-    pytest.importorskip("build123d")
-    from src.tools.fabrication import kit_export
+def test_kit_file_names_come_from_one_dependency_free_module() -> None:
+    """M4: the exporter and the UI share src/schemas/kit_files.py; the UI side needs no fabrication import."""
+    import subprocess
+    import sys
 
-    assert presenters.KIT_SUBDIR == kit_export.KIT_SUBDIR
-    assert presenters.KIT_DOWNLOADS == (kit_export.BUILD_SHEET_FILE, kit_export.PARTS_CSV_FILE)
-    for sheet in DEFAULT_FABRICATION.sheets:
-        assert presenters.stock_slug(sheet.name) == kit_export._slug(sheet.name)
+    from src.schemas import kit_files
+
+    code = ("import sys; sys.modules['build123d'] = None; import src.schemas.kit_files, src.ui.presenters; "
+            "assert not [m for m in sys.modules if m.startswith('src.tools.fabrication')]")
+    subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(__file__).resolve().parents[1])
+    assert presenters.stock_slug is kit_files.stock_slug
+    assert kit_files.sheet_file_name("Birch ply 1.5 mm", 2) == "birch-ply-1-5-mm-2.dxf"
 
 
 def test_empty_tube_and_rod_lists_are_reported_in_user_terms() -> None:

@@ -7,13 +7,13 @@ and follow the airfoil exactly: the iron-on film covering adds no thickness.
 
 import math
 from dataclasses import dataclass
-from typing import Final, Iterable, Sequence
+from typing import Final, Iterable, Optional, Sequence
 
 import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape, camber_at
-from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable
+from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable
 
 MIN_LIGHTENING_DIAMETER_M: Final[float] = 0.006  # smaller holes save too little to be worth cutting
 CUTTER_REACH_FACTOR: Final[float] = 2.0  # cutting rectangles extend this many chords past the rib
@@ -93,10 +93,11 @@ def clearance_m(face: bd.Face, x_m: float, y_m: float, holes: Sequence[Hole]) ->
 
 
 def keeps_web(face: bd.Face, hole: Hole, others: Sequence[Hole]) -> bool:
-    """True when `hole` sits inside `face` with MIN_WEB_M to the outline and to every other hole."""
+    """True when `hole` sits inside `face` with MIN_WEB_M to the outline and to every other hole (to FIT_EPS_M: an
+    exact fit passes despite float round-off, D9)."""
     if not contains(face, hole):
         return False
-    return clearance_m(face, hole.x_m, hole.y_m, others) - hole.diameter_m / 2.0 >= MIN_WEB_M
+    return clearance_m(face, hole.x_m, hole.y_m, others) - hole.diameter_m / 2.0 >= MIN_WEB_M - FIT_EPS_M
 
 
 def lightening_holes(
@@ -132,3 +133,23 @@ def oblique_diameter_m(od_m: float, thickness_m: float, lean: float) -> float:
     leaning `lean` (off-normal travel per unit along the normal): the section is an ellipse od / cos long that also
     walks t tan across the thickness (R19)."""
     return od_m * math.hypot(1.0, lean) + thickness_m * lean
+
+
+# ------------------------------------------------------------------------- face booleans ---
+def shape_area(shape: Optional[bd.Shape]) -> float:
+    return 0.0 if shape is None else sum(f.area for f in shape.faces())
+
+
+def common(a: bd.Shape, b: bd.Shape) -> Optional[bd.Shape]:
+    """Boolean intersection as one shape (Build123d may return a list of pieces), or None when empty."""
+    result = a.intersect(b)
+    pieces = result if isinstance(result, list) else ([] if result is None else [result])
+    faces = [f for piece in pieces for f in piece.faces()]
+    return bd.Compound(faces) if faces else None
+
+
+def single_face(shape: bd.Shape, label: str) -> bd.Face:
+    faces = shape.faces()
+    if len(faces) != 1:
+        raise KitUnavailable(f"part {label} falls apart into {len(faces)} pieces")
+    return faces[0]

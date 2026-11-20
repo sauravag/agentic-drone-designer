@@ -18,7 +18,8 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
   leans (taper), so a tail spar starts just far enough off its root surface for its rim to clear it.
 Linear stock (balsa, `stringer_density_kg_m3`): `ST-1…` stringers in the former notches from the first former
 after the firewall to the aft face of the last former; `LE-…` / `TE-…` strips per wing panel and tail surface.
-Covering: film over both faces of the wing and tails (2 x planform), fuselage cover over the pod's lateral area.
+Covering: film over both faces of the wing and tails outside the fuselage and boom (2 x exposed planform), fuselage
+cover over the pod's lateral area.
 Structural checks (R24-R35): the spar is sized against bending and torsion (`kit_spar_torsion`) and its pin for the
 root torque, the tail boom is checked and the tail spars sized for the tail-surface load (R35), the plates get socket
 bosses when bearing or the downward web load needs them (and pin bosses when the pin needs them), and the centreline
@@ -47,7 +48,6 @@ from src.tools.aero_cad.layout import (
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.fittings import boom_parts, component_plates, cruise_motor_plate, join_notes, split_to_bed
 from src.tools.fabrication.fuselage_parts import (
-    BOSS_LABELS,
     FULL_TURN_DEG,
     STRINGER_COUNT,
     STRINGER_START_DEG,
@@ -84,6 +84,7 @@ from src.tools.fabrication.tubes import (
     plate_loads,
     tail_boom_check,
 )
+from src.tools.fabrication.wing_box_bosses import BOSS_LABELS
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
     fin_start_m,
@@ -93,7 +94,7 @@ from src.tools.fabrication.wing_parts import (
     TailSpars,
     tail_spar_hole,
     tail_spar_tubes,
-    wing_rib_stations,
+    panel_rib_stations,
     wing_ribs,
 )
 from src.tools.fabrication.wing_retention import (
@@ -156,7 +157,7 @@ def _member_end(line: Line, spar: SparPlan, k: int, settings: FabricationSetting
     of the first rib outboard of the step, whose hole is cut for the next, smaller member."""
     seg = spar.segments[k]
     half_t = settings.sheet_for("rib").thickness_m / 2.0
-    face = next((y - half_t for y in wing_rib_stations(spar.joint_y_m, spar.segments[-1].y_end_m)
+    face = next((y - half_t for y in panel_rib_stations(spar.joint_y_m, spar.segments[-1].y_end_m)
                  if y > seg.y_end_m + FIT_EPS_M), None)
     if face is None:  # the tip member, or no rib outboard of this step
         return seg.y_end_m
@@ -164,7 +165,7 @@ def _member_end(line: Line, spar: SparPlan, k: int, settings: FabricationSetting
     return min(seg.y_end_m, face - rim)
 
 
-def _spar_tubes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> list[TubePart]:
+def spar_tubes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> list[TubePart]:
     tubes: list[TubePart] = []
     for side, name in SIDES:
         line = _wing_line(layout, side, SPAR_CHORD_STATION)
@@ -202,7 +203,7 @@ def _first_rib_without_hole(surface: SurfacePlanform, start_m: float, airfoil: A
                             settings: FabricationSettings) -> Optional[float]:
     """Station of the first rib too thin to carry the spar hole with the minimum web (the rule `tail_ribs`
     drills by), or None when every rib carries it."""
-    for index, s in enumerate(wing_rib_stations(start_m, surface.semi_span_m)):
+    for index, s in enumerate(panel_rib_stations(start_m, surface.semi_span_m)):
         hole = tail_spar_hole(surface, airfoil, tube, index, s, settings)
         if not keeps_web(notched_profile(airfoil, surface.chord_at(s), settings), hole, []):
             return s
@@ -213,7 +214,8 @@ def _tail_spar(label: str, surface: SurfacePlanform, line: Line, root: float, be
                airfoil: AirfoilShape, settings: FabricationSettings) -> TubePart:
     """From just off the root surface (rim clear) out to the tip or where the depth stops admitting the tube, and
     short of the first rib without a hole (rim clear of its inner face, `below_m` inboard of its station)."""
-    depth, tip, radius = spar_depth_at(surface, airfoil, settings, root_doubler_m=None), surface.semi_span_m, tube.od_m / 2.0
+    depth = spar_depth_at(surface, airfoil, settings, root_doubler_m=None)
+    tip, radius = surface.semi_span_m, tube.od_m / 2.0
     end = tip if depth(tip) >= tube.od_m - FIT_EPS_M else depth_limit_m(depth, tube.od_m, root, tip)
     blocked = _first_rib_without_hole(surface, root, airfoil, tube, settings)
     if blocked is not None:
@@ -266,27 +268,29 @@ def _edge_strips(layout: AircraftLayout, spar: SparPlan, airfoil: AirfoilShape, 
     surfaces = [(f"W{n}", layout.wing, airfoil, s, spar.joint_y_m) for s, n in SIDES]
     surfaces += [(f"H{n}", layout.htail, tail, s, root) for s, n in SIDES]
     surfaces.append(("V", layout.vtail, tail, 1.0, fin_start_m(layout, settings)))
-    edges = (("le", LE_FRACTION, settings.le_side_m**2), ("te", TE_FRACTION, settings.te_height_m * settings.te_chord_m))
+    edges = (("le", LE_FRACTION, settings.le_side_m**2),
+             ("te", TE_FRACTION, settings.te_height_m * settings.te_chord_m))
     return [_strip(f"{kind.upper()}-{name}", kind, section, _surface_line(surface, foil, side, fraction), start,
                    surface.semi_span_m, settings)
             for kind, fraction, section in edges for name, surface, foil, side, start in surfaces]
 
 
 # ---------------------------------------------------------------------------------------- covering ---
-def _planform_face(surface: SurfacePlanform, side: float) -> bd.Face:
-    """One panel's planform (centreline or fin root to tip), in the panel's dihedral plane."""
+def _planform_face(surface: SurfacePlanform, side: float, start_m: float) -> bd.Face:
+    """One panel's exposed planform, from `start_m` (span station, or fin height) to the tip, in its dihedral plane."""
     def at(s: float, fraction: float) -> Vec3:
         x = surface.x_le_root_m + fraction * surface.chord_at(s)
         return (x, side * s, surface.z_at(s)) if surface.is_symmetric else (x, 0.0, surface.z_root_m + s)
     span = surface.semi_span_m
-    corners = [at(0.0, LE_FRACTION), at(0.0, TE_FRACTION), at(span, TE_FRACTION), at(span, LE_FRACTION)]
+    corners = [at(start_m, LE_FRACTION), at(start_m, TE_FRACTION), at(span, TE_FRACTION), at(span, LE_FRACTION)]
     return bd.Face(bd.Wire.make_polygon(corners, close=True))
 
 
-def _film(label: str, surface: SurfacePlanform) -> CoverSurface:
+def _film(label: str, surface: SurfacePlanform, start_m: float) -> CoverSurface:
+    """Film over both faces of the surface's exposed planform (M3: none inside the fuselage or over the boom)."""
     sides = (1.0, -1.0) if surface.is_symmetric else (1.0,)
-    faces = bd.Compound([_planform_face(surface, s) for s in sides])
-    return CoverSurface(label, "film", faces, 2.0 * surface.area_m2)  # film on both faces
+    faces = bd.Compound([_planform_face(surface, s, start_m) for s in sides])
+    return CoverSurface(label, "film", faces, 2.0 * faces.area)  # film on both faces
 
 
 def _fuselage_cover(layout: AircraftLayout) -> CoverSurface:
@@ -298,9 +302,12 @@ def _fuselage_cover(layout: AircraftLayout) -> CoverSurface:
     return CoverSurface("fuselage_cover", "fuselage", shell, shell.area)
 
 
-def _covering(layout: AircraftLayout) -> tuple[CoverSurface, ...]:
-    return (_film("film_wing", layout.wing), _film("film_htail", layout.htail), _film("film_vtail", layout.vtail),
-            _fuselage_cover(layout))
+def _covering(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> tuple[CoverSurface, ...]:
+    """Film over the exposed wing (from the skin joint), horizontal tail (from the tail root, R20) and fin (from the
+    fin start), then the fuselage cover."""
+    return (_film("film_wing", layout.wing, spar.joint_y_m),
+            _film("film_htail", layout.htail, tail_root_radius_m(layout)),
+            _film("film_vtail", layout.vtail, fin_start_m(layout, settings)), _fuselage_cover(layout))
 
 
 # -------------------------------------------------------------------------------------------- API ---
@@ -360,7 +367,7 @@ def _wing_bolt(layout: AircraftLayout, spar: SparPlan, fuselage: Sequence[KitPar
     return WingBolt(length_m=bolt_length_m(grip), grip_m=grip, plate_x_m=x, plate_z_m=z, aft_of_spar_m=aft)
 
 
-def _assert_unique_labels(parts: Sequence[KitPart], tubes: Sequence[TubePart]) -> None:
+def assert_unique_labels(parts: Sequence[KitPart], tubes: Sequence[TubePart]) -> None:
     """Labels identify parts on the sheets, in the build sheet and in the DXF kerf cache: never two alike."""
     counts = Counter([*(p.label for p in parts), *(t.label for t in tubes)])
     duplicates = sorted(label for label, n in counts.items() if n > 1)
@@ -394,10 +401,10 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
                                    lift_thrust_n=sizing.vtol_thrust_per_motor_n)
     motor = cruise_motor_plate(components, layout, settings)
     parts = _split_all((*ribs, *fuselage, *trays, *booms, *motor), settings)
-    tubes = (*_spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
+    tubes = (*spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
              *boom_tubes, *_tail_spars(layout, tail, tails, settings))
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
-    _assert_unique_labels(parts, tubes)
-    return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout), spar=spar,
+    assert_unique_labels(parts, tubes)
+    return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout, spar, settings), spar=spar,
                joins=join_notes(parts), overwrap=overwrap, wing_bolt=_wing_bolt(layout, spar, fuselage, settings))

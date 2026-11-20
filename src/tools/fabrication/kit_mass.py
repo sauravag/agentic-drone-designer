@@ -37,8 +37,12 @@ def _rotation(location: bd.Location) -> np.ndarray:
     return np.array([[trsf.Value(i, j) for j in (1, 2, 3)] for i in (1, 2, 3)])
 
 
+def _row(row: np.ndarray) -> mp.Vec3:
+    return float(row[0]), float(row[1]), float(row[2])
+
+
 def _mat(a: np.ndarray) -> mp.Mat3:
-    return tuple(tuple(float(v) for v in row) for row in a)  # type: ignore[return-value]
+    return _row(a[0]), _row(a[1]), _row(a[2])
 
 
 def part_item(part: KitPart, settings: FabricationSettings) -> mp.MassItem:

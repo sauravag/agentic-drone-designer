@@ -18,9 +18,11 @@ from src.tools.fabrication.fuselage_parts import (
     STATION_MERGE_M,
     former_stations,
     fuselage_parts,
+    notch_sliver_m,
     socket_axis_m,
 )
 from src.tools.fabrication.rib_outline import rect_face
+from src.tools.fabrication.skin import min_skin_radius_m, profile_corners
 from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, boom_tube
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
@@ -106,7 +108,9 @@ def test_formers_follow_the_oml_minus_covering(g1_kit_inputs, fuselage):
         f = ribs_by_label(fuselage)[label]
         box = f.outline.bounding_box()
         radius = max(box.max.Y, -box.min.Y)  # local Y is aircraft z
-        assert radius == pytest.approx(fuselage_radius_at(layout, f.location.position.X) - COVER_M, abs=1e-5)
+        x, t = f.location.position.X, 0.003
+        inner = min(fuselage_radius_at(layout, x), fuselage_radius_at(layout, x + t)) - COVER_M  # D12
+        assert radius == pytest.approx(inner, abs=1e-5)
         assert f.family == "former"
 
 
@@ -174,12 +178,19 @@ def test_side_plate_holes_follow_the_dihedral_spar_axis(inputs, request):
         assert socket.Z > wing.z_root_m + abs(y) * math.tan(math.radians(wing.dihedral_deg)) - 1e-12
 
 
-def test_wing_mount_plates_stay_inside_the_covering(g1_kit_inputs, fuselage):
-    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+@pytest.mark.parametrize("inputs", ["g1_kit_inputs", "g2_kit_inputs"])
+def test_wing_mount_plates_stay_inside_the_covering(inputs, request):
+    """D14: the plate's outer top corner stays inside the covering over its whole length, profile corners included
+    (where the piecewise-linear skin is narrowest), not only at its end stations."""
+    kit_inputs = request.getfixturevalue(inputs)
+    layout, settings = kit_inputs[0], kit_inputs[3]
     for label in ("WM-L", "WM-R"):
-        box = part_solid(ribs_by_label(fuselage)[label], settings).bounding_box()
-        r = min(fuselage_radius_at(layout, box.min.X), fuselage_radius_at(layout, box.max.X)) - COVER_M
-        assert math.hypot(max(abs(box.min.Y), abs(box.max.Y)), box.max.Z) <= r
+        box = part_solid(ribs_by_label(_fuselage(kit_inputs))[label], settings).bounding_box()
+        xs = (box.min.X, box.max.X, *profile_corners(layout, box.min.X, box.max.X))
+        corner = math.hypot(max(abs(box.min.Y), abs(box.max.Y)), box.max.Z)
+        for x in xs:
+            assert corner <= fuselage_radius_at(layout, x) - COVER_M, (label, x)
+        assert corner <= min_skin_radius_m(layout, box.min.X, box.max.X) - COVER_M
 
 
 def test_wing_box_plates_hang_between_two_formers_above_the_axis(g1_kit_inputs, fuselage):
@@ -443,3 +454,58 @@ def test_component_eating_a_wing_box_tab_is_unavailable(g1_kit_inputs):
                            (x_min + length / 2, 0.5 * (box.min.Y + box.max.Y), 0.5 * (box.min.Z + box.max.Z)), False)
     with pytest.raises(KitUnavailable, match="WM-R.*cable_clip"):
         _fuselage(g1_kit_inputs, components=(clip,))
+
+
+# ------------------------------------------------------------------------------------- deferred minors ---
+def _outline_radius_m(face) -> float:
+    """Largest distance of a station part's outline from the fuselage axis (local XY = aircraft y, z)."""
+    return max(math.hypot(p.X, p.Y) for e in face.outer_wire().edges()
+               for p in (e.position_at(t) for t in (0.0, 0.25, 0.5, 0.75, 1.0)))
+
+
+def test_half_formers_stay_inside_the_covering_at_both_faces(g1_kit_inputs, fuselage):
+    """D12: on the tail cone the aft face is the smaller, so a half-former is cut to the smaller of its two faces."""
+    layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
+    t = settings.sheet_for("former").thickness_m
+    for part in (p for p in fuselage if p.label.startswith("F-")):
+        x = part.location.position.X
+        inner = min(fuselage_radius_at(layout, x), fuselage_radius_at(layout, x + t)) - COVER_M
+        assert _outline_radius_m(part.outline) <= inner + 1e-9, part.label
+
+
+def test_a_wing_box_ahead_of_the_firewall_is_unavailable(g1_kit_inputs):
+    """D13: the firewall must come first; a socket station ahead of it is a degenerate layout."""
+    layout, _, spar, settings = g1_kit_inputs
+    wing = dataclasses.replace(layout.wing, x_le_root_m=0.0)
+    with pytest.raises(KitUnavailable, match="ahead of the firewall"):
+        former_stations(dataclasses.replace(layout, wing=wing), spar, settings)
+
+
+def test_a_wing_box_aft_of_the_formers_is_unavailable(g1_kit_inputs):
+    """D13: the pin former must lie inside the pod, ahead of the boom root."""
+    layout, _, spar, settings = g1_kit_inputs
+    wing = dataclasses.replace(layout.wing, x_le_root_m=layout.fuselage_length_m * 0.9)
+    with pytest.raises(KitUnavailable, match="aft of"):
+        former_stations(dataclasses.replace(layout, wing=wing), spar, settings)
+
+
+def test_a_notch_running_along_the_rim_is_a_sliver():
+    """D15: the band between a notch's side and the rim is thinner than MIN_WEB_M over more than MIN_WEB_M."""
+    radius = 0.08
+    along_rim = (-0.04, 0.008, 0.95 * radius, 0.1)  # right side 4 mm inside the rim, top through it
+    across_rim = (-0.01, 0.03, 0.01, 0.1)  # sides meet the rim nearly square
+    assert notch_sliver_m(radius, along_rim) > MIN_WEB_M
+    assert notch_sliver_m(radius, across_rim) < MIN_WEB_M
+
+
+def test_a_component_notching_a_former_into_a_sliver_is_unavailable(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    x = _test_battery(layout).center_m[0]
+    r = fuselage_radius_at(layout, x) - COVER_M
+    gap = COMPONENT_GAP_M
+    y1, z0 = 0.95 * r - gap / 2, 0.15 * r + gap / 2
+    size = (2.5 * FORMER_PITCH_M, y1 - (-0.3 * r), 1.2 * r - z0)  # long enough to cross a former
+    box = PlacedComponent("camera", "box", 0.2, size, (x, 0.5 * (y1 - 0.3 * r), z0 + size[2] / 2),
+                          is_internal=False)  # sits on top: no crutch opening
+    with pytest.raises(KitUnavailable, match="sliver"):
+        _fuselage(g1_kit_inputs, components=(box,))

@@ -80,10 +80,6 @@ def placed_outline(placement: Placement, kerf_m: float) -> bd.Face:
     return place_kerfed(kerf_outline(placement.part.outline, kerf_m), placement)
 
 
-def _usable_bed(settings: FabricationSettings) -> tuple[float, float]:
-    return settings.bed_width_m - 2.0 * settings.margin_m, settings.bed_height_m - 2.0 * settings.margin_m
-
-
 def kerfed_part(part: KitPart, kerf_m: float) -> bd.Face:
     """The part's kerf-compensated outline; a failed offset raises KitUnavailable naming the part."""
     try:
@@ -95,7 +91,7 @@ def kerfed_part(part: KitPart, kerf_m: float) -> bd.Face:
 def _orientation(part: KitPart, settings: FabricationSettings) -> tuple[float, float, bool]:
     """(width, height, rotated) of the kerf-compensated part: the fitting orientation with the lower height."""
     size = kerfed_part(part, settings.kerf_m).bounding_box().size
-    usable_w, usable_h = _usable_bed(settings)
+    usable_w, usable_h = settings.usable_bed_m
     options = ((size.X, size.Y, False), (size.Y, size.X, True))
     fitting = [o for o in options if o[0] <= usable_w + EPS_M and o[1] <= usable_h + EPS_M]
     if not fitting:

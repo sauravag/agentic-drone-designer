@@ -44,7 +44,6 @@ from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
 from src.tools.aero_cad.layout import (
-    FUSELAGE_PROFILE,
     TAIL_BOOM_START_FRACTION,
     AircraftLayout,
     fuselage_radius_at,
@@ -54,15 +53,18 @@ from src.tools.fabrication.kit import KitPart, Vec3
 from src.tools.fabrication.rib_outline import (
     Hole,
     circle_face,
+    common,
     drill,
     keeps_web,
     lightening_holes,
     oblique_diameter_m,
     rect_face,
+    shape_area,
+    single_face,
 )
+from src.tools.fabrication.skin import max_skin_radius_m, min_skin_radius_m, profile_corners
 from src.tools.fabrication.tubes import (
     BISECTION_ITERATIONS,
-    BOSS_THICKNESS_FACTOR,
     FIT_EPS_M,
     MIN_WEB_M,
     KitUnavailable,
@@ -71,7 +73,20 @@ from src.tools.fabrication.tubes import (
     boom_tube,
     overwrap_layers,
 )
-from src.tools.fabrication.wing_parts import PIN_BOSS_WIDTH_M, PIN_CHORD_FRACTION, pin_hole_m, socket_axis_m
+from src.tools.fabrication.wing_parts import (
+    PIN_CHORD_FRACTION,
+    line_lean,
+    pin_hole_m,
+    socket_axis_m,
+)
+from src.tools.fabrication.wing_box_bosses import (
+    BOSS_LABELS,
+    PIN_BOSS_LABELS,
+    check_skirt_clears_crutch,
+    pin_boss_blank,
+    socket_boss_depth_m,
+    socket_boss_outline,
+)
 from src.tools.fabrication.wing_retention import (
     BOLT_CHORD_FRACTION,
     BOLT_HEAD_STACK_M,
@@ -102,13 +117,9 @@ REACH_FACTOR: Final[float] = 2.0  # half-plane cutters extend this many radii
 UP: Final[int] = 1
 DOWN: Final[int] = -1
 WEB_TEXT: Final[str] = f"{MIN_WEB_M * 1e3:.0f} mm"
-SOCKET_BOSS_WIDTH_M: Final[float] = 0.006  # R27 boss annulus radial width (stays inside the socket-station formers)
-SOCKET_BOSS_DEPTH_STEP_M: Final[float] = 0.002  # R33: the boss's material below the socket grows in these steps
-SOCKET_BOSS_MAX_DEPTH_M: Final[float] = 0.030  # R33: deepest boss skirt below the socket hole
+SLIVER_MAX_RUN_M: Final[float] = MIN_WEB_M  # D15: a sub-web band along the rim may run no further than this
 RAIL_PROBE_INSET_M: Final[float] = 1e-4  # crutch rails are measured just inside each opening's fore and aft ends
 SPAN_REACH_M: Final[float] = 10.0  # probe lines run this far either side of any part
-BOSS_LABELS: Final[dict[int, str]] = {1: "WM-RD", -1: "WM-LD"}  # socket bosses
-PIN_BOSS_LABELS: Final[tuple[str, str]] = ("WM-RPD", "WM-LPD")  # plate-side pin bosses (right, left)
 
 Cut = tuple[str, bd.Face]  # (what passes through, cutter in the part's local XY)
 
@@ -153,6 +164,11 @@ class _Frame:
     def inner_radius(self, x_m: float) -> float:
         return fuselage_radius_at(self.layout, x_m) - self.settings.fuselage_cover_thickness_m
 
+    def former_radius(self, x_m: float) -> float:
+        """D12: a half-former's outline radius, at the smaller of its two faces (the aft face on the tail cone), so
+        neither face reaches into the covering."""
+        return min(self.inner_radius(x_m), self.inner_radius(x_m + self.former_t_m))
+
     def tab_radius(self, x_m: float) -> float:
         """Radius the tabs and crutch slots of the former at station x are inset from: the smaller of the former's
         front face and a web beyond its aft face, so a slot keeps MIN_WEB_M to the crutch edge on a steep cone."""
@@ -170,18 +186,6 @@ class _Frame:
 
 
 # ------------------------------------------------------------------------------------- geometry ---
-def _area(shape: Optional[bd.Shape]) -> float:
-    return 0.0 if shape is None else sum(f.area for f in shape.faces())
-
-
-def _common(a: bd.Shape, b: bd.Shape) -> Optional[bd.Shape]:
-    """Boolean intersection as one shape (Build123d may return a list of pieces), or None when empty."""
-    result = a.intersect(b)
-    pieces = result if isinstance(result, list) else ([] if result is None else [result])
-    faces = [f for piece in pieces for f in piece.faces()]
-    return bd.Compound(faces) if faces else None
-
-
 def _disc(radius_m: float, y_m: float = 0.0, z_m: float = 0.0) -> bd.Face:
     return circle_face(Hole(y_m, z_m, 2.0 * radius_m))
 
@@ -198,8 +202,8 @@ def _assert_web(result: bd.Shape, cut: bd.Face, voids: Sequence[bd.Face], region
     """The band of MIN_WEB_M around `cut` (outside every void, inside `region` if given) must be all material."""
     ring = bd.offset(cut, amount=MIN_WEB_M).cut(*voids)
     if region is not None:
-        ring = _common(ring, region)
-    if ring is not None and _area(ring.cut(result)) > AREA_EPS_M2:
+        ring = common(ring, region)
+    if ring is not None and shape_area(ring.cut(result)) > AREA_EPS_M2:
         raise KitUnavailable(message)
 
 
@@ -216,24 +220,11 @@ def _cut_openings(base: bd.Face, rim: bd.Face, cuts: Sequence[Cut], region: Opti
     result = base.cut(*voids)
     for name, cut in cuts:
         message = f"{label}: the opening for the {name} leaves less than {WEB_TEXT} of the {part}"
-        if any(_area(_common(cut, bd.offset(p, amount=MIN_WEB_M))) > AREA_EPS_M2 for p in protected):
+        if any(shape_area(common(cut, bd.offset(p, amount=MIN_WEB_M))) > AREA_EPS_M2 for p in protected):
             raise KitUnavailable(message)
-        if _area(cut.cut(rim)) <= AREA_EPS_M2:  # a closed hole; a notch through the rim needs only the tab check
+        if shape_area(cut.cut(rim)) <= AREA_EPS_M2:  # a closed hole; a notch through the rim needs only the tab check
             _assert_web(result, cut, voids, region, message)
     return list(result.faces())
-
-
-def _single_face(shape: bd.Shape, label: str) -> bd.Face:
-    faces = shape.faces()
-    if len(faces) != 1:
-        raise KitUnavailable(f"part {label} falls apart into {len(faces)} pieces")
-    return faces[0]
-
-
-def profile_corners(layout: AircraftLayout, x0_m: float, x1_m: float) -> list[float]:
-    """Fuselage-profile break stations strictly inside (x0, x1): r(x) is linear between them."""
-    length = layout.fuselage_length_m
-    return [f * length for f, _ in FUSELAGE_PROFILE if x0_m < f * length < x1_m]
 
 
 def _plane_location(origin: Vec3, x_dir: Vec3, z_dir: Vec3) -> bd.Location:
@@ -266,7 +257,7 @@ def _yz_opening(c: PlacedComponent) -> bd.Face:
 def _assert_clear(frame: _Frame, label: str, x_m: float, outline: bd.Face) -> None:
     """Solid yz parts (firewall, boom mounts) take no openings: no component may cross them."""
     for c in _crossing(frame, x_m, x_m + frame.bulkhead_t_m):
-        if _area(_common(outline, _yz_opening(c))) > AREA_EPS_M2:
+        if shape_area(common(outline, _yz_opening(c))) > AREA_EPS_M2:
             raise KitUnavailable(f"{label}: the {c.name} crosses this bulkhead")
 
 
@@ -286,10 +277,10 @@ def _in_pod(layout: AircraftLayout, c: PlacedComponent) -> bool:
     x0, x1 = max(c.x_min, 0.0), min(c.x_max, layout.fuselage_length_m)
     if x0 >= x1:
         return False
-    radius = max(fuselage_radius_at(layout, x) for x in (x0, x1, *profile_corners(layout, x0, x1)))
+    radius = max_skin_radius_m(layout, x0, x1)
     _, ly, lz = c.size_m
     box = rect_face(c.center_m[1] - ly / 2.0, c.center_m[2] - lz / 2.0, c.center_m[1] + ly / 2.0, c.center_m[2] + lz / 2.0)
-    return _area(_common(box, _disc(radius))) > AREA_EPS_M2
+    return shape_area(common(box, _disc(radius))) > AREA_EPS_M2
 
 
 def firewall_station(layout: AircraftLayout, settings: FabricationSettings,
@@ -316,13 +307,26 @@ def _check_no_collision(mandatory: Sequence[float]) -> None:
             )
 
 
+def _check_layout_order(layout: AircraftLayout, firewall_m: float, fore_m: float, pin_aft_m: float) -> None:
+    """D13: the firewall comes first, and the wing box (socket former to the pin former's aft face) lies inside the
+    pod, ahead of the tail-boom root."""
+    if fore_m <= firewall_m:
+        raise KitUnavailable(f"the wing box (socket former at x = {fore_m:.3f} m) lies ahead of the firewall "
+                             f"(x = {firewall_m:.3f} m)")
+    end = layout.fuselage_length_m if layout.tail_boom is None else layout.tail_boom.x_start_m
+    if pin_aft_m > end:
+        raise KitUnavailable(f"the wing box (pin former ending at x = {pin_aft_m:.3f} m) lies aft of the "
+                             f"{'pod' if layout.tail_boom is None else 'tail-boom root'} (x = {end:.3f} m)")
+
+
 def former_stations(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
                     components: Sequence[PlacedComponent] = ()) -> tuple[float, ...]:
     """Firewall station first (`firewall_station`, taking the place of the first regular station), then every
     FORMER_PITCH_M from FIRST_FORMER_FRACTION up to TAIL_BOOM_START_FRACTION of the length (and clear of the boom
     root), plus the two socket stations and the pin station (`_mount_stations`). Regular stations within
     STATION_MERGE_M of those, or between the two socket stations, are dropped so no former meets the socket.
-    Mandatory stations closer than STATION_MERGE_M raise `KitUnavailable`."""
+    Mandatory stations closer than STATION_MERGE_M, a wing box ahead of the firewall or aft of the boom root (or the
+    pod's end) raise `KitUnavailable`."""
     length, t = layout.fuselage_length_m, settings.sheet_for("former").thickness_m
     first, last = FIRST_FORMER_FRACTION * length, TAIL_BOOM_START_FRACTION * length
     if layout.tail_boom is not None:
@@ -330,6 +334,7 @@ def former_stations(layout: AircraftLayout, spar: SparPlan, settings: Fabricatio
     count = math.floor((last - first) / FORMER_PITCH_M + STATION_EPS) + 1
     firewall = firewall_station(layout, settings, components)
     fore, aft, pin = _mount_stations(layout, spar)
+    _check_layout_order(layout, firewall, fore, pin + t)
     _check_no_collision((firewall, fore, aft, pin))
 
     def is_kept(x: float) -> bool:
@@ -367,11 +372,10 @@ def _boom_mount_stations(layout: AircraftLayout, settings: FabricationSettings) 
 # ------------------------------------------------------------------------------- wing-box plates ---
 def _oblique_diameter_m(layout: AircraftLayout, fraction: float, od_m: float, thickness_m: float) -> float:
     """Round hole that clears a rod of `od_m` crossing a plate of `thickness_m` along that wing's line at
-    `fraction` chord: the line leans off the plate normal (y) by dihedral and taper sweep, so its section is a
-    slightly longer ellipse (od / cos) that also walks across the thickness (t tan)."""
-    span = layout.wing.semi_span_m
-    (x0, z0), (x1, z1) = socket_axis_m(layout, 0.0, fraction), socket_axis_m(layout, span, fraction)
-    return oblique_diameter_m(od_m, thickness_m, math.hypot(x1 - x0, z1 - z0) / span)
+    `fraction` chord: the line leans off the plate normal (y) by dihedral and taper sweep (`line_lean`), so its
+    section is a slightly longer ellipse (od / cos) that also walks across the thickness (t tan)."""
+    lean = line_lean(layout.wing, load_airfoil(layout.airfoil), fraction)
+    return oblique_diameter_m(od_m, thickness_m, lean)
 
 
 def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, y_m: float) -> PlateHoles:
@@ -413,7 +417,7 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
     fore, _, pin_station = _mount_stations(layout, spar)
     t_former, t_plate = settings.sheet_for("former").thickness_m, settings.sheet_for("plate").thickness_m
     x_max = pin_station + t_former
-    skin = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *profile_corners(layout, fore, x_max)))
+    skin = min_skin_radius_m(layout, fore, x_max)
     rim = skin - settings.fuselage_cover_thickness_m - MIN_WEB_M
     y_outer = _plate_outer_y(layout, spar, settings, rim)
     holes = _plate_holes(layout, spar, settings, y_outer - t_plate / 2.0)
@@ -433,13 +437,15 @@ def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: Fabricati
     """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge, the socket bosses'
     bottom when `loads` need them (R32), or the underside of the socket tubes' centreline overwrap (R24, at its
     wrapped OD), where they sit lowest (the dihedral lifts them outboard). Pin bosses stay within the plates. Raises
-    `KitUnavailable` when no overwrap within the layer cap carries the centreline moment, or no boss suffices."""
+    `KitUnavailable` when no overwrap within the layer cap carries the centreline moment, no boss suffices, or the
+    boss's skirt would reach the crutch (the kit's own check, so pod sizing never accepts a pod the kit rejects)."""
     wrap_m = overwrap_layers(spar.centre_moment_nm, spar.socket, settings) * settings.overwrap_layer_thickness_m
     mount = _mount(layout, spar, settings)
     floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m]
     depth = socket_boss_depth_m(spar, settings, loads)
     if depth is not None:
         hole = _inner_face_holes(layout, spar, settings, mount).socket
+        check_skirt_clears_crutch(hole, depth, settings.sheet_for("crutch").thickness_m)  # as the kit will (M7)
         floors.append(hole.y_m - hole.diameter_m / 2.0 - depth)
     return min(floors)
 
@@ -460,9 +466,9 @@ def _mount_plate(frame: _Frame, side: int) -> KitPart:
     body = rect_face(m.body_x_m[0], m.z_m[0], m.body_x_m[1], m.z_m[1])
     tabs = (rect_face(m.x_min_m, m.tab_z_m[0], m.body_x_m[0], m.tab_z_m[1]),
             rect_face(m.body_x_m[1], m.tab_z_m[0], m.x_max_m, m.tab_z_m[1]))
-    plain = _single_face(body.fuse(*tabs).clean(), label)
+    plain = single_face(body.fuse(*tabs).clean(), label)
     pieces = _cut_openings(plain, plain, _plate_component_cuts(frame, side), None, tabs, label, "plate")
-    outline = _single_face(bd.Compound(pieces), label)
+    outline = single_face(bd.Compound(pieces), label)
     socket, pin, bolt = m.holes
     for hole, others, name in ((socket, [], "socket"), (pin, [socket], "pin"), (bolt, [socket, pin], "wing bolt")):
         if not keeps_web(outline, hole, others):
@@ -472,58 +478,12 @@ def _mount_plate(frame: _Frame, side: int) -> KitPart:
     return KitPart(label, "plate", outline, _plane_location((0.0, origin_y, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
 
 
-def _stress_pa(load_n: float, area_m2: float) -> float:
-    return load_n / area_m2
-
-
-def _web_shear_pa(load_n: float, boss_depth_m: float, thickness_m: float) -> float:
-    """R32 shear-out under the socket: two planes through the MIN_WEB_M plate web plus `boss_depth_m` of boss below
-    the hole, each `thickness_m` thick (plate and boss are the same stock)."""
-    return _stress_pa(load_n, 2.0 * (MIN_WEB_M + boss_depth_m) * thickness_m)
-
-
-def socket_boss_depth_m(spar: SparPlan, settings: FabricationSettings, loads: PlateLoads) -> Optional[float]:
-    """Boss material below the socket hole, or None when the plain plate suffices. Checks R27 bearing
-    F_shear / (OD t) <= ply_bearing_allow_pa / FS (a boss doubles t) and R32/R33 web shear-out F_down / (2 w t) <=
-    ply_shear_allow_pa / FS. A boss starts SOCKET_BOSS_WIDTH_M deep below the hole and grows by
-    SOCKET_BOSS_DEPTH_STEP_M until the web passes; raises `KitUnavailable` beyond SOCKET_BOSS_MAX_DEPTH_M, or when
-    even a boss cannot bear the socket."""
-    t, od = settings.sheet_for("plate").thickness_m, spar.socket.od_m
-    bearing_allow = settings.ply_bearing_allow_pa / settings.safety_factor
-    shear_allow = settings.ply_shear_allow_pa / settings.safety_factor
-    if _stress_pa(loads.shear_n, od * t) <= bearing_allow and _web_shear_pa(loads.down_n, 0.0, t) <= shear_allow:
-        return None
-    bossed_bearing = _stress_pa(loads.shear_n, od * BOSS_THICKNESS_FACTOR * t)
-    if bossed_bearing > bearing_allow:
-        raise KitUnavailable(f"socket bearing: {bossed_bearing / 1e6:.1f} MPa on the wing-box plate even with a boss "
-                             f"doubler (allowable {bearing_allow / 1e6:.1f} MPa)")
-    steps = math.ceil((SOCKET_BOSS_MAX_DEPTH_M - SOCKET_BOSS_WIDTH_M) / SOCKET_BOSS_DEPTH_STEP_M - FIT_EPS_M)
-    for k in range(steps + 1):
-        depth = min(SOCKET_BOSS_WIDTH_M + k * SOCKET_BOSS_DEPTH_STEP_M, SOCKET_BOSS_MAX_DEPTH_M)
-        if _web_shear_pa(loads.down_n, depth, t) <= shear_allow:
-            return depth
-    worst = _web_shear_pa(loads.down_n, SOCKET_BOSS_MAX_DEPTH_M, t)
-    raise KitUnavailable(
-        f"socket web shear: {loads.down_n:.0f} N down on the socket shears out the web under it even with a "
-        f"{SOCKET_BOSS_MAX_DEPTH_M * 1e3:.0f} mm boss ({worst / 1e6:.1f} MPa > {shear_allow / 1e6:.2f} MPa)"
-    )
-
-
 def _inner_face_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
                       mount: _Mount) -> PlateHoles:
     """Socket, pin and bolt holes where the lines cross a slab on the plate's inner face (a boss, or the bolt's
     washer)."""
     t = settings.sheet_for("plate").thickness_m
     return _plate_holes(layout, spar, settings, mount.y_inner_m - t / 2.0)
-
-
-def _socket_boss_outline(hole: Hole, depth_m: float) -> bd.Face:
-    """The socket boss before drilling: an annulus SOCKET_BOSS_WIDTH_M wide round the hole, plus a skirt as wide as
-    the annulus reaching `depth_m` below the hole (R33; it grows only downward, clear of the socket formers)."""
-    radius = hole.diameter_m / 2.0 + SOCKET_BOSS_WIDTH_M
-    ring = circle_face(Hole(hole.x_m, hole.y_m, 2.0 * radius))
-    skirt = rect_face(hole.x_m - radius, hole.y_m - hole.diameter_m / 2.0 - depth_m, hole.x_m + radius, hole.y_m)
-    return _single_face(ring.fuse(skirt).clean(), BOSS_LABELS[1])
 
 
 def _bosses(frame: _Frame, hole: Hole, blanks: dict[int, bd.Face], labels: dict[int, str]) -> list[KitPart]:
@@ -535,23 +495,6 @@ def _bosses(frame: _Frame, hole: Hole, blanks: dict[int, bd.Face], labels: dict[
             for side, label in sorted(labels.items())]
 
 
-def check_skirt_clears_crutch(socket: Hole, depth_m: float, crutch_t_m: float) -> None:
-    """The socket boss's skirt (its bottom `depth_m` below the hole) must stay above the crutch's top face."""
-    if socket.y_m - socket.diameter_m / 2.0 - depth_m <= crutch_t_m / 2.0:
-        raise KitUnavailable("socket web shear: the socket boss would reach down to the crutch")
-
-
-def pin_boss_blank(plate: bd.Face, plate_pin: Hole, boss_pin: Hole, label: str) -> bd.Face:
-    """R31 plate pin boss before drilling: an annulus PIN_BOSS_WIDTH_M wide round `boss_pin` (where the oblique pin
-    line crosses the boss slab, the hole the boss is drilled at), clipped to the plate's real material (its outline
-    less tab notches, openings and other holes), so it never hangs over a notch, opening or edge. The plate's own
-    pin hole (`plate_pin`, at the plate mid-plane) and the boss's hole count as material: the boss is drilled
-    afterwards, so neither leaves a sliver void."""
-    ring = circle_face(Hole(boss_pin.x_m, boss_pin.y_m, boss_pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
-    material = plate.fuse(circle_face(plate_pin), circle_face(boss_pin)).clean()
-    return _single_face(_common(ring, material), label)
-
-
 def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads,
                      plates: dict[int, KitPart]) -> list[KitPart]:
     """R27/R32/R33 socket bosses (annulus + skirt below) and R31 pin bosses (an annulus clipped to each plate's real
@@ -561,7 +504,7 @@ def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads,
     parts: list[KitPart] = []
     if depth is not None:
         check_skirt_clears_crutch(socket, depth, frame.crutch_t_m)
-        blank = _socket_boss_outline(socket, depth)
+        blank = socket_boss_outline(socket, depth)
         parts += _bosses(frame, socket, {1: blank, -1: blank}, BOSS_LABELS)
     if spar.pin.plate_boss:
         labels = dict(zip((1, -1), PIN_BOSS_LABELS))
@@ -633,17 +576,50 @@ def _lightening_centres(radius_m: float, sign: int, half_t_m: float) -> list[tup
 
 
 def _held_by_a_tab(piece: bd.Face, tabs: Sequence[bd.Face]) -> bool:
-    return any(abs(_area(_common(piece, tab)) - tab.area) <= AREA_EPS_M2 for tab in tabs)
+    return any(abs(shape_area(common(piece, tab)) - tab.area) <= AREA_EPS_M2 for tab in tabs)
+
+
+def _thin_run_m(offset_m: float, lo_m: float, hi_m: float, radius_m: float) -> float:
+    """Along an opening's side at `offset_m` from the axis (material beyond it, away from the opening) spanning
+    [lo, hi]: how far the material between the side and a rim of `radius_m` is present but under MIN_WEB_M wide."""
+    wide = offset_m + MIN_WEB_M
+    if offset_m >= radius_m or wide <= 0.0:
+        return 0.0  # no material beyond the side, or at least a web of it everywhere
+    present = radius_m if offset_m <= 0.0 else math.sqrt(radius_m**2 - offset_m**2)
+    thin_from = 0.0 if wide >= radius_m else math.sqrt(radius_m**2 - wide**2)
+    runs = ((thin_from, present), (-present, -thin_from))
+    return sum(max(0.0, min(hi_m, b) - max(lo_m, a)) for a, b in runs)
+
+
+def notch_sliver_m(radius_m: float, box: tuple[float, float, float, float]) -> float:
+    """D15: the longest run along a side of the rectangular opening `box` (x0, y0, x1, y1, local) over which the
+    former between that side and its rim of `radius_m` is thinner than MIN_WEB_M (sides mirrored onto +offset)."""
+    x0, y0, x1, y1 = box
+    sides = ((x1, y0, y1), (-x0, y0, y1), (y1, x0, x1), (-y0, x0, x1))
+    return max(_thin_run_m(offset, lo, hi, radius_m) for offset, lo, hi in sides)
+
+
+def _check_slivers(radius_m: float, rim: bd.Face, cuts: Sequence[Cut], label: str) -> None:
+    """A notch (an opening through the rim) must not leave a sliver thinner than MIN_WEB_M along the rim for more
+    than SLIVER_MAX_RUN_M; closed holes keep their web by `_cut_openings`."""
+    for name, cut in cuts:
+        if shape_area(cut.cut(rim)) <= AREA_EPS_M2:
+            continue
+        b = cut.bounding_box()
+        if notch_sliver_m(radius_m, (b.min.X, b.min.Y, b.max.X, b.max.Y)) > SLIVER_MAX_RUN_M:
+            raise KitUnavailable(f"{label}: the opening for the {name} leaves a sliver of former thinner than "
+                                 f"{WEB_TEXT} along the rim")
 
 
 def _half_former(frame: _Frame, index: int, x_m: float, sign: int) -> list[KitPart]:
     label = f"F-{index:02d}{'U' if sign == UP else 'L'}"
-    radius, half_t = frame.inner_radius(x_m), frame.crutch_t_m / 2.0
+    radius, half_t = frame.former_radius(x_m), frame.crutch_t_m / 2.0
     half_plane, tabs = _half_plane(radius, sign, half_t), _tabs(frame.tab_radius(x_m), sign, half_t)
     rim = _disc(radius)
-    base = _single_face(_single_face(_common(rim, half_plane), label).fuse(*tabs).clean(), label)
-    base = _single_face(base.cut(*_stringer_notches(radius, sign, frame.settings.stringer_side_m)), label)
+    base = single_face(single_face(common(rim, half_plane), label).fuse(*tabs).clean(), label)
+    base = single_face(base.cut(*_stringer_notches(radius, sign, frame.settings.stringer_side_m)), label)
     cuts = _former_cuts(frame, x_m, sign)
+    _check_slivers(radius, rim, cuts, label)
     pieces = _cut_openings(base, rim, cuts, half_plane.fuse(*tabs), tabs, label, "former")
     if not all(_held_by_a_tab(p, tabs) for p in pieces):
         names = ", ".join(sorted({name for name, _ in cuts}))
@@ -755,7 +731,7 @@ def _crutch(frame: _Frame) -> KitPart:
     for name, face in slots:
         _assert_web(result, face, [face], None, f"C-1: the slot for {name} leaves less than {WEB_TEXT} of crutch")
     x0 = frame.crutch_x[0]
-    face = _single_face(result, "C-1").moved(bd.Location((-x0, 0.0, 0.0)))
+    face = single_face(result, "C-1").moved(bd.Location((-x0, 0.0, 0.0)))
     boxes = [cut.bounding_box() for _, cut in openings]
     tagged = tuple((b.min.X - x0, b.min.Y, b.max.X - x0, b.max.Y) for b in boxes)  # the split may cut through these
     return KitPart("C-1", "crutch", face, bd.Location((x0, 0.0, -frame.crutch_t_m / 2.0)), openings=tagged)

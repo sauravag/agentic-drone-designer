@@ -14,7 +14,8 @@ from src.tools.aero_cad.layout import fuselage_radius_at
 from src.tools.fabrication.build_kit import kit_spar_plan, kit_spar_torsion
 from src.tools.aero_cad import cad_packer
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
-from src.tools.fabrication.fuselage_parts import (
+from src.tools.fabrication.fuselage_parts import former_stations, fuselage_parts, socket_axis_m, wing_box_floor_m
+from src.tools.fabrication.wing_box_bosses import (
     PIN_BOSS_LABELS,
     SOCKET_BOSS_DEPTH_STEP_M,
     SOCKET_BOSS_MAX_DEPTH_M,
@@ -22,10 +23,6 @@ from src.tools.fabrication.fuselage_parts import (
     check_skirt_clears_crutch,
     pin_boss_blank,
     socket_boss_depth_m,
-    former_stations,
-    fuselage_parts,
-    socket_axis_m,
-    wing_box_floor_m,
 )
 from src.tools.fabrication.kit import KitUnavailable
 from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg
@@ -388,6 +385,16 @@ def test_socket_boss_grows_below_the_socket_in_steps_until_the_web_passes(g1_kit
     beyond = SHEAR_ALLOW * 2 * (MIN_WEB_M + SOCKET_BOSS_MAX_DEPTH_M) * t * 1.01
     with pytest.raises(KitUnavailable, match="socket web shear"):
         socket_boss_depth_m(spar, settings, PlateLoads(0.0, beyond))
+
+
+def test_pod_sizing_rejects_a_wing_box_whose_skirt_reaches_the_crutch(g1_kit_inputs, monkeypatch):
+    """M7: the wing-box floor runs the skirt check, so pod sizing never accepts a pod the kit then falls back on."""
+    from src.tools.fabrication import fuselage_parts as fp
+
+    layout, _, spar, settings = g1_kit_inputs
+    monkeypatch.setattr(fp, "socket_boss_depth_m", lambda *_args: 1.0)  # a skirt far below the crutch
+    with pytest.raises(KitUnavailable, match="reach down to the crutch"):
+        wing_box_floor_m(layout, spar, settings, PlateLoads(shear_n=1.0, down_n=1.0))
 
 
 def test_socket_skirt_must_clear_the_crutch():

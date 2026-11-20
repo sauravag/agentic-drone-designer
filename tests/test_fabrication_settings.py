@@ -87,3 +87,63 @@ def test_overwrap_cloth_defaults_to_200_g_m2_and_must_fit_its_cured_layer():
     assert FabricationSettings().overwrap_cloth_g_m2 == 200.0
     with pytest.raises(ValueError, match="overwrap_cloth_g_m2"):  # 0.6 kg/m2 of fibre in a 0.375 kg/m2 layer
         FabricationSettings(overwrap_cloth_g_m2=600.0)
+
+
+def test_usable_bed_is_the_bed_inside_the_margin() -> None:
+    assert DEFAULT_FABRICATION.usable_bed_m == pytest.approx((0.590, 0.390))
+    s = FabricationSettings(bed_width_m=0.3, bed_height_m=0.5, margin_m=0.01)
+    assert s.usable_bed_m == pytest.approx((0.28, 0.48))
+
+
+def test_shared_fixtures_load_without_the_cad_stack() -> None:
+    """M5: conftest imports nothing that needs build123d, so sizing-only tests collect on a host without it."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = "import sys; sys.modules['build123d'] = None; import tests.conftest"
+    subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(__file__).resolve().parents[1])
+
+
+def test_every_default_is_a_named_constant() -> None:
+    """D1: each field's default is the module's DEFAULT_<FIELD> Final constant, not a literal in Field(...)."""
+    import src.schemas.fabrication as fabrication
+
+    for name, field in FabricationSettings.model_fields.items():
+        assert field.default == getattr(fabrication, f"DEFAULT_{name.upper()}"), name
+
+
+def test_all_families_is_the_part_family_literal() -> None:
+    """D2: one source of truth for the part families."""
+    from typing import get_args
+
+    from src.schemas.fabrication import ALL_FAMILIES, PartFamily
+
+    assert ALL_FAMILIES == get_args(PartFamily)
+
+
+@pytest.mark.parametrize("rods", [(0.0, 0.004), (-0.003,)])
+def test_rods_must_be_positive(rods: tuple[float, ...]) -> None:
+    """D3: a zero or negative rod is a settings error, not an unexpected kit error later."""
+    with pytest.raises(ValidationError, match="rod diameters must be positive"):
+        FabricationSettings(rods_m=rods)
+
+
+def test_duplicate_rods_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="duplicate rod diameter 4 mm"):
+        FabricationSettings(rods_m=(0.004, 0.003, 0.004))
+
+
+def test_duplicate_tubes_are_rejected() -> None:
+    """D5."""
+    tube = TubeStock(od_m=0.006, id_m=0.004)
+    with pytest.raises(ValidationError, match="duplicate tube 6 x 4 mm"):
+        FabricationSettings(tubes=(tube, TubeStock(od_m=0.008, id_m=0.006), tube))
+
+
+@pytest.mark.parametrize("margin", [0.2, 0.25])
+def test_margins_must_leave_a_usable_bed(margin: float) -> None:
+    """D4: 2 x margin must be below the bed's smaller side."""
+    with pytest.raises(ValidationError, match="margin_m .* leaves no usable bed"):
+        FabricationSettings(bed_width_m=0.6, bed_height_m=0.4, margin_m=margin)
+    FabricationSettings(bed_width_m=0.6, bed_height_m=0.4, margin_m=0.19)

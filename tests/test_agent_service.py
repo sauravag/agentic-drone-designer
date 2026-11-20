@@ -222,21 +222,22 @@ def test_rerun_keeps_the_parent_settings(tmp_path: Path, no_key: None) -> None:
 def test_rerun_with_edited_settings_uses_them_and_records_the_change(tmp_path: Path, no_key: None) -> None:
     """R37: a re-run uses the panel's settings; the lineage names the fields that differ from the parent's."""
     first = _run(tmp_path, requirements=G1_ELECTRIC_FW)
-    change = ChangeSet(label="longer", requirements=RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25),
-                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    longer = RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25)
+    change = ChangeSet(label="longer", requirements=longer, assumptions=AssumptionChanges(), knobs=KnobChanges())
     second = agent_service.rerun(first, change, "manual", tmp_path / "o", tmp_path / "c.db", False, False,
                                  lambda _: None, fabrication=CUSTOM_FABRICATION)
     assert second.fabrication == CUSTOM_FABRICATION
     assert second.lineage.fabrication_changes == ("bed_width_m", "bed_height_m")
-    assert FabricationSettings.model_validate_json((second.out_dir / "fabrication.json").read_text()) == CUSTOM_FABRICATION
+    written = (second.out_dir / "fabrication.json").read_text()
+    assert FabricationSettings.model_validate_json(written) == CUSTOM_FABRICATION
     summary = json.loads((second.out_dir / "run_summary.json").read_text())
     assert summary["lineage"]["fabrication_changes"] == ["bed_width_m", "bed_height_m"]
 
 
 def test_rerun_with_the_parents_settings_records_no_change(tmp_path: Path, no_key: None) -> None:
     first = _run(tmp_path, requirements=G1_ELECTRIC_FW, fabrication=CUSTOM_FABRICATION)
-    change = ChangeSet(label="longer", requirements=RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25),
-                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    longer = RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25)
+    change = ChangeSet(label="longer", requirements=longer, assumptions=AssumptionChanges(), knobs=KnobChanges())
     second = agent_service.rerun(first, change, "manual", tmp_path / "o", tmp_path / "c.db", False, False,
                                  lambda _: None, fabrication=CUSTOM_FABRICATION)
     assert second.lineage.fabrication_changes == ()

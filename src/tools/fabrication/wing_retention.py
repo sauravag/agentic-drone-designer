@@ -18,7 +18,7 @@ import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
-from src.tools.fabrication.rib_outline import Hole, circle_face
+from src.tools.fabrication.rib_outline import Hole, circle_face, common, shape_area
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable
 
 BOLT_CHORD_FRACTION: Final[float] = 0.475  # midway between the spar (25 % chord) and the pin (70 % chord)
@@ -64,17 +64,12 @@ def hex_face(x_m: float, y_m: float, across_flats_m: float) -> bd.Face:
     return bd.Face(bd.Wire.make_polygon(corners, close=True))
 
 
-def _area(shape: object) -> float:
-    pieces = shape if isinstance(shape, list) else [shape]
-    return sum(f.area for piece in pieces if piece is not None for f in piece.faces())
-
-
 def nut_plate_outline(x_m: float, y_m: float, settings: FabricationSettings, label: str) -> bd.Face:
     """The nut plate: a NUT_PLATE_DIAMETER_M disc at (x, y) with the nut's hexagon (across flats plus the fit
     clearance) cut out, which must keep a MIN_WEB_M web to the rim."""
     disc = circle_face(Hole(x_m, y_m, NUT_PLATE_DIAMETER_M))
     nut = hex_face(x_m, y_m, M5_NUT_ACROSS_FLATS_M + settings.fit_clearance_m)
-    if _area(bd.offset(nut, amount=MIN_WEB_M).cut(disc)) > AREA_EPS_M2:
+    if shape_area(bd.offset(nut, amount=MIN_WEB_M).cut(disc)) > AREA_EPS_M2:
         raise KitUnavailable(f"wing bolt: the nut hole leaves less than {WEB_TEXT} of {label}")
     return disc.cut(nut).faces()[0]
 
@@ -90,7 +85,7 @@ def check_clear_of_holes(disc: Hole, holes: Sequence[Hole], label: str, what: st
 def check_clear_of_outlines(disc: Hole, outlines: Sequence[bd.Face], label: str, what: str) -> None:
     """The circle `disc` (the washer under the bolt head) keeps MIN_WEB_M from every face in `outlines` (bosses)."""
     zone = circle_face(Hole(disc.x_m, disc.y_m, disc.diameter_m + 2.0 * MIN_WEB_M))
-    if any(_area(zone.intersect(face)) > AREA_EPS_M2 for face in outlines):
+    if any(shape_area(common(zone, face)) > AREA_EPS_M2 for face in outlines):
         raise KitUnavailable(f"wing bolt: the bolt seat on {label} comes within {WEB_TEXT} of {what}")
 
 

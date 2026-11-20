@@ -9,7 +9,7 @@ fabrication tests; plain helpers live in `tests/cad_helpers.py`. The LLM-env sna
 
 import os
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -20,11 +20,11 @@ from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import seed_database
-from src.tools.fabrication.build_kit import kit_spar_plan
-from src.tools.fabrication.tubes import SparPlan
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
-from tests.cad_helpers import _fitted_layout
 from tests.reference_designs import CASES
+
+if TYPE_CHECKING:  # the kit fixtures need build123d; sizing-only tests must collect without it (M5)
+    from src.tools.fabrication.tubes import SparPlan
 
 LLM_ENV_VARS: Final[tuple[str, ...]] = ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ISR_FORGE_LLM_PROVIDER",
                                         "ISR_FORGE_MODEL")
@@ -57,11 +57,15 @@ def g1_layout(designs: dict) -> AircraftLayout:
     return layout_from_sizing(designs["g1"][0])
 
 
-KitInputs = tuple[AircraftLayout, AirfoilShape, SparPlan, FabricationSettings]
+KitInputs = tuple[AircraftLayout, AirfoilShape, "SparPlan", FabricationSettings]
 
 
 def _kit_inputs(designs: dict, case: str) -> KitInputs:
-    """(layout, airfoil, spar plan, settings) for a reference design, so `wing_ribs(*inputs)` works."""
+    """(layout, airfoil, spar plan, settings) for a reference design, so `wing_ribs(*inputs)` works. The CAD-stack
+    imports live here, not at module level (M5)."""
+    from src.tools.fabrication.build_kit import kit_spar_plan
+    from tests.cad_helpers import _fitted_layout
+
     sizing, bom = designs[case]
     layout = _fitted_layout(sizing, bom)
     airfoil = load_airfoil(layout.airfoil)

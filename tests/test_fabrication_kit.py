@@ -1,21 +1,23 @@
 """Task 6: `build_kit` assembles every part, tube and strip of the laser-cut kit; `kit_mass_items` weighs it."""
 
+import dataclasses
 import math
 
 import numpy as np
 import pytest
 
-from src.schemas.fabrication import DEFAULT_FABRICATION
+from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
 from src.tools.aero_cad import components
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.layout import FUSELAGE_PROFILE, TAIL_AIRFOIL_NAME, fuselage_radius_at
-from src.tools.fabrication.build_kit import MITRE_LABELS, build_kit, socket_end_m
+from src.tools.fabrication.build_kit import MITRE_LABELS, build_kit, socket_end_m, spar_tubes
 from src.tools.fabrication.fittings import join_notes
 from src.tools.fabrication.fuselage_parts import STRINGER_COUNT, former_stations, socket_axis_m
-from src.tools.fabrication.kit import KitUnavailable, TubePart
+from src.tools.fabrication.kit import Kit, KitUnavailable, TubePart
 from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual_gear_item, tube_item
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, spar_depth_at
+from src.tools.fabrication.tubes import SparPlan, SparSegment
+from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at
 from src.tools.sizing.mass_model import GEAR_FRACTION
 from tests.cad_helpers import part_solid, tube_solid
 from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components
@@ -24,8 +26,7 @@ SETTINGS = DEFAULT_FABRICATION
 MASS_REL = 1e-6
 INERTIA_REL = 1e-3
 PIN_REACH_M = 0.020  # R18: the pin runs this far outboard of the root doubler
-USABLE_LONG_M = 0.590
-USABLE_SHORT_M = 0.390
+USABLE_LONG_M, USABLE_SHORT_M = sorted(DEFAULT_FABRICATION.usable_bed_m, reverse=True)
 RIM_ALLOWANCE_M = 0.003  # a square-cut tube end may stop this far short so its leaning rim clears a rib
 
 
@@ -274,8 +275,8 @@ def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(case, request):
     glue = by["glue_hardware"]
     assert glue.mass_kg == pytest.approx(SETTINGS.glue_fraction * sum(i.mass_kg for i in structure), rel=1e-12)
     assert glue.cg_m == pytest.approx(mp.combine(structure).cg_m, abs=1e-12)
-    planform = layout.wing.area_m2 + layout.htail.area_m2 + layout.vtail.area_m2
-    assert kit.film_area_m2 == pytest.approx(2.0 * planform, rel=1e-9)
+    assert kit.film_area_m2 == pytest.approx(2.0 * _exposed_planform_m2(layout, kit), rel=1e-9)  # M3
+    assert kit.film_area_m2 < 2.0 * (layout.wing.area_m2 + layout.htail.area_m2 + layout.vtail.area_m2)
     assert kit.fuselage_cover_area_m2 == pytest.approx(_frustum_area(layout), rel=1e-6)
     film = sum(i.mass_kg for n, i in by.items() if n.startswith("film_"))
     assert film == pytest.approx(SETTINGS.film_kg_m2 * kit.film_area_m2, rel=1e-9)
@@ -286,10 +287,27 @@ def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(case, request):
     assert by["OW-1"].mass_kg == pytest.approx(kit.overwrap.mass_kg, rel=1e-12)  # R24: its own mass, glue-free
 
 
-def test_film_sits_on_the_wing_planform_centroid(g1_kit, g1_kit_inputs):
+def _exposed_m2(surface, start_m: float) -> float:
+    """Surface area outboard of `start_m` (both panels of a symmetric surface): a trapezoid per panel, in its
+    dihedral plane (the film covers the true surface, 1 / cos(dihedral) more than the projected planform)."""
+    panels = 2.0 if surface.is_symmetric else 1.0
+    slope = 1.0 / math.cos(math.radians(surface.dihedral_deg)) if surface.is_symmetric else 1.0
+    return panels * slope * 0.5 * (surface.chord_at(start_m) + surface.chord_at(surface.semi_span_m)) * (
+        surface.semi_span_m - start_m)
+
+
+def _exposed_planform_m2(layout, kit) -> float:
+    from src.tools.fabrication.wing_parts import fin_start_m, tail_root_radius_m
+
+    return (_exposed_m2(layout.wing, kit.spar.joint_y_m) + _exposed_m2(layout.htail, tail_root_radius_m(layout))
+            + _exposed_m2(layout.vtail, fin_start_m(layout, SETTINGS)))
+
+
+def test_film_sits_on_the_exposed_wing_planform_centroid(g1_kit, g1_kit_inputs):
+    """M3: the film covers the planform outboard of the skin joint, not the part inside the pod."""
     wing = g1_kit_inputs[0].wing
-    lam = wing.taper_ratio
-    x_centroid = wing.x_le_root_m + wing.root_chord_m * (1 + lam + lam**2) / (3 * (1 + lam))
+    c0, c1 = wing.chord_at(g1_kit.spar.joint_y_m), wing.chord_at(wing.semi_span_m)
+    x_centroid = wing.x_le_root_m + (c0 * c0 + c0 * c1 + c1 * c1) / (3 * (c0 + c1))
     item = _items(g1_kit)["film_wing"]
     assert item.cg_m[0] == pytest.approx(x_centroid, rel=1e-9)
     assert item.cg_m[1] == pytest.approx(0.0, abs=1e-12)
@@ -307,14 +325,6 @@ def test_residual_gear_item_is_the_gear_fraction_over_the_pod(designs, g2_kit_in
 
 
 # ------------------------------------------------------------------------------------ fix round ---
-import dataclasses  # noqa: E402
-
-from src.schemas.fabrication import TubeStock  # noqa: E402
-from src.tools.fabrication.build_kit import _spar_tubes  # noqa: E402
-from src.tools.fabrication.kit import Kit  # noqa: E402
-from src.tools.fabrication.tubes import SparPlan, SparSegment  # noqa: E402
-from src.tools.fabrication.wing_parts import wing_rib_stations  # noqa: E402
-
 
 def test_kit_requires_its_covering_and_derives_the_areas(g1_kit):
     field = next(f for f in dataclasses.fields(Kit) if f.name == "covering")
@@ -329,12 +339,12 @@ def test_inner_member_overlap_survives_a_trimmed_outer_end(g1_kit_inputs):
     min_insertion_diameters x its OD inside the outer member's actual end."""
     layout, _, spar, settings = g1_kit_inputs
     joint, semi = spar.joint_y_m, layout.wing.semi_span_m
-    station = wing_rib_stations(joint, semi)[2]
+    station = panel_rib_stations(joint, semi)[2]
     step = station - settings.sheet_for("rib").thickness_m / 2.0 + 0.0002  # the rib's inner face is inboard of it
     outer, inner = TubeStock(od_m=0.012, id_m=0.010), TubeStock(od_m=0.010, id_m=0.008)
     plan = SparPlan((SparSegment(outer, joint, step), SparSegment(inner, step, semi)), spar.socket, joint, joint,
                     spar.centre_moment_nm, spar.pin)
-    by = {t.label: t for t in _spar_tubes(layout, plan, settings)}
+    by = {t.label: t for t in spar_tubes(layout, plan, settings)}
     end = _tube_end(by["SP-R1"])
     assert end[1] < step - 1e-6  # trimmed
     axis = np.array(by["SP-R2"].axis)

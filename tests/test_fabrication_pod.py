@@ -26,8 +26,7 @@ from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, plate_loads
 
 SETTINGS = DEFAULT_FABRICATION
 COVER_M = SETTINGS.fuselage_cover_thickness_m
-USABLE_LONG_M = 0.590
-USABLE_SHORT_M = 0.390
+USABLE_LONG_M, USABLE_SHORT_M = sorted(DEFAULT_FABRICATION.usable_bed_m, reverse=True)
 STEEP_CONE_DIAMETER_M = 0.33  # g2 pod this wide: tail-cone slope ~0.37, beyond the 1 mm a slot inset leaves
 AREA_TOL_M2 = 1e-9
 
@@ -178,3 +177,13 @@ def test_tagged_openings_follow_a_part_split_along_y():
     part = KitPart("C-9", "crutch", face, bd.Location(), openings=((-0.055, 0.2, 0.055, 0.7),))
     pieces = [p for p in split_to_bed(part, SETTINGS) if "-D" not in p.label]
     assert len(pieces) == 2 and sum(p.area_m2 for p in pieces) == pytest.approx(part.area_m2, abs=AREA_TOL_M2)
+
+
+def test_a_part_in_the_kerf_band_is_split_so_nesting_accepts_it():
+    """M1: within the usable bed nominally but over it once kerfed: splitting must use the bed less the kerf."""
+    from src.tools.fabrication.nesting import nest
+
+    width = max(SETTINGS.usable_bed_m) - SETTINGS.kerf_m / 2.0
+    parts = split_to_bed(KitPart("C-9", "crutch", rect_face(0.0, -0.05, width, 0.05), bd.Location()), SETTINGS)
+    assert len([p for p in parts if "-D" not in p.label]) == 2
+    assert nest(parts, SETTINGS)  # every piece fits the usable bed with its kerf

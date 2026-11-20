@@ -17,12 +17,11 @@ BUILD_SHEET_SECTIONS order; its Summary kit mass is `kit_mass_kg`, tubes and ove
 (one row per sheet part, PARTS_CSV_COLUMNS; its masses sum to the parts' `part_item` masses). `kit_solids` gives the
 kit as 3D solids in the aircraft frame: every sheet part (`ply_solids`, outline extruded by its sheet thickness, moved
 by its location; one solid per part), then every tube and the two overwrap halves (`carbon_solids`, hollow cylinders;
-a rod is solid).
+a rod is solid); `kit_solid_sets` keeps the two apart so one export builds them once for STEP and the viewer.
 """
 
 import csv
 import logging
-import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,17 +34,26 @@ from ezdxf import colors, units
 from ezdxf.document import Drawing
 from ezdxf.layouts import Modelspace
 
-from src.schemas.fabrication import FabricationSettings
-from src.tools.fabrication.fuselage_parts import BOSS_LABELS, PIN_BOSS_LABELS
+from src.schemas.fabrication import G_PER_KG, FabricationSettings
+from src.schemas.kit_files import (
+    BUILD_SHEET_FILE,
+    KIT_SUBDIR,
+    PARTS_CSV_FILE,
+    SHEET_GLOB,
+    SHEETS_SUBDIR,
+    sheet_file_name,
+)
 from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart
 from src.tools.fabrication.kit_labels import CURVE_SAMPLES, label_layout, label_strokes, ordered_edges
-from src.tools.fabrication.kit_mass import GLUE_NAME, kit_mass_items, part_item
+from src.tools.aero_cad import mass_properties as mp
+from src.tools.fabrication.kit_mass import GLUE_NAME, kit_mass_items
 from src.tools.fabrication.nesting import MM_PER_M, Placement, kerfed_part, nest, place_kerfed
+from src.tools.fabrication.wing_box_bosses import BOSS_LABELS, PIN_BOSS_LABELS
 from src.tools.fabrication.wing_parts import ROOT_PIN_BOSS_LABEL
 from src.tools.fabrication.wing_retention import BOLT_CHORD_FRACTION
 
-__all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids", "export_kit",
-           "kit_solids", "ply_solids", "remove_kit_files", "write_sheets"]
+__all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "KitSolids", "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids",
+           "export_kit", "kit_solid_sets", "kit_solids", "ply_solids", "remove_kit_files", "write_sheets"]
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +64,10 @@ LAYER_COLOURS: Final[dict[str, int]] = {LAYER_CUT_OUTER: colors.RED, LAYER_CUT_I
                                         LAYER_ENGRAVE: colors.BLACK}
 DXF_VERSION: Final[str] = "R2010"
 METRIC_MEASUREMENT: Final[int] = 1  # $MEASUREMENT: 1 = metric
-KIT_SUBDIR: Final[str] = "kit"
-SHEETS_SUBDIR: Final[tuple[str, str]] = (KIT_SUBDIR, "sheets")
-BUILD_SHEET_FILE: Final[str] = "build_sheet.md"
-PARTS_CSV_FILE: Final[str] = "parts.csv"
 BUILD_SHEET_SECTIONS: Final[tuple[str, ...]] = ("Summary", "Parts", "Tubes", "Linear stock", "Joins",
                                                 "Centreline joint", "Covering", "Hardware")
 PARTS_CSV_COLUMNS: Final[tuple[str, ...]] = ("label", "family", "stock", "thickness_mm", "quantity", "area_mm2",
                                              "mass_g", "sheet")
-G_PER_KG: Final[float] = 1000.0
 MM2_PER_M2: Final[float] = 1e6
 CSV_MASS_DECIMALS: Final[int] = 6  # grams: rounding stays far below the 1e-6 kg mass identity
 CSV_AREA_DECIMALS: Final[int] = 3
@@ -94,10 +97,6 @@ RETENTION_STEPS: Final[tuple[str, ...]] = (
     "`WR-01` (or `WL-01`) into the captive nut; tighten by hand, it is nylon.",
 )
 LINEAR_KINDS: Final[tuple[LinearKind, ...]] = ("stringer", "le", "te")
-
-
-def _slug(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
 def _mm(v: bd.Vector) -> tuple[float, float]:
@@ -185,7 +184,7 @@ def write_sheets(placements: Mapping[str, Sequence[Placement]], settings: Fabric
     Any `*.dxf` already in that folder (an earlier run's sheets) is deleted first; nothing else there is touched."""
     sheet_dir = out_dir.joinpath(*SHEETS_SUBDIR)
     sheet_dir.mkdir(parents=True, exist_ok=True)
-    for stale in sorted(sheet_dir.glob("*.dxf")):
+    for stale in sorted(sheet_dir.glob(SHEET_GLOB)):
         stale.unlink()
     parts = _parts_by_label([p for stock_placements in placements.values() for p in stock_placements])
     kerfed = {label: kerfed_part(part, settings.kerf_m) for label, part in parts.items()}
@@ -193,7 +192,7 @@ def write_sheets(placements: Mapping[str, Sequence[Placement]], settings: Fabric
     for stock, stock_placements in placements.items():
         for n in sorted({p.sheet for p in stock_placements}):
             on_sheet = [p for p in stock_placements if p.sheet == n]
-            paths.append(_write_sheet(on_sheet, kerfed, sheet_dir / f"{_slug(stock)}-{n}.dxf"))
+            paths.append(_write_sheet(on_sheet, kerfed, sheet_dir / sheet_file_name(stock, n)))
     return tuple(paths)
 
 
@@ -224,9 +223,26 @@ def carbon_solids(kit: Kit) -> list[bd.Solid]:
     return [_tube_solid(t) for t in (*kit.tubes, *kit.overwrap_halves())]
 
 
+@dataclass(frozen=True)
+class KitSolids:
+    """The kit's solids, built once per export for both the STEP assembly and the viewer."""
+
+    ply: tuple[bd.Solid, ...]
+    carbon: tuple[bd.Solid, ...]
+
+    @property
+    def all(self) -> list[bd.Solid]:
+        return [*self.ply, *self.carbon]
+
+
+def kit_solid_sets(kit: Kit, settings: FabricationSettings) -> KitSolids:
+    """`ply_solids` and `carbon_solids`, kept apart (the viewer shows them as two parts)."""
+    return KitSolids(ply=tuple(ply_solids(kit, settings)), carbon=tuple(carbon_solids(kit)))
+
+
 def kit_solids(kit: Kit, settings: FabricationSettings) -> list[bd.Solid]:
     """The whole kit in the aircraft frame: `ply_solids` then `carbon_solids`."""
-    return [*ply_solids(kit, settings), *carbon_solids(kit)]
+    return kit_solid_sets(kit, settings).all
 
 
 # ----------------------------------------------------------------------------- build sheet helpers ---
@@ -260,20 +276,26 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[object]]) -> list[str]
     return lines + [f"| {' | '.join(str(c) for c in row)} |" for row in rows]
 
 
-def _mass_breakdown_kg(kit: Kit, settings: FabricationSettings) -> list[tuple[str, float]]:
-    """`kit_mass_items` summed by kind; the rows add up to `kit_mass_kg`."""
+def _items_by_name(kit: Kit, settings: FabricationSettings,
+                   items: Optional[Sequence[mp.MassItem]]) -> dict[str, mp.MassItem]:
+    """The kit's mass items by name (labels are unique), `kit_mass_items` only when the caller has none (M6)."""
+    return {item.name: item for item in (kit_mass_items(kit, settings) if items is None else items)}
+
+
+def _mass_breakdown_kg(kit: Kit, items: Mapping[str, mp.MassItem]) -> list[tuple[str, float]]:
+    """The kit's mass items summed by kind; the rows add up to `kit_mass_kg`."""
     kinds = {**{p.label: "Sheet parts" for p in kit.parts}, **{t.label: "Tubes and rods" for t in kit.tubes},
              **{s.label: "Linear stock" for s in kit.linear}, **{c.label: "Covering" for c in kit.covering},
              OVERWRAP_LABEL: "Centreline overwrap", GLUE_NAME: "Glue and hardware allowance"}
     totals: dict[str, float] = {}
-    for item in kit_mass_items(kit, settings):
+    for item in items.values():
         totals[kinds[item.name]] = totals.get(kinds[item.name], 0.0) + item.mass_kg
     return list(totals.items())
 
 
 # -------------------------------------------------------------------------------- build sheet sections ---
-def _summary(kit: Kit, settings: FabricationSettings, placements: Mapping[str, Sequence[Placement]]) -> list[str]:
-    breakdown = _mass_breakdown_kg(kit, settings)
+def _summary(kit: Kit, items: Mapping[str, mp.MassItem], placements: Mapping[str, Sequence[Placement]]) -> list[str]:
+    breakdown = _mass_breakdown_kg(kit, items)
     total = sum(kg for _, kg in breakdown)
     sheets = [(stock, len({p.sheet for p in ps})) for stock, ps in placements.items()]
     return [f"Kit mass: **{total:.4f} kg** (sheet parts, tubes and rods, linear stock, the centreline overwrap, "
@@ -282,11 +304,11 @@ def _summary(kit: Kit, settings: FabricationSettings, placements: Mapping[str, S
             *_table(("Stock", "Sheets"), sheets)]
 
 
-def _parts(kit: Kit, settings: FabricationSettings) -> list[str]:
+def _parts(kit: Kit, settings: FabricationSettings, items: Mapping[str, mp.MassItem]) -> list[str]:
     """One row per sheet part; the station is the part's centroid in the aircraft frame (x aft, y right, z up)."""
     rows = []
     for part in kit.parts:
-        x, y, z = (_to_mm(c) for c in part_item(part, settings).cg_m)
+        x, y, z = (_to_mm(c) for c in items[part.label].cg_m)
         rows.append((part.label, part.family, settings.sheet_for(part.family).name, part.quantity,
                      f"{x:.0f}, {y:.0f}, {z:.0f}"))
     return _table(("Label", "Family", "Stock", "Qty", "Station x, y, z (mm)"), rows)
@@ -343,7 +365,8 @@ def _centreline_joint(kit: Kit, settings: FabricationSettings) -> list[str]:
 
 def _covering(kit: Kit, settings: FabricationSettings) -> list[str]:
     film, cover = kit.film_area_m2, kit.fuselage_cover_area_m2
-    return [f"- Film (both faces of the wing and tails): {film:.3f} m², {_g(film * settings.film_kg_m2):.1f} g",
+    return [f"- Film (both faces of the wing and tails, outside the fuselage): {film:.3f} m², "
+            f"{_g(film * settings.film_kg_m2):.1f} g",
             f"- Fuselage cover: {cover:.3f} m², {_g(cover * settings.fuselage_cover_kg_m2):.1f} g"]
 
 
@@ -358,9 +381,12 @@ def _hardware(kit: Kit) -> list[str]:
     return [*(f"- {item}" for item in (bolts, WING_NUTS, pins, WING_CONNECTORS)), "", where, "", *steps]
 
 
-def build_sheet_text(kit: Kit, settings: FabricationSettings, placements: Mapping[str, Sequence[Placement]]) -> str:
-    """The build sheet as Markdown, sections in BUILD_SHEET_SECTIONS order."""
-    bodies = (_summary(kit, settings, placements), _parts(kit, settings), _tubes(kit), _linear(kit, settings),
+def build_sheet_text(kit: Kit, settings: FabricationSettings, placements: Mapping[str, Sequence[Placement]],
+                     items: Optional[Sequence[mp.MassItem]] = None) -> str:
+    """The build sheet as Markdown, sections in BUILD_SHEET_SECTIONS order; `items` are the kit's mass items when the
+    caller already has them (the packing's), else they are computed once here."""
+    by_name = _items_by_name(kit, settings, items)
+    bodies = (_summary(kit, by_name, placements), _parts(kit, settings, by_name), _tubes(kit), _linear(kit, settings),
               _joins(kit), _centreline_joint(kit, settings), _covering(kit, settings), _hardware(kit))
     lines = ["# Laser-cut kit build sheet", ""]
     for heading, body in zip(BUILD_SHEET_SECTIONS, bodies, strict=True):
@@ -370,7 +396,7 @@ def build_sheet_text(kit: Kit, settings: FabricationSettings, placements: Mappin
 
 # ------------------------------------------------------------------------------------- export ---
 def _write_parts_csv(kit: Kit, settings: FabricationSettings, placements: Mapping[str, Sequence[Placement]],
-                     path: Path) -> Path:
+                     items: Mapping[str, mp.MassItem], path: Path) -> Path:
     sheets = _sheets_by_label(placements)
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -379,7 +405,7 @@ def _write_parts_csv(kit: Kit, settings: FabricationSettings, placements: Mappin
             sheet = settings.sheet_for(part.family)
             writer.writerow((part.label, part.family, sheet.name, f"{_to_mm(sheet.thickness_m):g}", part.quantity,
                              f"{part.area_m2 * MM2_PER_M2:.{CSV_AREA_DECIMALS}f}",
-                             f"{_g(part_item(part, settings).mass_kg):.{CSV_MASS_DECIMALS}f}",
+                             f"{_g(items[part.label].mass_kg):.{CSV_MASS_DECIMALS}f}",
                              SHEET_LIST_SEPARATOR.join(str(n) for n in sheets.get(part.label, ()))))
     return path
 
@@ -387,30 +413,33 @@ def _write_parts_csv(kit: Kit, settings: FabricationSettings, placements: Mappin
 def remove_kit_files(out_dir: Path) -> None:
     """Delete an earlier run's build sheet, parts list and sheet DXFs, so a failed or kit-less run leaves none."""
     kit_dir = out_dir / KIT_SUBDIR
-    stale_sheets = sorted(out_dir.joinpath(*SHEETS_SUBDIR).glob("*.dxf"))
+    stale_sheets = sorted(out_dir.joinpath(*SHEETS_SUBDIR).glob(SHEET_GLOB))
     for path in (kit_dir / BUILD_SHEET_FILE, kit_dir / PARTS_CSV_FILE, *stale_sheets):
         path.unlink(missing_ok=True)
 
 
-def export_kit(kit: Kit, settings: FabricationSettings, out_dir: Path) -> KitFiles:
-    """Nest the kit and write its DXF sheets, `kit/build_sheet.md` and `kit/parts.csv` under `out_dir`. Any earlier
-    kit files are removed first; on any failure the files written so far are removed too, then the error is raised
-    (KitUnavailable for the known nesting and DXF ones)."""
+def export_kit(kit: Kit, settings: FabricationSettings, out_dir: Path,
+               items: Optional[Sequence[mp.MassItem]] = None) -> KitFiles:
+    """Nest the kit and write its DXF sheets, `kit/build_sheet.md` and `kit/parts.csv` under `out_dir`, with the
+    kit's mass items `items` (the packing's; computed once when omitted). Any earlier kit files are removed first; on
+    any failure the files written so far are removed too, then the error is raised (KitUnavailable for the known
+    nesting and DXF ones)."""
     remove_kit_files(out_dir)
     try:
-        return _write_kit_files(kit, settings, out_dir)
+        return _write_kit_files(kit, settings, out_dir, _items_by_name(kit, settings, items))
     except Exception:
         _discard_partial_files(out_dir)
         raise
 
 
-def _write_kit_files(kit: Kit, settings: FabricationSettings, out_dir: Path) -> KitFiles:
+def _write_kit_files(kit: Kit, settings: FabricationSettings, out_dir: Path,
+                     items: Mapping[str, mp.MassItem]) -> KitFiles:
     placements = nest(kit.parts, settings)
     sheets = write_sheets(placements, settings, out_dir)
     kit_dir = out_dir / KIT_SUBDIR
     build_sheet = kit_dir / BUILD_SHEET_FILE
-    build_sheet.write_text(build_sheet_text(kit, settings, placements), encoding="utf-8")
-    parts_csv = _write_parts_csv(kit, settings, placements, kit_dir / PARTS_CSV_FILE)
+    build_sheet.write_text(build_sheet_text(kit, settings, placements, tuple(items.values())), encoding="utf-8")
+    parts_csv = _write_parts_csv(kit, settings, placements, items, kit_dir / PARTS_CSV_FILE)
     return KitFiles(kit_dir, build_sheet, parts_csv, sheets)
 
 

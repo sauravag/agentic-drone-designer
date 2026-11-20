@@ -44,8 +44,8 @@ from src.tools.aero_cad.mesh_export import export_viewer_model
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
 from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart
-from src.tools.fabrication.kit_export import KitFiles, export_kit, kit_solids, remove_kit_files
-from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual_gear_item
+from src.tools.fabrication.kit_export import KitFiles, KitSolids, export_kit, kit_solid_sets, remove_kit_files
+from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
@@ -90,6 +90,7 @@ class PackingResult:
     kit: Optional[Kit] = None
     kit_warning: Optional[str] = None  # why there is no kit, when there is none
     mass_items: tuple[mp.MassItem, ...] = ()  # the items combined into `mass`
+    kit_items: tuple[mp.MassItem, ...] = ()  # the kit's own mass items (empty without a kit); exports reuse them
     settings: FabricationSettings = DEFAULT_FABRICATION  # what the kit was built with (its export uses them too)
 
     @property
@@ -265,6 +266,7 @@ class _Airframe:
     kit_warning: Optional[str] = None
     structure: Optional[WingStructure] = None
     shell_areal_density_kg_m2: float = 0.0
+    kit_items: tuple[mp.MassItem, ...] = ()  # the kit's own items (in `items`, without the residual gear)
 
 
 def _shell_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape, oml: bd.Shape,
@@ -303,8 +305,9 @@ def _kit_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: Airfoil
                   placed: Sequence[PlacedComponent], settings: FabricationSettings) -> _Airframe:
     """Raises KitUnavailable when the kit cannot be built around `placed`."""
     kit: Kit = build_kit(sizing, layout, airfoil, placed, settings)
-    items = (*kit_mass_items(kit, settings), residual_gear_item(sizing, layout))
-    return _Airframe(items, _structure_boxes(kit, settings), kit=kit)
+    kit_items = tuple(kit_mass_items(kit, settings))
+    return _Airframe((*kit_items, residual_gear_item(sizing, layout)), _structure_boxes(kit, settings), kit=kit,
+                     kit_items=kit_items)
 
 
 def _airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape, oml: bd.Shape,
@@ -374,6 +377,7 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
         containment_violations=parts.containment_violations(components, oml),
         shell_areal_density_kg_m2=final.shell_areal_density_kg_m2, oml=oml, structure=final.structure,
         kit=final.kit, kit_warning=final.kit_warning, mass_items=mass_items, settings=settings,
+        kit_items=final.kit_items,
     )
     if not result.is_balanced:
         logger.warning("packing unbalanced: SM %.3f (band %.2f-%.2f), %d collisions, %d skin interferences",
@@ -381,18 +385,25 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     return result
 
 
-def _structure_solids(result: PackingResult) -> tuple[list[bd.Shape], Optional[str]]:
-    """The airframe structure for the assembly: the kit's solids (replacing the shell ribs and spars) when there is a
-    kit, else the shell-model ribs and spars. A kit-solid failure never fails the run: it is logged, the assembly goes
-    without structure, and the warning says why."""
+def _kit_solids(result: PackingResult) -> tuple[Optional[KitSolids], Optional[str]]:
+    """The kit's solids, built once per export for the assembly and the viewer (None without a kit). A failure never
+    fails the run: it is logged, both go without kit structure (empty sets), and the warning says why."""
     if result.kit is None:
-        return ([] if result.structure is None else [*result.structure.ribs, *result.structure.spars]), None
+        return None, None
     try:
-        return list(kit_solids(result.kit, result.settings)), None
+        return kit_solid_sets(result.kit, result.settings), None
     except Exception as exc:  # noqa: BLE001 - geometry-kernel errors must not fail the run
         warning = f"{KIT_SOLIDS_PREFIX}{exc}"
         logger.exception("%s - the assembly carries no kit structure", warning)
-        return [], warning
+        return KitSolids(ply=(), carbon=()), warning
+
+
+def _structure_solids(result: PackingResult, solids: Optional[KitSolids]) -> list[bd.Shape]:
+    """The airframe structure for the assembly: the kit's solids (replacing the shell ribs and spars) when there is a
+    kit, else the shell-model ribs and spars."""
+    if solids is not None:
+        return solids.all
+    return [] if result.structure is None else [*result.structure.ribs, *result.structure.spars]
 
 
 def _export_assembly(result: PackingResult, path: Path, structure: Sequence[bd.Shape]) -> Path:
@@ -411,7 +422,7 @@ def _export_kit_files(result: PackingResult, out_dir: Path) -> tuple[Optional[Ki
         if result.kit is None:
             remove_kit_files(out_dir)
             return None, None
-        return export_kit(result.kit, result.settings, out_dir), None
+        return export_kit(result.kit, result.settings, out_dir, result.kit_items), None
     except Exception as exc:  # noqa: BLE001 - nesting, DXF or file errors must not fail the run
         warning = f"{prefix}{exc}"
         logger.exception("%s - the run continues", warning)
@@ -428,9 +439,9 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
     report CG, static margin, interference, as-built mass and inertia. `collision_count` covers part-part, part-boom
     and part-skin interference. No kit-file or kit-solid failure fails the run: `kit_warning` says what went wrong."""
     kit_files, files_warning = _export_kit_files(result, out_dir)
-    structure, solids_warning = _structure_solids(result)
-    assembly: Path = _export_assembly(result, out_dir / "assembly.step", structure)
-    viewer_model: Optional[Path] = export_viewer_model(result, out_dir)
+    solids, solids_warning = _kit_solids(result)
+    assembly: Path = _export_assembly(result, out_dir / "assembly.step", _structure_solids(result, solids))
+    viewer_model: Optional[Path] = export_viewer_model(result, out_dir, solids)
     ixx, iyy, izz, ixz = mp.body_inertia(result.mass)
     return CADArtifacts(
         oml_vsp3_path=str(oml_vsp3), oml_step_path=str(oml_step), assembly_step_path=str(assembly),
@@ -439,7 +450,7 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
         viewer_model_path=str(viewer_model) if viewer_model else None,
         kit_dir=str(kit_files.kit_dir) if kit_files else None,
         build_sheet_path=str(kit_files.build_sheet) if kit_files else None,
-        kit_mass_kg=kit_mass_kg(result.kit, result.settings) if result.kit is not None else None,
+        kit_mass_kg=sum(i.mass_kg for i in result.kit_items) if result.kit is not None else None,
         kit_warning=_kit_warning(result.kit_warning, files_warning, solids_warning),
     )
 

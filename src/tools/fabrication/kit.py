@@ -109,7 +109,7 @@ class Kit:
 
     @property
     def film_area_m2(self) -> float:
-        """Film material area: both faces of the wing and tails (2 x planform)."""
+        """Film material area: both faces of the exposed wing and tails (2 x exposed planform)."""
         return self._covered_m2("film")
 
     @property

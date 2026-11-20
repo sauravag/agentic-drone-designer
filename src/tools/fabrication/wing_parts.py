@@ -22,14 +22,12 @@ from src.schemas.fabrication import FabricationSettings, PartFamily, TubeStock
 from src.schemas.state import SizingOutput
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
 from src.tools.aero_cad.layout import (
-    FUSELAGE_PROFILE,
     AILERON_CHORD_FRACTION,
     AILERON_ETA,
     TAIL_CONTROL_CHORD_FRACTION,
     TAIL_CONTROL_ETA,
     AircraftLayout,
     SurfacePlanform,
-    fuselage_radius_at,
 )
 from src.tools.aero_cad.structure import RIB_PITCH_M, SPAR_CHORD_STATION, STATION_EPS
 from src.tools.fabrication.kit import KitPart
@@ -47,6 +45,7 @@ from src.tools.fabrication.rib_outline import (
     rect_face,
     split_at,
 )
+from src.tools.fabrication.skin import max_skin_radius_m
 from src.tools.fabrication.tubes import (
     FIT_EPS_M,
     MIN_WEB_M,
@@ -109,13 +108,15 @@ def spar_depth_at(surface: SurfacePlanform, airfoil: AirfoilShape, settings: Fab
     return depth
 
 
-def wing_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
-    """`start_m` and every RIB_PITCH_M outboard of it, up to the semi-span."""
+def panel_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
+    """Rib stations of one panel of any surface (wing, horizontal tail, fin): `start_m` and every RIB_PITCH_M
+    outboard of it, up to the semi-span (fin: height)."""
     count = math.floor((semi_span_m - start_m) / RIB_PITCH_M + STATION_EPS) + 1
     return tuple(start_m + k * RIB_PITCH_M for k in range(count))
 
 
-def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0, fraction: float = SPAR_CHORD_STATION) -> tuple[float, float]:
+def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0,
+                  fraction: float = SPAR_CHORD_STATION) -> tuple[float, float]:
     """(x, z) where a wing's spar axis (or, with `fraction`, its chord line at that fraction on the camber line)
     crosses span station y. Each socket tube is coaxial with its own wing's spar, so it follows the dihedral and
     meets the other at the centreline (y = 0)."""
@@ -333,7 +334,7 @@ def wing_ribs(
 ) -> tuple[KitPart, ...]:
     """Right-panel ribs `WR-01…` (+ aileron pieces `WR-kA`, servo plate `WR-SV`, pin boss `WR-PD` when needed),
     then the left panel `WL-…`, then the R36 captive-nut plates `NP-R`, `NP-L`."""
-    stations = wing_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
+    stations = panel_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
     servo_y = _servo_bay_y(stations, layout.wing)
     right = [p for i, y in enumerate(stations) for p in _wing_rib(i, y, servo_y, layout, airfoil, spar, settings)]
     right.append(_servo_plate(layout.wing, servo_y))
@@ -343,15 +344,8 @@ def wing_ribs(
     return tuple(right) + tuple(_mirrored(p, "WR-", "WL-", settings) for p in right) + nuts
 
 
-def _skin_over(layout: AircraftLayout, x0_m: float, x1_m: float) -> float:
-    """Largest fuselage skin radius over [x0, x1] (r is piecewise linear: the ends and profile corners bound it)."""
-    length = layout.fuselage_length_m
-    corners = [f * length for f, _ in FUSELAGE_PROFILE if x0_m < f * length < x1_m]
-    return max(fuselage_radius_at(layout, x) for x in (x0_m, x1_m, *corners))
-
-
 def _over_root_chord(layout: AircraftLayout, surface: SurfacePlanform) -> float:
-    return _skin_over(layout, surface.x_le_root_m, surface.x_le_root_m + surface.root_chord_m)
+    return max_skin_radius_m(layout, surface.x_le_root_m, surface.x_le_root_m + surface.root_chord_m)
 
 
 def tail_root_radius_m(layout: AircraftLayout) -> float:
@@ -376,11 +370,11 @@ def fin_start_m(layout: AircraftLayout, settings: FabricationSettings) -> float:
     """Height of the first fin rib above the fin root: on the fin mount `TM-1` on the boom (R9) where the boom is
     the limit, else on the fuselage skin over the root chord, bonded to the covering (R20)."""
     skin, boom = _over_root_chord(layout, layout.vtail), _boom_top_m(layout)
-    if has_fin_mount(layout):
-        top = boom + settings.sheet_for("plate").thickness_m  # type: ignore[operator]
-    else:
-        top = skin if boom is None else max(skin, boom)
-    return top - layout.vtail.z_root_m
+    if boom is None:
+        return skin - layout.vtail.z_root_m
+    if boom >= skin:  # `has_fin_mount`: the boom limits the fin root, which sits on TM-1
+        return boom + settings.sheet_for("plate").thickness_m - layout.vtail.z_root_m
+    return skin - layout.vtail.z_root_m
 
 
 @dataclass(frozen=True)
@@ -442,7 +436,7 @@ def _tail_surface_ribs(
     """Ribs of one tail surface; the spar hole appears only where it keeps the minimum web (the spar ends
     inboard of thinner ribs), and the root rib must carry it."""
     parts: list[KitPart] = []
-    for index, span in enumerate(wing_rib_stations(start_m, surface.semi_span_m)):
+    for index, span in enumerate(panel_rib_stations(start_m, surface.semi_span_m)):
         label, chord = _label(prefix, index), surface.chord_at(span)
         profile = notched_profile(airfoil, chord, settings)
         hole = tail_spar_hole(surface, airfoil, tube, index, span, settings)
@@ -472,12 +466,12 @@ def tail_spar_hole(surface: SurfacePlanform, airfoil: AirfoilShape, tube: TubeSt
 
 def _fin_mount(layout: AircraftLayout, settings: FabricationSettings) -> tuple[KitPart, ...]:
     """Ply saddle on top of the tail boom under the fin root (only where the boom is the limit, R20)."""
-    if not has_fin_mount(layout):
-        return ()
     boom, vt = layout.tail_boom, layout.vtail
-    width = max(boom.diameter_m, TAIL_MOUNT_MIN_WIDTH_M)  # type: ignore[union-attr]
+    if boom is None or not has_fin_mount(layout):
+        return ()
+    width = max(boom.diameter_m, TAIL_MOUNT_MIN_WIDTH_M)
     outline = rect_face(0.0, -width / 2.0, vt.root_chord_m, width / 2.0)
-    location = bd.Location((vt.x_le_root_m, 0.0, _boom_top_m(layout)), FLAT_ROTATION_DEG)
+    location = bd.Location((vt.x_le_root_m, 0.0, boom.z_m + boom.diameter_m / 2.0), FLAT_ROTATION_DEG)
     return (KitPart("TM-1", "plate", outline, location),)
 
 

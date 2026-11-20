@@ -17,8 +17,7 @@ from OCP.BRep import BRep_Tool
 from OCP.TopAbs import TopAbs_Orientation
 from OCP.TopLoc import TopLoc_Location
 
-from src.tools.fabrication.kit_export import carbon_solids, ply_solids
-from src.tools.fabrication.kit_mass import kit_mass_items
+from src.tools.fabrication.kit_export import KitSolids, kit_solid_sets
 
 if TYPE_CHECKING:  # type-only: cad_packer imports this module, so a runtime import would be circular
     from src.tools.aero_cad.cad_packer import PackingResult
@@ -84,32 +83,33 @@ def _unique_names(names: Sequence[str]) -> tuple[str, ...]:
     return tuple(unique)
 
 
-def _kit_parts(result: "PackingResult") -> tuple[MeshPart, ...]:
-    """The laser-cut kit as two structure parts, ply then carbon, each carrying its kit mass (overwrap in carbon)."""
-    kit, settings = result.kit, result.settings
-    masses = {item.name: item.mass_kg for item in kit_mass_items(kit, settings)}
-    ply_kg = sum(masses[p.label] for p in kit.parts)
-    carbon_kg = sum(masses[t.label] for t in kit.tubes) + kit.overwrap.mass_kg
-    return (tessellate(bd.Compound(ply_solids(kit, settings)), PLY_STRUCTURE_NAME, "structure", ply_kg),
-            tessellate(bd.Compound(carbon_solids(kit)), CARBON_STRUCTURE_NAME, "structure", carbon_kg))
+def _kit_parts(result: "PackingResult", solids: KitSolids) -> tuple[MeshPart, ...]:
+    """The laser-cut kit as two structure parts, ply then carbon, each carrying its kit mass (overwrap in carbon),
+    from the packing's mass items; a group with no solids (they could not be built) is left out."""
+    kit = result.kit
+    masses = {item.name: item.mass_kg for item in result.kit_items}
+    groups = ((solids.ply, PLY_STRUCTURE_NAME, sum(masses[p.label] for p in kit.parts)),
+              (solids.carbon, CARBON_STRUCTURE_NAME, sum(masses[t.label] for t in kit.tubes) + kit.overwrap.mass_kg))
+    return tuple(tessellate(bd.Compound(list(group)), name, "structure", kg) for group, name, kg in groups if group)
 
 
-def _structure_parts(result: "PackingResult") -> tuple[MeshPart, ...]:
-    """The kit's ply and carbon parts, or one merged shell-model structure part (ribs and spars) without a kit."""
+def _structure_parts(result: "PackingResult", solids: Optional[KitSolids]) -> tuple[MeshPart, ...]:
+    """The kit's ply and carbon parts (`solids` when the caller built them, as an export does; else built here),
+    or one merged shell-model structure part (ribs and spars) without a kit."""
     if result.kit is not None:
-        return _kit_parts(result)
+        return _kit_parts(result, kit_solid_sets(result.kit, result.settings) if solids is None else solids)
     if result.structure is None:
         return ()
     structure = bd.Compound([*result.structure.ribs, *result.structure.spars])
     return (tessellate(structure, SHELL_STRUCTURE_NAME, "structure", None),)
 
 
-def model_parts(result: "PackingResult") -> tuple[MeshPart, ...]:
+def model_parts(result: "PackingResult", solids: Optional[KitSolids] = None) -> tuple[MeshPart, ...]:
     """Skin, the structure (kit: ply and carbon; shell model: one part), then one part per component."""
     names = _unique_names([c.name for c in result.components])
     return (
         tessellate(result.oml, "skin", "skin", None),
-        *_structure_parts(result),
+        *_structure_parts(result, solids),
         *(tessellate(c.solid(), n, "component", c.mass_kg) for c, n in zip(result.components, names)),
     )
 
@@ -132,13 +132,14 @@ def write_viewer_model(parts: Sequence[MeshPart], cg_m: Sequence[float], mass_kg
     return path
 
 
-def export_viewer_model(result: "PackingResult", out_dir: Path) -> Optional[Path]:
-    """Write `viewer_model.json`; never raises - a failure is logged and reported as None."""
+def export_viewer_model(result: "PackingResult", out_dir: Path, solids: Optional[KitSolids] = None) -> Optional[Path]:
+    """Write `viewer_model.json` (with the export's kit `solids` when given); never raises - a failure is logged and
+    reported as None."""
     target: Path = out_dir / VIEWER_MODEL_FILE
     try:
         # Drop any file from an earlier critic iteration first: a failed export must not leave stale geometry.
         target.unlink(missing_ok=True)
-        return write_viewer_model(model_parts(result), result.mass.cg_m, result.mass.mass_kg, target)
+        return write_viewer_model(model_parts(result, solids), result.mass.cg_m, result.mass.mass_kg, target)
     except Exception:
         logger.exception("viewer mesh export failed; the run continues without a 3D viewer")
         return None

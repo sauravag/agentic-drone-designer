@@ -641,6 +641,32 @@ def test_artifact_kit_mass_is_the_packed_kit_mass(packed, tmp_path: Path) -> Non
     assert art.kit_mass_kg == pytest.approx(kit_mass_kg(r.kit, DEFAULT_FABRICATION), rel=1e-12)
 
 
+def test_one_export_builds_the_kit_mass_items_and_solids_once(packed, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    """M6: the export reuses the packed kit's mass items and builds its solids once for STEP and the viewer."""
+    from src.tools.aero_cad import mesh_export
+    from src.tools.fabrication import kit_mass
+
+    r = packed("g1")
+    assert r.kit_items and sum(i.mass_kg for i in r.kit_items) == pytest.approx(kit_mass_kg(r.kit, DEFAULT_FABRICATION))
+    calls: dict[str, int] = {"items": 0, "ply": 0, "carbon": 0}
+
+    def counted(name: str, real):
+        def wrapper(*args, **kwargs):
+            calls[name] += 1
+            return real(*args, **kwargs)
+        return wrapper
+
+    for module in (kit_mass, kit_export, cad_packer, mesh_export):
+        if hasattr(module, "kit_mass_items"):
+            monkeypatch.setattr(module, "kit_mass_items", counted("items", kit_mass.kit_mass_items))
+    monkeypatch.setattr(kit_export, "ply_solids", counted("ply", kit_export.ply_solids))
+    monkeypatch.setattr(kit_export, "carbon_solids", counted("carbon", kit_export.carbon_solids))
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    assert art.viewer_model_path is not None and art.kit_warning is None
+    assert calls == {"items": 0, "ply": 1, "carbon": 1}
+
+
 def test_fallback_artifacts_carry_the_warning(packed, tmp_path: Path) -> None:
     r = packed("g3")
     art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
@@ -670,10 +696,10 @@ def test_kit_solid_failure_keeps_the_assembly_without_structure(packed, tmp_path
     def broken(*_args: object, **_kwargs: object) -> None:
         raise ValueError("BRep_API: command not done")
 
-    monkeypatch.setattr(cad_packer, "kit_solids", broken)
+    monkeypatch.setattr(cad_packer, "kit_solid_sets", broken)
     r = packed("g1")
     art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
-    assert Path(art.assembly_step_path).exists()
+    assert Path(art.assembly_step_path).exists() and art.viewer_model_path is not None
     assert art.kit_warning == "kit solids could not be built: BRep_API: command not done"
     assert art.build_sheet_path is not None  # the kit files were still written
 

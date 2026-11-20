@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import FabricationSettings
+from src.schemas.kit_files import KIT_DOWNLOADS, KIT_SUBDIR, SHEET_GLOB, SHEETS_DIR, stock_slug
 from src.schemas.payload_catalog import payload_display_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
@@ -54,12 +55,7 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
     "Envelope": (("service_ceiling_m", 150.0, 10000.0, 100.0, "%.0f"), ("max_stall_speed_ms", 5.5, 45.0, 0.5, "%.1f")),
 }
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
-# Mirrors src/tools/fabrication/kit_export.py (not imported: it needs build123d, absent on a sizing-only host);
-# tests/test_fabrication_ui.py pins the equality.
-KIT_SUBDIR: Final[str] = "kit"
-KIT_DOWNLOADS: Final[tuple[str, ...]] = ("build_sheet.md", "parts.csv")  # DXF sheets reach the user via the zip
 SHEET_STEM_NUMBER: Final[re.Pattern[str]] = re.compile(r"-\d+$")
-NON_SLUG_RUN: Final[re.Pattern[str]] = re.compile(r"[^a-z0-9]+")
 SECONDS_PER_MINUTE: Final[float] = 60.0
 IN_AVIONICS_ALLOWANCE: Final[str] = "in avionics allowance"
 PAYLOAD_CAPTION: Final[str] = ("Masses and powers are datasheet values (typical power). NextVision masses are "
@@ -198,11 +194,6 @@ def aero_rows(aero: AeroStabilityOutput) -> list[dict[str, str]]:
     return [{"Quantity": q, "Symbol": sym, "Value": f"{v:.4g}", "Unit": u} for q, sym, v, u in entries]
 
 
-def stock_slug(name: str) -> str:
-    """The file-name form of a sheet stock name (as kit_export names its DXF sheets)."""
-    return NON_SLUG_RUN.sub("-", name.lower()).strip("-")
-
-
 def kit_summary(cad: CADArtifacts, settings: Optional[FabricationSettings] = None) -> Optional[str]:
     """E.g. "Laser kit: 1.84 kg, 6 sheets (4 × Birch ply 1.5 mm, 2 × Birch ply 3 mm)"; None without a kit.
 
@@ -211,7 +202,7 @@ def kit_summary(cad: CADArtifacts, settings: Optional[FabricationSettings] = Non
     if cad.kit_dir is None:
         return None
     names = {stock_slug(sheet.name): sheet.name for sheet in settings.sheets} if settings else {}
-    per_stock = Counter(SHEET_STEM_NUMBER.sub("", p.stem) for p in (Path(cad.kit_dir) / "sheets").glob("*.dxf"))
+    per_stock = Counter(SHEET_STEM_NUMBER.sub("", p.stem) for p in (Path(cad.kit_dir) / SHEETS_DIR).glob(SHEET_GLOB))
     total = sum(per_stock.values())
     groups = ", ".join(f"{n} × {names.get(slug, slug.replace('-', ' '))}" for slug, n in sorted(per_stock.items()))
     mass = "" if cad.kit_mass_kg is None else f"{cad.kit_mass_kg:.2f} kg, "
@@ -269,14 +260,26 @@ def _is_plain_file_in(path: Path, folder: Path) -> bool:
     return path.is_file() and not path.is_symlink() and path.resolve().parent == folder
 
 
+def _real_folder(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _kit_files(kit: Path) -> list[Path]:
+    """The build sheet and parts list, then the DXF sheets (regular files only, never through a symlink)."""
+    if not _real_folder(kit):
+        return []
+    files = [p for p in (kit / name for name in KIT_DOWNLOADS) if _is_plain_file_in(p, kit.resolve())]
+    sheets = kit / SHEETS_DIR
+    if _real_folder(sheets):
+        files += sorted(p for p in sheets.glob(SHEET_GLOB) if _is_plain_file_in(p, sheets.resolve()))
+    return files
+
+
 def downloadable_files(out_dir: Path) -> list[Path]:
     """Regular artifact files directly inside the run folder (no symlinks, no sub-folders), then the kit's build
-    sheet and parts list from its `kit` folder."""
+    sheet, parts list and DXF sheets from its `kit` folder."""
     root: Path = out_dir.resolve()
     if not root.is_dir():  # run folder deleted while the result is still on screen
         return []
     files = sorted(p for p in root.iterdir() if p.suffix in DOWNLOAD_SUFFIXES and _is_plain_file_in(p, root))
-    kit = root / KIT_SUBDIR
-    if kit.is_symlink() or not kit.is_dir():
-        return files
-    return [*files, *(p for p in (kit / name for name in KIT_DOWNLOADS) if _is_plain_file_in(p, kit.resolve()))]
+    return [*files, *_kit_files(root / KIT_SUBDIR)]

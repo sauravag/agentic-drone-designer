@@ -85,7 +85,8 @@ def _bounds(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def test_viewer_structure_part_comes_from_the_kit(g1_kit: object) -> None:
     result = _fake_result(spars=0, ribs=0)
-    result = types.SimpleNamespace(**{**vars(result), "structure": None, "kit": g1_kit})
+    result = types.SimpleNamespace(**{**vars(result), "structure": None, "kit": g1_kit,
+                                      "kit_items": tuple(kit_mass_items(g1_kit, DEFAULT_FABRICATION))})
     parts = mesh_export.model_parts(result)
     structure = {p.name: p for p in parts if p.group == "structure"}
     assert set(structure) == {"structure (ply)", "structure (carbon)"}
