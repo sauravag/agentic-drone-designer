@@ -27,11 +27,13 @@ from src.agent.report import defang, inline  # noqa: E402
 from src.schemas.requirements import ARK_JETSON_PAB, OperationalRequirements  # noqa: E402
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
+from src.schemas.fabrication import FabricationSettings  # noqa: E402
 from src.schemas.payload_catalog import payload_choices, payload_label, payload_spec  # noqa: E402
 from src.ui import agent_service, chat_panel, design_archive, design_loop, presenters, viewer_panel  # noqa: E402
 from src.ui.agent_service import AgentRunView  # noqa: E402
 from src.ui.assumptions_panel import current_assumptions, render_assumptions_panel  # noqa: E402
 from src.ui.examples import EXAMPLE_MISSIONS  # noqa: E402
+from src.ui.fabrication_panel import current_fabrication, render_fabrication_panel  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +201,7 @@ def _status_label(view: AgentRunView) -> str:
     return f"Run {view.run_id} finished: {view.status.replace('_', ' ')}"
 
 
-def _execute(assumptions: DesignAssumptions, prompt: str = "",
+def _execute(assumptions: DesignAssumptions, fabrication: FabricationSettings, prompt: str = "",
              requirements: Optional[OperationalRequirements] = None) -> None:
     with st.status("Designing…", expanded=True) as status:
         try:
@@ -207,7 +209,7 @@ def _execute(assumptions: DesignAssumptions, prompt: str = "",
             view = agent_service.run(OUTPUTS_ROOT, DB_PATH, with_aero_cad=do_aero,
                                      with_sitl=do_aero and st.session_state["with_sitl"], progress=status.write,
                                      prompt=prompt, requirements=requirements,
-                                     design_assumptions=assumptions)
+                                     design_assumptions=assumptions, fabrication=fabrication)
         except (pipeline.PipelineError, LLMConfigError) as exc:
             logger.warning("design run rejected: %s", exc)
             _fail(status, "Design not started", defang(str(exc)))
@@ -231,20 +233,31 @@ def _assumptions_or_stop() -> Optional[DesignAssumptions]:
     return assumptions
 
 
-def _run_description(prompt: str) -> None:
+def _settings_or_stop() -> Optional[tuple[DesignAssumptions, FabricationSettings]]:
+    """Both panels' validated settings; None (every message shown, no run) when either has an invalid value."""
     assumptions = _assumptions_or_stop()
-    if assumptions is None:
+    fabrication, errors = current_fabrication()
+    if fabrication is None:
+        for message in errors:  # already worded "Laser kit: <field>: <problem>"
+            st.error(message)
+        st.session_state.pop("last_run", None)
+    return None if assumptions is None or fabrication is None else (assumptions, fabrication)
+
+
+def _run_description(prompt: str) -> None:
+    settings = _settings_or_stop()
+    if settings is None:
         return
     if not prompt.strip():
         st.error("Describe the mission first.")
         st.session_state.pop("last_run", None)
         return
-    _execute(assumptions, prompt=prompt)
+    _execute(*settings, prompt=prompt)
 
 
 def _run_form(values: dict[str, Any]) -> None:
-    assumptions = _assumptions_or_stop()
-    if assumptions is None:
+    settings = _settings_or_stop()
+    if settings is None:
         return
     req, errors = presenters.parse_form(values)
     if req is None:
@@ -252,7 +265,7 @@ def _run_form(values: dict[str, Any]) -> None:
             st.error(message)
         st.session_state.pop("last_run", None)
         return
-    _execute(assumptions, requirements=req)
+    _execute(*settings, requirements=req)
 
 
 # ------------------------------------------------------------------ output ---
@@ -292,7 +305,7 @@ def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: 
             st.info("OpenVSP aerodynamics and CAD were not run for this design.")
         else:
             st.dataframe(presenters.aero_rows(view.aero), hide_index=True, use_container_width=True)
-            _table(presenters.cad_rows(view.cad))
+            _table(presenters.cad_rows(view.cad, view.fabrication))
     with viewer_tab:
         viewer_panel.render_viewer(view)
     with fcs_tab:
@@ -383,6 +396,7 @@ def main() -> None:
     _stage_options()
     _llm_info()
     render_assumptions_panel()
+    render_fabrication_panel()
     if _description_form():
         _run_description(st.session_state["prompt"])
     st.subheader("Start from an example")

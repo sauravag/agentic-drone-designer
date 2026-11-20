@@ -19,7 +19,7 @@ from src.agent.report import defang, inline
 from src.schemas.changes import (FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges,
                                  RequirementChanges)
 from src.schemas.payload_catalog import payload_choices, payload_label, payload_spec
-from src.ui import agent_service
+from src.ui import agent_service, fabrication_panel
 from src.ui.agent_service import AgentRunView, NoChangeError
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,7 @@ def record_run(view: AgentRunView) -> None:
     """Show `view` and add it to the history (views without a run folder are shown but not listed)."""
     st.session_state[LAST_RUN_KEY] = view
     st.session_state[PENDING_KEY] = None
+    fabrication_panel.restore(view.fabrication)  # a re-run keeps its parent's kit settings, so the panel follows
     if view.run_id is not None:
         st.session_state[RUNS_KEY] = [*st.session_state.get(RUNS_KEY, []), view]
 
@@ -81,6 +82,7 @@ def _cancel() -> None:
 
 def _open(view: AgentRunView) -> None:
     st.session_state[LAST_RUN_KEY] = view
+    fabrication_panel.restore(view.fabrication)
     st.session_state[PENDING_KEY] = None
 
 

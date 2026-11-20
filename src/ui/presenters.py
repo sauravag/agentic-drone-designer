@@ -3,6 +3,8 @@
 Kept free of Streamlit so they are unit-testable; app.py only lays out widgets and calls these.
 """
 
+import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Final, Optional
 
@@ -10,6 +12,7 @@ from pydantic import ValidationError
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import FabricationSettings
 from src.schemas.payload_catalog import payload_display_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
@@ -51,6 +54,12 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
     "Envelope": (("service_ceiling_m", 150.0, 10000.0, 100.0, "%.0f"), ("max_stall_speed_ms", 5.5, 45.0, 0.5, "%.1f")),
 }
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
+# Mirrors src/tools/fabrication/kit_export.py (not imported: it needs build123d, absent on a sizing-only host);
+# tests/test_fabrication_ui.py pins the equality.
+KIT_SUBDIR: Final[str] = "kit"
+KIT_DOWNLOADS: Final[tuple[str, ...]] = ("build_sheet.md", "parts.csv")  # DXF sheets reach the user via the zip
+SHEET_STEM_NUMBER: Final[re.Pattern[str]] = re.compile(r"-\d+$")
+NON_SLUG_RUN: Final[re.Pattern[str]] = re.compile(r"[^a-z0-9]+")
 SECONDS_PER_MINUTE: Final[float] = 60.0
 IN_AVIONICS_ALLOWANCE: Final[str] = "in avionics allowance"
 PAYLOAD_CAPTION: Final[str] = ("Masses and powers are datasheet values (typical power). NextVision masses are "
@@ -189,13 +198,35 @@ def aero_rows(aero: AeroStabilityOutput) -> list[dict[str, str]]:
     return [{"Quantity": q, "Symbol": sym, "Value": f"{v:.4g}", "Unit": u} for q, sym, v, u in entries]
 
 
-def cad_rows(cad: CADArtifacts) -> list[tuple[str, str]]:
-    """Packing, mass and inertia results as (label, formatted value) pairs."""
+def stock_slug(name: str) -> str:
+    """The file-name form of a sheet stock name (as kit_export names its DXF sheets)."""
+    return NON_SLUG_RUN.sub("-", name.lower()).strip("-")
+
+
+def kit_summary(cad: CADArtifacts, settings: Optional[FabricationSettings] = None) -> Optional[str]:
+    """E.g. "Laser kit: 1.84 kg, 6 sheets (4 × Birch ply 1.5 mm, 2 × Birch ply 3 mm)"; None without a kit.
+
+    The sheet count comes from the DXF files actually in the kit folder, grouped by stock; `settings` supplies the
+    stock names (the file names only carry their slugs)."""
+    if cad.kit_dir is None:
+        return None
+    names = {stock_slug(sheet.name): sheet.name for sheet in settings.sheets} if settings else {}
+    per_stock = Counter(SHEET_STEM_NUMBER.sub("", p.stem) for p in (Path(cad.kit_dir) / "sheets").glob("*.dxf"))
+    total = sum(per_stock.values())
+    groups = ", ".join(f"{n} × {names.get(slug, slug.replace('-', ' '))}" for slug, n in sorted(per_stock.items()))
+    mass = "" if cad.kit_mass_kg is None else f"{cad.kit_mass_kg:.2f} kg, "
+    return f"Laser kit: {mass}{total} sheet{'' if total == 1 else 's'}" + (f" ({groups})" if groups else "")
+
+
+def cad_rows(cad: CADArtifacts, settings: Optional[FabricationSettings] = None) -> list[tuple[str, str]]:
+    """Packing, mass and inertia results as (label, formatted value) pairs; the kit follows the as-built mass."""
+    kit = kit_summary(cad, settings)
     return [
         ("Static margin", f"{cad.static_margin:.1%}"),
         ("CG", f"{cad.x_cg_m:.3f} m aft of nose"),
         ("Interferences", str(cad.collision_count)),
         ("As-built mass", f"{cad.as_built_mass_kg:.2f} kg"),
+        *([("Laser kit", kit.removeprefix("Laser kit: "))] if kit else []),
         ("Ixx / Iyy / Izz", f"{cad.ixx_kgm2:.3g} / {cad.iyy_kgm2:.3g} / {cad.izz_kgm2:.3g} kg·m²"),
         ("Ixz", f"{cad.ixz_kgm2:.3g} kg·m²"),
     ]
@@ -234,12 +265,18 @@ def read_report(out_dir: Optional[Path], report_path: Optional[Path]) -> Optiona
         return None
 
 
+def _is_plain_file_in(path: Path, folder: Path) -> bool:
+    return path.is_file() and not path.is_symlink() and path.resolve().parent == folder
+
+
 def downloadable_files(out_dir: Path) -> list[Path]:
-    """Regular artifact files directly inside the run folder (no symlinks, no sub-folders)."""
+    """Regular artifact files directly inside the run folder (no symlinks, no sub-folders), then the kit's build
+    sheet and parts list from its `kit` folder."""
     root: Path = out_dir.resolve()
     if not root.is_dir():  # run folder deleted while the result is still on screen
         return []
-    return sorted(
-        p for p in root.iterdir()
-        if p.is_file() and not p.is_symlink() and p.suffix in DOWNLOAD_SUFFIXES and p.resolve().parent == root
-    )
+    files = sorted(p for p in root.iterdir() if p.suffix in DOWNLOAD_SUFFIXES and _is_plain_file_in(p, root))
+    kit = root / KIT_SUBDIR
+    if kit.is_symlink() or not kit.is_dir():
+        return files
+    return [*files, *(p for p in (kit / name for name in KIT_DOWNLOADS) if _is_plain_file_in(p, kit.resolve()))]

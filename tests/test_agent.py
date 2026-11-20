@@ -680,6 +680,19 @@ def test_cli_rejects_a_bad_fabrication_file(tmp_path: Path, db: Path, content: O
     assert not (tmp_path / "o").exists()
 
 
+def test_cli_rejects_a_non_utf8_fabrication_file_naming_the_path(tmp_path: Path, db: Path,
+                                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(G1_ELECTRIC_FW.model_dump_json())
+    fab = tmp_path / "fab.json"
+    fab.write_bytes(b'{"bed_width_m": \xff\xfe}')
+    code = main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet",
+                 f"--fabrication={fab}"])
+    err = capsys.readouterr().err
+    assert code == EXIT_ERROR and "fabrication file" in err and str(fab) in err
+    assert not (tmp_path / "o").exists()
+
+
 def test_run_design_writes_and_threads_the_settings(tmp_path: Path, db: Path) -> None:
     run = pipeline.run_design(G1_ELECTRIC_FW, tmp_path / "o", db, with_aero_cad=False, with_sitl=False,
                               settings=CUSTOM_FABRICATION)

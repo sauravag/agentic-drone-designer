@@ -75,7 +75,9 @@ def _load_fabrication(path: Optional[Path]) -> Optional[FabricationSettings]:
     if path is None:
         return None
     try:
-        return FabricationSettings.model_validate_json(path.read_text())
+        return FabricationSettings.model_validate_json(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"cannot read the fabrication file {path}: not valid UTF-8 text ({exc.reason})") from exc
     except OSError as exc:
         raise ValueError(f"cannot read the fabrication file {path}: {exc.strerror or exc}") from exc
     except ValidationError as exc:
