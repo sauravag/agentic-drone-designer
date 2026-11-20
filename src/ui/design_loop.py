@@ -49,9 +49,13 @@ def record_run(view: AgentRunView) -> None:
     """Show `view` and add it to the history (views without a run folder are shown but not listed)."""
     st.session_state[LAST_RUN_KEY] = view
     st.session_state[PENDING_KEY] = None
-    fabrication_panel.restore(view.fabrication)  # a re-run keeps its parent's kit settings, so the panel follows
     if view.run_id is not None:
         st.session_state[RUNS_KEY] = [*st.session_state.get(RUNS_KEY, []), view]
+    # A re-run keeps its parent's kit settings, so the panel follows. Error and clarification views never ran with
+    # settings (they carry the default), so they must not overwrite the designer's. Rerun now: the queued settings
+    # are applied before the designer can edit (or reset) anything.
+    if view.has_design and fabrication_panel.restore(view.fabrication):
+        st.rerun()
 
 
 def _review_key(section: str, field: str) -> str:
@@ -82,7 +86,8 @@ def _cancel() -> None:
 
 def _open(view: AgentRunView) -> None:
     st.session_state[LAST_RUN_KEY] = view
-    fabrication_panel.restore(view.fabrication)
+    if view.has_design:
+        fabrication_panel.restore(view.fabrication)  # on_click: applied by the rerun that follows the callback
     st.session_state[PENDING_KEY] = None
 
 

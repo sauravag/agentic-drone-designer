@@ -285,7 +285,7 @@ def _headline(view: AgentRunView) -> None:
 
 
 def _table(rows: list[tuple[str, str]]) -> None:
-    st.dataframe([{"Quantity": k, "Value": v} for k, v in rows], hide_index=True, use_container_width=True)
+    st.dataframe([{"Quantity": k, "Value": v} for k, v in rows], hide_index=True, width="stretch")
 
 
 def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: Any, viewer_tab: Any,
@@ -293,18 +293,18 @@ def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: 
     with sizing_tab:
         _table(presenters.sizing_summary(view.sizing))
         st.subheader("Mission phases")
-        st.dataframe(presenters.phase_rows(view.sizing), hide_index=True, use_container_width=True)
+        st.dataframe(presenters.phase_rows(view.sizing), hide_index=True, width="stretch")
     with parts_tab:
         if view.bom is None:
             st.info("No parts list: the catalog step did not complete for the final iteration.")
         else:
-            st.dataframe(presenters.bom_rows(view.bom), hide_index=True, use_container_width=True)
+            st.dataframe(presenters.bom_rows(view.bom), hide_index=True, width="stretch")
             st.caption("Catalog parts are representative; verify against manufacturer datasheets.")
     with aero_tab:
         if view.aero is None or view.cad is None:
             st.info("OpenVSP aerodynamics and CAD were not run for this design.")
         else:
-            st.dataframe(presenters.aero_rows(view.aero), hide_index=True, use_container_width=True)
+            st.dataframe(presenters.aero_rows(view.aero), hide_index=True, width="stretch")
             _table(presenters.cad_rows(view.cad, view.fabrication))
     with viewer_tab:
         viewer_panel.render_viewer(view)
@@ -312,7 +312,7 @@ def _design_tabs(view: AgentRunView, sizing_tab: Any, parts_tab: Any, aero_tab: 
         if view.fcs is None:
             st.info("The ArduPilot SITL flight test was not run for this design.")
         else:
-            st.dataframe(presenters.fcs_rows(view.fcs), hide_index=True, use_container_width=True)
+            st.dataframe(presenters.fcs_rows(view.fcs), hide_index=True, width="stretch")
             st.caption("ardupilot.param was flown in arduplane + JSBSim: take-off (VTOL climb and transition for a "
                        "quadplane), then +15° roll and +10° pitch steps in FBWA. Details in sitl_report.json.")
 
@@ -338,11 +338,11 @@ def _zip_download(view: AgentRunView) -> None:
 def _agent_tabs(view: AgentRunView, critic_tab: Any, report_tab: Any, files_tab: Any) -> None:
     with critic_tab:
         st.subheader("Final critic gates")
-        st.dataframe(list(view.gates), hide_index=True, use_container_width=True)
+        st.dataframe(list(view.gates), hide_index=True, width="stretch")
         st.subheader("Critic iterations")
         st.dataframe([{"Iteration": c.get("iteration"), "Failed gates": ", ".join(c.get("failed", [])) or "-",
                        "Changes": "; ".join(c.get("changes", [])) or "-", "Summary": c.get("summary", "")}
-                      for c in view.critic_log], hide_index=True, use_container_width=True)
+                      for c in view.critic_log], hide_index=True, width="stretch")
         st.caption("Critic: " + ("the LLM proposes knob changes; " if view.used_llm else "")
                    + "bounded rule-table steps are applied and always win on failed gates.")
     with report_tab:

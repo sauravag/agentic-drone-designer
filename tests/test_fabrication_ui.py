@@ -148,7 +148,6 @@ def test_an_opened_design_shows_its_own_settings_in_the_panel(tmp_path: Path, mo
     for _ in range(2):
         at.button(key="submit_prompt").click()
         at.run()
-    at.run()  # applies the settings queued by the last run
     assert at.number_input(key="fab_bed_width_m").value == pytest.approx(600.0)
     at.button(key="open_run_first").click()
     at.run()
@@ -177,6 +176,42 @@ def test_a_design_with_other_sheets_fills_the_tables(tmp_path: Path, monkeypatch
     at.run()
     at.run()
     assert at.session_state[fabrication_panel.SHEETS_KEY][0]["Thickness (mm)"] == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("view", [agent_service.AgentRunView("error", message="stop"),
+                                  agent_service.AgentRunView("clarification", message="which payload?")],
+                         ids=["error", "clarification"])
+def test_a_result_without_a_design_keeps_the_designers_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                view: Any) -> None:
+    at = _app(tmp_path, monkeypatch)
+    _record_runs(monkeypatch, [view])
+    at.number_input(key="fab_bed_width_m").set_value(CUSTOM_BED_MM)
+    at.button(key="submit_prompt").click()
+    at.run()
+    at.run()
+    assert not at.exception
+    assert at.number_input(key="fab_bed_width_m").value == pytest.approx(CUSTOM_BED_MM)
+
+
+def test_an_edit_after_a_restore_survives_the_next_interaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    custom = DEFAULT_FABRICATION.model_copy(update={"kerf_m": 0.0003})
+    at = _app(tmp_path, monkeypatch)
+    _record_runs(monkeypatch, [_converged("rerun", custom)])
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert at.number_input(key="fab_kerf_m").value == pytest.approx(0.3)  # applied at once, not at the next click
+    at.number_input(key="fab_bed_width_m").set_value(700.0)
+    at.run()
+    assert at.number_input(key="fab_bed_width_m").value == pytest.approx(700.0)
+    assert at.number_input(key="fab_kerf_m").value == pytest.approx(0.3)
+
+
+def test_reset_wins_over_a_queued_design(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _app(tmp_path, monkeypatch)
+    at.session_state[fabrication_panel.PENDING_KEY] = DEFAULT_FABRICATION.model_copy(update={"kerf_m": 0.0003})
+    at.button(key="reset_fabrication").click()
+    at.run()
+    assert at.number_input(key="fab_kerf_m").value == pytest.approx(0.15)
 
 
 # ------------------------------------------------- pure conversions ---
@@ -316,9 +351,27 @@ def test_build_sheet_and_parts_list_are_offered_for_download(tmp_path: Path, mon
 
 
 def test_presenter_constants_match_the_kit_exporter() -> None:
+    pytest.importorskip("build123d")
     from src.tools.fabrication import kit_export
 
     assert presenters.KIT_SUBDIR == kit_export.KIT_SUBDIR
     assert presenters.KIT_DOWNLOADS == (kit_export.BUILD_SHEET_FILE, kit_export.PARTS_CSV_FILE)
     for sheet in DEFAULT_FABRICATION.sheets:
         assert presenters.stock_slug(sheet.name) == kit_export._slug(sheet.name)
+
+
+def test_empty_tube_and_rod_lists_are_reported_in_user_terms() -> None:
+    _, tube_errors = _rebuild(tubes=[])
+    _, rod_errors = _rebuild(rods="")
+    assert tube_errors == ["Laser kit: Tube stock needs at least one entry"]
+    assert rod_errors == ["Laser kit: Rod stock needs at least one entry"]
+
+
+def test_a_cleared_number_input_is_a_field_error_not_a_crash() -> None:
+    settings, errors = _rebuild(values={"bed_width_m": None})
+    assert settings is None
+    assert errors == ["Laser kit: Bed width (mm): enter a number"]
+
+
+def test_default_tubes_carry_no_float_dust() -> None:
+    assert all(round(t.od_m, 9) == t.od_m and round(t.id_m, 9) == t.id_m for t in DEFAULT_FABRICATION.tubes)

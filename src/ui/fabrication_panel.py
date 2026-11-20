@@ -35,6 +35,7 @@ CORE_COLUMNS: Final[int] = 4
 
 TABLE_FIELDS: Final[tuple[str, ...]] = ("sheets", "tubes", "rods_m")
 SCALAR_FIELDS: Final[tuple[str, ...]] = tuple(n for n in FabricationSettings.model_fields if n not in TABLE_FIELDS)
+TABLE_NOUNS: Final[dict[str, str]] = {"sheets": "Sheet", "tubes": "Tube", "rods_m": "Rod"}
 CORE_LABELS: Final[dict[str, str]] = {
     "bed_width_m": "Bed width (mm)",
     "bed_height_m": "Bed height (mm)",
@@ -139,10 +140,7 @@ def _sheet(row: dict[str, Any], where: str) -> dict[str, Any]:
 
 
 def _tube(row: dict[str, Any], where: str) -> dict[str, float]:
-    od, inner = _cell(row, "OD (mm)", where), _cell(row, "ID (mm)", where)
-    if inner >= od:
-        raise _CellError(f"{where}: inner diameter must be below outer diameter")
-    return {"od_m": _round(od * MM), "id_m": _round(inner * MM)}
+    return {"od_m": _round(_cell(row, "OD (mm)", where) * MM), "id_m": _round(_cell(row, "ID (mm)", where) * MM)}
 
 
 def _rods(text: str) -> list[float]:
@@ -174,10 +172,14 @@ def _table_data(sheets: list[dict[str, Any]], tubes: list[dict[str, Any]],
 def _describe(error: Any) -> str:
     """One pydantic error in user terms: the field's label for field errors, raw field names replaced otherwise."""
     loc, msg = error["loc"], error["msg"].removeprefix("Value error, ")
+    if "id_m" in msg and "od_m" in msg:  # the tube rule, worded by the model in metres
+        msg = "inner diameter must be below outer diameter"
+    if error["type"] == "too_short" and len(loc) == 1 and loc[0] in TABLE_FIELDS:
+        return f"{ERROR_PREFIX}{TABLE_NOUNS[str(loc[0])]} stock needs at least one entry"
     if loc and loc[0] in SCALAR_FIELDS:
         return f"{ERROR_PREFIX}{_label(str(loc[0]))}: {msg}"
     if loc and loc[0] in TABLE_FIELDS:
-        where = {"sheets": "Sheet", "tubes": "Tube", "rods_m": "Rod"}[str(loc[0])]
+        where = TABLE_NOUNS[str(loc[0])]
         row = f" row {int(loc[1]) + 1}" if len(loc) > 1 and isinstance(loc[1], int) else ""
         return f"{ERROR_PREFIX}{where}{row}: {msg}"
     for name in SCALAR_FIELDS:
@@ -194,15 +196,15 @@ def build_settings(values: dict[str, float], sheets: list[dict[str, Any]], tubes
                    rods: str) -> tuple[Optional[FabricationSettings], list[str]]:
     """Validated settings from display-unit panel values, or (None, messages in user terms)."""
     tables, errors = _table_data(sheets, tubes, rods)
+    errors = [*(f"{ERROR_PREFIX}{_label(n)}: enter a number" for n in SCALAR_FIELDS if values.get(n) is None),
+              *errors]
     if errors:
         return None, errors
     data = {name: _to_model(name, values[name]) for name in SCALAR_FIELDS} | tables
     try:
-        settings = FabricationSettings.model_validate(data)
+        return FabricationSettings.model_validate(data), []
     except ValidationError as exc:
         return None, [_describe(e) for e in exc.errors()]
-    # mm <-> m conversion leaves float dust (0.018 vs 0.018000000000000002): untouched defaults stay the defaults
-    return (DEFAULT_FABRICATION if _as_shown(settings) == _as_shown(DEFAULT_FABRICATION) else settings), []
 
 
 # ------------------------------------------------------------------ state ---
@@ -227,6 +229,7 @@ def _init_state() -> None:
 
 def _reset() -> None:
     """on_click callback: runs before widgets are instantiated, so the keys may be reassigned."""
+    st.session_state.pop(PENDING_KEY, None)  # a queued design must not win over an explicit reset
     _load(DEFAULT_FABRICATION)
 
 
@@ -238,11 +241,15 @@ def current_fabrication() -> tuple[Optional[FabricationSettings], list[str]]:
                           st.session_state[RODS_KEY])
 
 
-def restore(settings: FabricationSettings) -> None:
-    """Show a loaded or re-run design's own settings in the panel (applied at the next render)."""
+def restore(settings: FabricationSettings) -> bool:
+    """Show a loaded or re-run design's own settings in the panel (applied at the next render).
+
+    True when they were queued, i.e. the panel holds something else; the caller reruns when it can."""
     current = current_fabrication()[0]
-    if current is None or _as_shown(current) != _as_shown(settings):
-        st.session_state[PENDING_KEY] = settings
+    if current is not None and _as_shown(current) == _as_shown(settings):
+        return False
+    st.session_state[PENDING_KEY] = settings
+    return True
 
 
 def _apply_pending() -> None:

@@ -56,8 +56,12 @@ class TubeStock(BaseModel):
         return math.pi / 32.0 * (self.od_m**4 - self.id_m**4)
 
 
+STOCK_DECIMALS: Final[int] = 9  # catalogue sizes are whole mm: round away the float dust of mm * 1e-3 (1e-9 m)
+
+
 def _tubes_from_mm(pairs: tuple[tuple[float, float], ...]) -> tuple[TubeStock, ...]:
-    return tuple(TubeStock(od_m=od * MM, id_m=idm * MM) for od, idm in pairs)
+    return tuple(TubeStock(od_m=round(od * MM, STOCK_DECIMALS), id_m=round(idm * MM, STOCK_DECIMALS))
+                 for od, idm in pairs)
 
 
 _THIN_WALL_MM: Final[tuple[tuple[float, float], ...]] = (
@@ -92,10 +96,10 @@ class FabricationSettings(BaseModel):
     kerf_m: float = Field(0.00015, ge=0.0, description="Laser kerf width (m).")
     sheets: tuple[SheetStock, ...] = Field(_DEFAULT_SHEETS, description="Sheet stock; each part family on exactly one sheet.")
     tubes: tuple[TubeStock, ...] = Field(
-        _tubes_from_mm(tuple(sorted(_THIN_WALL_MM + _THICK_WALL_MM))),
+        _tubes_from_mm(tuple(sorted(_THIN_WALL_MM + _THICK_WALL_MM))), min_length=1,
         description="Available carbon tube stock (sorted by OD)."
     )
-    rods_m: tuple[float, ...] = Field((0.003, 0.004, 0.005), description="Available solid carbon rod diameters (m).")
+    rods_m: tuple[float, ...] = Field((0.003, 0.004, 0.005), min_length=1, description="Available solid carbon rod diameters (m).")
     stringer_side_m: float = Field(0.003, gt=0.0, description="Square balsa stringer side (m).")
     stringer_density_kg_m3: float = Field(160.0, gt=0.0, description="Stringer wood density (kg/m^3).")
     le_side_m: float = Field(0.006, gt=0.0, description="Leading-edge square stock side (m).")
