@@ -243,7 +243,7 @@ New settings (defaults, all adjustable):
 - `overwrap_layer_thickness_m` = 0.25 mm (200 g/m² cloth, wet lay-up)
 - `overwrap_allow_pa` = 250 MPa (hand-laid 0/90 cloth, conservative)
 - `overwrap_density_kg_m3` = 1500
-- `overwrap_max_layers` = 8
+- `overwrap_max_layers` = 12 (R29: raised from 8, which g2 needed 9 of)
 - `epoxy_lap_shear_pa` = 15 MPa
 - `crutch_rail_min_m` = 8 mm
 
