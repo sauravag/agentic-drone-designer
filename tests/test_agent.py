@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 import pytest
 
+from src import pipeline
 from src.agent import critic, nodes, report
 from src.agent.agent_schemas import (Adjustment, CriticDecision, Distance, Duration, Mass, Power, ReportNarrative,
                                      OptionsExplanation, RequirementsDraft, Speed)
@@ -17,7 +18,6 @@ from src.agent.graph import run_agent
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
-from src import pipeline
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import CADArtifacts
@@ -643,3 +643,45 @@ def test_a_kit_warning_is_a_design_warning_exactly_once(tmp_path: Path, db: Path
     hits = [w for w in nodes.run_warnings(with_kit_warning) if "no kit: shell model used" in w]
     assert len(hits) == 1
     assert not any("kit" in w.lower() for w in nodes.run_warnings({**state, "cad_artifacts": _kit_cad(None)}))
+
+
+def test_run_aero_cad_hands_the_settings_to_build_aero_cad(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    monkeypatch.setitem(__import__("sys").modules, "src.tools.aero_cad.build", SimpleNamespace(
+        build_aero_cad=lambda *args: seen.append(args[-1]) or ("aero", "cad")))
+    out = pipeline.run_aero_cad("sizing", "bom", SimpleNamespace(service_ceiling_m=1.0), Path("."), lambda _: None,
+                                CUSTOM_FABRICATION)
+    assert out == ("aero", "cad") and seen == [CUSTOM_FABRICATION]
+
+
+def test_cli_fabrication_file_reaches_the_run(tmp_path: Path, db: Path) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(G1_ELECTRIC_FW.model_dump_json())
+    fab = tmp_path / "fab.json"
+    fab.write_text(CUSTOM_FABRICATION.model_dump_json())
+    args = [f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet"]
+    assert main([*args, f"--fabrication={fab}"]) in (EXIT_CONVERGED, EXIT_NOT_CONVERGED)
+    (written,) = (tmp_path / "o").glob("*/fabrication.json")
+    assert FabricationSettings.model_validate_json(written.read_text()) == CUSTOM_FABRICATION
+
+
+@pytest.mark.parametrize("content", [None, "not json", '{"bed_width_m": -1}', '{"bogus": 1}'],
+                         ids=["missing", "not_json", "out_of_bounds", "unknown_field"])
+def test_cli_rejects_a_bad_fabrication_file(tmp_path: Path, db: Path, content: Optional[str],
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    spec = tmp_path / "spec.json"
+    spec.write_text(G1_ELECTRIC_FW.model_dump_json())
+    fab = tmp_path / "fab.json"
+    if content is not None:
+        fab.write_text(content)
+    code = main([f"--spec={spec}", f"--outputs={tmp_path / 'o'}", f"--db={db}", "--no-aero", "--quiet",
+                 f"--fabrication={fab}"])
+    assert code == EXIT_ERROR and "fabrication file" in capsys.readouterr().err
+    assert not (tmp_path / "o").exists()
+
+
+def test_run_design_writes_and_threads_the_settings(tmp_path: Path, db: Path) -> None:
+    run = pipeline.run_design(G1_ELECTRIC_FW, tmp_path / "o", db, with_aero_cad=False, with_sitl=False,
+                              settings=CUSTOM_FABRICATION)
+    written = (run.out_dir / "fabrication.json").read_text()
+    assert FabricationSettings.model_validate_json(written) == CUSTOM_FABRICATION

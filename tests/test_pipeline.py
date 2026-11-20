@@ -168,7 +168,7 @@ _CAD_WITH_MODEL = CADArtifacts(oml_vsp3_path="a", oml_step_path="b", assembly_st
 @pytest.fixture
 def fake_aero_cad(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend OpenVSP is installed; the stage drops a viewer model like the real CAD export would."""
-    def fake(sizing, bom, req, out_dir, progress):  # type: ignore[no-untyped-def]
+    def fake(sizing, bom, req, out_dir, progress, settings):  # type: ignore[no-untyped-def]
         (out_dir / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
         return None, _CAD_WITH_MODEL
 
@@ -204,7 +204,7 @@ def test_a_run_without_a_model_has_no_viewer_and_no_warning(sizing_only_run: pip
 
 
 def test_a_stale_model_without_cad_artifacts_is_not_built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def stale(sizing, bom, req, out_dir, progress):  # type: ignore[no-untyped-def]
+    def stale(sizing, bom, req, out_dir, progress, settings):  # type: ignore[no-untyped-def]
         (out_dir / "viewer_model.json").write_text(json.dumps(VIEWER_MODEL))
         return None, None  # the stage failed after an earlier pass left a mesh behind
 

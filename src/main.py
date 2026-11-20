@@ -27,6 +27,7 @@ from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status
 from src.agent.providers import LLMConfigError, make_llm
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.changes import ChangeSet
+from src.schemas.fabrication import FabricationSettings
 from src.schemas.state import DesignState
 from src.schemas.requirements import OperationalRequirements
 from src.tools.database.seed_data import DEFAULT_DB_PATH
@@ -42,6 +43,7 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="isr-forge", description="Autonomous ISR UAV design agent")
     p.add_argument("prompt", nargs="?", default="", help="natural-language design request")
     p.add_argument("--spec", type=Path, help="OperationalRequirements JSON (skips the LLM parser)")
+    p.add_argument("--fabrication", type=Path, help="FabricationSettings JSON (laser-cut kit; defaults when omitted)")
     p.add_argument("--outputs", type=Path, default=pipeline.DEFAULT_OUTPUTS_ROOT, help="run folders root")
     p.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="COTS catalog path")
     p.add_argument("--no-aero", action="store_true", help="skip OpenVSP/CAD (and therefore SITL)")
@@ -66,6 +68,18 @@ def _load_spec(path: Path) -> tuple[OperationalRequirements, DesignAssumptions]:
         raise ValueError(f"{path}: the spec must be a JSON object")
     assumptions = DesignAssumptions.model_validate(data.pop("assumptions", {}))
     return OperationalRequirements.model_validate(data), assumptions
+
+
+def _load_fabrication(path: Optional[Path]) -> Optional[FabricationSettings]:
+    """Validated laser-cut settings from a JSON file (None = defaults); errors name the file."""
+    if path is None:
+        return None
+    try:
+        return FabricationSettings.model_validate_json(path.read_text())
+    except OSError as exc:
+        raise ValueError(f"cannot read the fabrication file {path}: {exc.strerror or exc}") from exc
+    except ValidationError as exc:
+        raise ValueError(f"invalid fabrication file {path}: {exc}") from exc
 
 
 def _context(args: argparse.Namespace) -> AgentContext:
@@ -97,7 +111,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_ERROR
     try:
         requirements, assumptions = _load_spec(args.spec) if args.spec else (None, None)
-        state = run_agent(_context(args), args.prompt, requirements, design_assumptions=assumptions)
+        fabrication = _load_fabrication(args.fabrication)
+        state = run_agent(_context(args), args.prompt, requirements, design_assumptions=assumptions,
+                          fabrication=fabrication)
     except (OSError, ValueError, ValidationError, LLMConfigError, pipeline.PipelineError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_ERROR

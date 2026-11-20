@@ -95,7 +95,8 @@ def run_agent(ctx: AgentContext, user_prompt: str = "", requirements: Optional[O
     """Run the full design loop from a natural-language prompt (or structured requirements)."""
     if not user_prompt and requirements is None:
         raise ValueError("give a natural-language prompt or structured requirements")
-    state: DesignState = initial_state(user_prompt, requirements, sizing_overrides, design_assumptions, lineage, fabrication)
+    state: DesignState = initial_state(user_prompt, requirements, sizing_overrides, design_assumptions, lineage,
+                                    fabrication)
     limit: int = NODES_PER_ITERATION * (ctx.max_iterations + 1) + FIXED_NODES
     try:
         for snapshot in build_graph(ctx).stream(state, {"recursion_limit": limit}, stream_mode="values"):

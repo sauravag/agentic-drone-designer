@@ -190,8 +190,9 @@ def _summary(run_id: str, stages: dict[str, bool], status: str, **extra: object)
 
 
 def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: Path, stages: dict[str, bool],
-             progress: Progress) -> DesignRun:
+             progress: Progress, settings: FabricationSettings = DEFAULT_FABRICATION) -> DesignRun:
     _write_json(out_dir / "requirements.json", req)
+    _write_json(out_dir / "fabrication.json", settings)
     progress("Sizing the aircraft (time-stepped mission simulation + MTOW convergence)")
     sizing: SizingOutput = size_aircraft(req)
     _write_json(out_dir / "sizing.json", sizing)
@@ -199,7 +200,7 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
     ensure_catalog(db_path)
     bom: SelectedBOM = select_bom(db_path, component_needs(sizing, req))
     _write_json(out_dir / "bom.json", bom)
-    aero, cad = run_aero_cad(sizing, bom, req, out_dir, progress) if stages["aero_cad"] else (None, None)
+    aero, cad = run_aero_cad(sizing, bom, req, out_dir, progress, settings) if stages["aero_cad"] else (None, None)
     fcs: Optional[FCSArtifacts] = None
     if aero is not None and cad is not None:
         _write_json(out_dir / "aero.json", aero)
@@ -234,7 +235,8 @@ def resolve_stages(with_aero_cad: Optional[bool], with_sitl: Optional[bool]) -> 
 
 def run_design(req: OperationalRequirements, outputs_root: Path = DEFAULT_OUTPUTS_ROOT,
                db_path: Path = DEFAULT_DB_PATH, with_aero_cad: Optional[bool] = None,
-               progress: Progress = _noop, with_sitl: Optional[bool] = None) -> DesignRun:
+               progress: Progress = _noop, with_sitl: Optional[bool] = None,
+               settings: FabricationSettings = DEFAULT_FABRICATION) -> DesignRun:
     """Run the design pipeline for `req`. `with_aero_cad` / `with_sitl` = None run OpenVSP/CAD and the
     ArduPilot SITL flight test when installed. Raises one of DESIGN_ERRORS when the mission cannot be
     designed; a failed run's folder keeps a `run_summary.json` with status "failed"."""
@@ -242,7 +244,7 @@ def run_design(req: OperationalRequirements, outputs_root: Path = DEFAULT_OUTPUT
     run_id, out_dir = create_run_dir(outputs_root, new_run_id(req.mission_name))
     logger.info("[Tool] run_design %s -> %s (%s)", run_id, out_dir, stages)
     try:
-        return _execute(req, run_id, out_dir, db_path, stages, progress)
+        return _execute(req, run_id, out_dir, db_path, stages, progress, settings)
     except Exception as exc:
         _write_json(out_dir / "run_summary.json",
                     _summary(run_id, stages, "failed", error=f"{type(exc).__name__}: {exc}"))
