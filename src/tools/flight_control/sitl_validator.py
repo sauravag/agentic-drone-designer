@@ -1,8 +1,10 @@
 """Headless ArduPilot SITL + JSBSim acceptance test (SRS 4.4 Module D.2) and the damping retry loop.
 
-One attempt: write ardupilot.param (+ simulation-only overrides), export the JSBSim aircraft, start the
-JSON physics bridge and `arduplane --model JSON`, fly the doublet sequence over MAVLink
-(udpin:127.0.0.1:14550), then score the roll/pitch step responses and the transition altitude loss.
+One attempt: write ardupilot.param (+ simulation-only overrides), then fly it three times: against the
+nominal JSBSim plant and against the "hot" and "sluggish" perturbed plants (perturbation.py). Each flight
+exports the aircraft, starts the JSON physics bridge and `arduplane --model JSON`, and flies the doublet
+sequence over MAVLink (udpin:127.0.0.1:14550). The attempt gates roll/pitch overshoot and settling on the
+worst of the three, and the transition altitude loss on the nominal flight.
 `generate_and_verify_fcs` retries with the rate gains scaled by 0.75 per attempt (SRS 5.6).
 """
 
@@ -14,13 +16,14 @@ import threading
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Final, Optional
+from typing import Any, Callable, Final, Optional, Sequence
 
 from pymavlink import mavutil
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
+from src.schemas.state import (AeroStabilityOutput, CADArtifacts, FCSArtifacts, PlantCaseResult,
+                               SizingOutput)
 from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import FlightModel, build_flight_model
 from src.tools.flight_control.flight_test import (PITCH_STEP_DEG, STEP_HOLD_S, FlightLog, SitlPilot,
@@ -29,6 +32,7 @@ from src.tools.flight_control.jsbsim_exporter import export_jsbsim
 from src.tools.flight_control.runtime import (ARDUPLANE_BINARY, MAX_OVERSHOOT, MAX_SETTLING_S,
                                               MAX_TRANSITION_ALT_LOSS_M, SitlUnavailableError,
                                               SitlValidationError, sitl_available)
+from src.tools.flight_control.perturbation import NOMINAL_CASE, PERTURBED_CASES, perturbed_model
 from src.tools.flight_control.sitl_bridge import Home, JsonPhysicsBridge
 from src.tools.flight_control.step_metrics import StepAnalysisError, StepResponse, altitude_loss_m, analyse_step
 
@@ -66,6 +70,14 @@ class AttemptResult:
     transition_alt_loss_m: float = 0.0
     trim_throttle_pct: Optional[float] = None
     error: Optional[str] = None
+    cases: tuple["CaseScore", ...] = ()  # per-plant scores behind a combined attempt
+    governing_case: str = NOMINAL_CASE
+
+
+@dataclass(frozen=True)
+class CaseScore:
+    case: str
+    result: AttemptResult
 
 
 def _launch(config: SitlConfig, work_dir: Path) -> "subprocess.Popen[bytes]":
@@ -159,6 +171,44 @@ def score(log: FlightLog, gain_scale: float) -> AttemptResult:
                          trim_throttle_pct=log.trim_throttle_pct)
 
 
+def _ratio(step: StepResponse) -> float:
+    return max(step.overshoot / MAX_OVERSHOOT, step.settling_s / MAX_SETTLING_S)
+
+
+def _case_severity(result: AttemptResult) -> float:
+    if result.roll is None or result.pitch is None:
+        return math.inf  # a crashed flight is the worst case
+    return max(_ratio(result.roll), _ratio(result.pitch))
+
+
+def _worst_step(results: Sequence[AttemptResult], attr: str, governing: AttemptResult) -> Optional[StepResponse]:
+    """Max overshoot and max settling over the completed cases; step geometry from the governing case."""
+    steps: list[StepResponse] = [s for s in (getattr(r, attr) for r in results) if s is not None]
+    if not steps:
+        return None
+    base: StepResponse = getattr(governing, attr) or steps[0]
+    return StepResponse(step_deg=base.step_deg, target_deg=base.target_deg, peak_deg=base.peak_deg,
+                        overshoot=max(s.overshoot for s in steps), settling_s=max(s.settling_s for s in steps))
+
+
+def combine(gain_scale: float, scores: Sequence[CaseScore]) -> AttemptResult:
+    """Worst-case roll/pitch over all plants; transition loss from the nominal flight only."""
+    results: list[AttemptResult] = [c.result for c in scores]
+    governing: CaseScore = max(scores, key=lambda c: _case_severity(c.result))
+    roll = _worst_step(results, "roll", governing.result)
+    pitch = _worst_step(results, "pitch", governing.result)
+    nominal: Optional[AttemptResult] = next((c.result for c in scores if c.case == NOMINAL_CASE), None)
+    loss: float = nominal.transition_alt_loss_m if nominal is not None else 0.0
+    errors: list[str] = [f"{c.case}: {c.result.error}" for c in scores if c.result.error]
+    all_done: bool = all(c.result.roll is not None and c.result.pitch is not None for c in scores)
+    passed: bool = (all_done and roll is not None and pitch is not None
+                    and roll.passes(MAX_OVERSHOOT, MAX_SETTLING_S) and pitch.passes(MAX_OVERSHOOT, MAX_SETTLING_S)
+                    and loss < MAX_TRANSITION_ALT_LOSS_M)
+    return AttemptResult(gain_scale=gain_scale, passed=passed, roll=roll, pitch=pitch, transition_alt_loss_m=loss,
+                         trim_throttle_pct=nominal.trim_throttle_pct if nominal else None,
+                         error="; ".join(errors) or None, cases=tuple(scores), governing_case=governing.case)
+
+
 def _report(attempts: list[AttemptResult], final_log: Optional[FlightLog], params: pg.ParamSet,
             replay_attempt: Optional[int]) -> dict[str, Any]:
     return {
@@ -186,10 +236,33 @@ def _attempt(model: FlightModel, params: pg.ParamSet, work: Path, scale: float,
         return AttemptResult(gain_scale=scale, passed=False, error=f"{type(exc).__name__}: {exc}"), None
 
 
+def _fly_cases(model: FlightModel, params: pg.ParamSet, work: Path, scale: float,
+               config: SitlConfig) -> tuple[AttemptResult, Optional[FlightLog]]:
+    """Fly one parameter set against the nominal plant (in `work`) and each perturbed plant (`work/<case>`).
+    Returns the combined attempt and the nominal log, which is the one replayed in the viewer."""
+    nominal, nominal_log = _attempt(model, params, work, scale, config)
+    scores: list[CaseScore] = [CaseScore(NOMINAL_CASE, nominal)]
+    for case in PERTURBED_CASES:
+        result, _ = _attempt(perturbed_model(model, case), params, work / case.name, scale, config)
+        scores.append(CaseScore(case.name, result))
+    return combine(scale, scores), nominal_log
+
+
+def _case_results(result: AttemptResult) -> tuple[PlantCaseResult, ...]:
+    """Per-plant metrics for the saved design; a crashed flight records zeros plus its error."""
+    def metrics(score_: AttemptResult) -> dict[str, float]:
+        roll, pitch = score_.roll, score_.pitch
+        return {"roll_overshoot": roll.overshoot if roll else 0.0, "roll_settling_s": roll.settling_s if roll else 0.0,
+                "pitch_overshoot": pitch.overshoot if pitch else 0.0,
+                "pitch_settling_s": pitch.settling_s if pitch else 0.0}
+    return tuple(PlantCaseResult(case=c.case, error=c.result.error, **metrics(c.result)) for c in result.cases)
+
+
 def _param_header(req: OperationalRequirements, result: AttemptResult) -> str:
     status: str = "PASSED" if result.passed else "FAILED (unverified)" if result.error else "FAILED"
     return (f"ISR-Forge ArduPilot Plane 4.7 parameters for '{req.mission_name}'\n"
-            f"SITL doublet test {status} at rate-gain scale {result.gain_scale:.3f}")
+            f"SITL doublet test {status} at rate-gain scale {result.gain_scale:.3f}, "
+            f"worst case: {result.governing_case}")
 
 
 def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
@@ -206,7 +279,7 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
     for index in range(max_attempts):
         scale: float = DAMPING_FACTOR**index
         params = pg.generate_params(model, sizing, bom, gain_scale=scale)
-        result, log = _attempt(model, params, out_dir / "sitl" / f"attempt_{index + 1}", scale, config)
+        result, log = _fly_cases(model, params, out_dir / "sitl" / f"attempt_{index + 1}", scale, config)
         attempts.append(result)
         if log is not None:
             flown.append((result, log, params, index + 1))
@@ -226,4 +299,5 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
                         roll_overshoot=best.roll.overshoot, pitch_overshoot=best.pitch.overshoot,
                         roll_settling_s=best.roll.settling_s, pitch_settling_s=best.pitch.settling_s,
                         max_transition_altitude_loss_m=best.transition_alt_loss_m, gain_scale=best.gain_scale,
-                        attempts=len(attempts))
+                        attempts=len(attempts), governing_case=best.governing_case,
+                        perturbation_cases=_case_results(best))

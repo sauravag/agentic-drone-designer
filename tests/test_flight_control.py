@@ -16,7 +16,7 @@ import pytest
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
@@ -349,13 +349,13 @@ def test_retry_loop_scales_gains_by_0_75_until_it_passes(monkeypatch: pytest.Mon
 
     def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
         scales.append(scale)
-        log = _synthetic_log(ft, 2.0 if len(scales) < 3 else 0.4)
+        log = _synthetic_log(ft, 2.0 if len(scales) <= 6 else 0.4)  # three flights per attempt
         return sv.score(log, scale), log
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
     fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
-    assert scales == pytest.approx([1.0, 0.75, 0.5625])
+    assert scales == pytest.approx([1.0] * 3 + [0.75] * 3 + [0.5625] * 3)
     assert fcs.passed and fcs.attempts == 3 and fcs.gain_scale == pytest.approx(0.5625)
     report = json.loads((tmp_path / "sitl_report.json").read_text())
     assert report["passed"] and len(report["attempts"]) == 3
@@ -375,6 +375,76 @@ def test_validator_raises_when_no_flight_completes(monkeypatch: pytest.MonkeyPat
         sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
     report = json.loads((tmp_path / "sitl_report.json").read_text())
     assert report["passed"] is False and report["replay_attempt"] is None
+
+
+def test_worst_case_takes_each_metric_from_its_worst_case() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    nominal = sv.score(_synthetic_log(ft, 0.4, transition_dip_m=2.0), 1.0)
+    slow = sv.score(_synthetic_log(ft, 0.9), 1.0)  # slower roll: longer settling, still < 3 s
+    combined = sv.combine(1.0, [sv.CaseScore("nominal", nominal), sv.CaseScore("hot", nominal),
+                                sv.CaseScore("sluggish", slow)])
+    assert combined.roll.settling_s == pytest.approx(slow.roll.settling_s)
+    assert combined.transition_alt_loss_m == pytest.approx(2.0) and combined.governing_case == "sluggish"
+    assert combined.passed
+
+
+def test_a_crashed_perturbed_flight_fails_the_attempt() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    good = sv.score(_synthetic_log(ft, 0.4), 1.0)
+    crash = sv.AttemptResult(gain_scale=1.0, passed=False, error="SitlFlightError: stall")
+    combined = sv.combine(1.0, [sv.CaseScore("nominal", good), sv.CaseScore("hot", crash),
+                                sv.CaseScore("sluggish", good)])
+    assert not combined.passed and combined.governing_case == "hot" and "hot: SitlFlightError" in combined.error
+
+
+def test_a_crashed_nominal_flight_fails_with_no_transition_loss() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    good = sv.score(_synthetic_log(ft, 0.4, transition_dip_m=2.0), 1.0)
+    crash = sv.AttemptResult(gain_scale=1.0, passed=False, error="SitlFlightError: stall")
+    combined = sv.combine(1.0, [sv.CaseScore("nominal", crash), sv.CaseScore("hot", good)])
+    assert not combined.passed and combined.transition_alt_loss_m == 0.0
+    assert combined.governing_case == "nominal" and "nominal: SitlFlightError" in combined.error
+
+
+def test_every_attempt_flies_nominal_and_both_perturbed_plants(monkeypatch: pytest.MonkeyPatch,
+                                                              tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    flights: list[tuple[str, float, int, float]] = []
+    params_seen: list[Any] = []
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        flights.append((work.name, model.static_margin, id(params), scale))
+        params_seen.append(params)
+        slow_first = scale == 1.0 and work.name == "sluggish"
+        log = _synthetic_log(ft, 2.0 if slow_first else 0.4)
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    assert len(flights) == 6
+    assert [f[0] for f in flights] == ["attempt_1", "hot", "sluggish", "attempt_2", "hot", "sluggish"]
+    assert len({f[2] for f in flights[:3]}) == 1 and len({f[2] for f in flights[3:]}) == 1
+    assert [f[3] for f in flights] == pytest.approx([1.0] * 3 + [0.75] * 3)
+    assert flights[1][1] == pytest.approx(0.08) and flights[2][1] == pytest.approx(0.14)
+    assert fcs.attempts == 2 and fcs.governing_case in {"nominal", "hot", "sluggish"}
+    assert len(fcs.perturbation_cases) == 3
+    report = json.loads((tmp_path / "sitl_report.json").read_text())
+    assert len(report["attempts"][0]["cases"]) == 3 and report["replay_attempt"] == 2
+    header = (tmp_path / "ardupilot.param").read_text().splitlines()[:3]
+    assert any(f"worst case: {fcs.governing_case}" in line for line in header)
+
+
+def test_old_fcs_records_validate_with_nominal_governing() -> None:
+    payload = {"param_path": "p", "sitl_report_path": "r", "passed": True, "roll_overshoot": 0.1,
+               "pitch_overshoot": 0.1, "roll_settling_s": 1.0, "pitch_settling_s": 1.0,
+               "max_transition_altitude_loss_m": 0.0}
+    fcs = FCSArtifacts.model_validate(payload)
+    assert fcs.governing_case == "nominal" and fcs.perturbation_cases == ()
 
 
 def test_validator_requires_arduplane(tmp_path: Path) -> None:
@@ -497,6 +567,7 @@ def test_aft_cg_is_less_stable_and_forward_cg_more_stable(design: Any) -> None:
 @pytest.mark.parametrize("kwargs", [
     {"control_power": 0.0}, {"damping": -1.0}, {"inertia": float("nan")},
     {"static_margin": float("inf")}, {"static_margin": float("nan")},
+    {"control_power": float("inf")}, {"damping": float("inf")}, {"inertia": float("inf")},
 ])
 def test_plant_case_rejects_invalid_values(kwargs: dict[str, float]) -> None:
     valid = {"control_power": 1.0, "damping": 1.0, "inertia": 1.0, "static_margin": 0.1}

@@ -113,6 +113,17 @@ class CADArtifacts(_Frozen):
     kit_warning: Optional[str] = None  # why there is no kit, or why its files or solids could not be written
 
 
+class PlantCaseResult(_Frozen):
+    """Roll/pitch step response of one SITL plant (nominal, hot or sluggish)."""
+
+    case: str
+    roll_overshoot: NonNegative
+    roll_settling_s: NonNegative
+    pitch_overshoot: NonNegative
+    pitch_settling_s: NonNegative
+    error: Optional[str] = None  # set when the flight crashed; the metrics are then 0
+
+
 class FCSArtifacts(_Frozen):
     param_path: str
     sitl_report_path: str
@@ -124,6 +135,8 @@ class FCSArtifacts(_Frozen):
     max_transition_altitude_loss_m: NonNegative
     gain_scale: Positive = 1.0
     attempts: int = Field(default=1, ge=1)
+    governing_case: str = "nominal"  # plant whose response sets the overshoot/settling fields above
+    perturbation_cases: tuple[PlantCaseResult, ...] = ()
 
 
 class RunLineage(_Frozen):

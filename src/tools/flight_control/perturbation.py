@@ -29,8 +29,8 @@ class PlantCase:
 
     def __post_init__(self) -> None:
         for field in ("control_power", "damping", "inertia"):
-            if not getattr(self, field) > 0:
-                raise ValueError(f"PlantCase {self.name!r}: {field} must be > 0, got {getattr(self, field)}")
+            if not (math.isfinite(getattr(self, field)) and getattr(self, field) > 0):
+                raise ValueError(f"PlantCase {self.name!r}: {field} must be finite and > 0, got {getattr(self, field)}")
         if not math.isfinite(self.static_margin):
             raise ValueError(f"PlantCase {self.name!r}: static_margin must be finite, got {self.static_margin}")
 
