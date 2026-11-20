@@ -3,6 +3,7 @@
 All run on the host with a scripted LLM and aero/CAD off; tests/test_agent_e2e.py runs the full stack."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -16,7 +17,9 @@ from src.agent.graph import run_agent
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
+from src import pipeline
 from src.schemas.assumptions import DesignAssumptions
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import CADArtifacts
 from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
@@ -595,3 +598,48 @@ def test_parser_prompt_lists_gimbals() -> None:
     from src.schemas.payload_catalog import PAYLOADS
 
     assert all(p.name in PARSER_SYSTEM for p in PAYLOADS if p.vendor is not None)
+
+
+# ------------------------------------------------------------ fabrication ---
+CUSTOM_FABRICATION = FabricationSettings(bed_width_m=0.5, bed_height_m=0.3)
+
+
+def test_fabrication_settings_are_written_to_the_run_folder(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW, fabrication=CUSTOM_FABRICATION)
+    written = json.loads((Path(state["out_dir"]) / "fabrication.json").read_text())
+    assert FabricationSettings.model_validate(written) == CUSTOM_FABRICATION
+    assert state["fabrication"] == CUSTOM_FABRICATION
+
+
+def test_a_run_without_settings_uses_the_default(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW)
+    assert state["fabrication"] == DEFAULT_FABRICATION
+    written = json.loads((Path(state["out_dir"]) / "fabrication.json").read_text())
+    assert FabricationSettings.model_validate(written) == DEFAULT_FABRICATION
+
+
+def test_the_cad_stage_receives_the_run_settings(tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW, fabrication=CUSTOM_FABRICATION)
+    seen: list[FabricationSettings] = []
+
+    def fake(sizing: Any, bom: Any, req: Any, out_dir: Path, progress: Any,
+             settings: FabricationSettings = DEFAULT_FABRICATION) -> Any:
+        seen.append(settings)
+        raise pipeline.PipelineError("stop here")
+
+    monkeypatch.setattr("src.agent.nodes.pipeline.run_aero_cad", fake)
+    monkeypatch.setattr("src.agent.nodes.pipeline.DESIGN_ERRORS", (pipeline.PipelineError,))
+    nodes.build_aero_cad(state, replace(_ctx(tmp_path, db, None), with_aero_cad=True))
+    assert seen == [CUSTOM_FABRICATION]
+
+
+def _kit_cad(warning: Optional[str]) -> CADArtifacts:
+    return _cad_with_model(None).model_copy(update={"kit_warning": warning})
+
+
+def test_a_kit_warning_is_a_design_warning_exactly_once(tmp_path: Path, db: Path) -> None:
+    state = run_agent(_ctx(tmp_path, db, None), requirements=G1_ELECTRIC_FW)
+    with_kit_warning = {**state, "cad_artifacts": _kit_cad("no kit: shell model used")}
+    hits = [w for w in nodes.run_warnings(with_kit_warning) if "no kit: shell model used" in w]
+    assert len(hits) == 1
+    assert not any("kit" in w.lower() for w in nodes.run_warnings({**state, "cad_artifacts": _kit_cad(None)}))

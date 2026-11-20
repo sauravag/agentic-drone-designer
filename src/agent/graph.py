@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from src.agent import nodes
 from src.agent.nodes import AgentContext
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState, RunLineage
 
@@ -72,12 +73,14 @@ def build_graph(ctx: AgentContext) -> Any:
 def initial_state(user_prompt: str, requirements: Optional[OperationalRequirements] = None,
                   sizing_overrides: Optional[dict[str, float]] = None,
                   design_assumptions: Optional[DesignAssumptions] = None,
-                  lineage: Optional[RunLineage] = None) -> DesignState:
+                  lineage: Optional[RunLineage] = None,
+                  fabrication: Optional[FabricationSettings] = None) -> DesignState:
     return DesignState(
         user_prompt=user_prompt, requirements=requirements, clarification_needed=None, iteration_count=0,
         sizing_overrides=dict(sizing_overrides or {}), sizing_results=None, selected_bom=None, aero_stability=None,
         cad_artifacts=None, fcs_artifacts=None, validation_errors=[], final_report_path=None, run_id=None,
         out_dir=None, assumptions=[], design_assumptions=design_assumptions or DEFAULT_ASSUMPTIONS,
+        fabrication=fabrication or DEFAULT_FABRICATION,
         gate_results=[], critic_log=[], stage_error=None, converged=False,
         critic_exhausted=False, fatal_error=None, sitl_error=None,
         explorer_mode="none", explore_options=[], options_explanation=None, lineage=lineage,
@@ -87,11 +90,12 @@ def initial_state(user_prompt: str, requirements: Optional[OperationalRequiremen
 def run_agent(ctx: AgentContext, user_prompt: str = "", requirements: Optional[OperationalRequirements] = None,
               sizing_overrides: Optional[dict[str, float]] = None,
               design_assumptions: Optional[DesignAssumptions] = None,
-              lineage: Optional[RunLineage] = None) -> DesignState:
+              lineage: Optional[RunLineage] = None,
+              fabrication: Optional[FabricationSettings] = None) -> DesignState:
     """Run the full design loop from a natural-language prompt (or structured requirements)."""
     if not user_prompt and requirements is None:
         raise ValueError("give a natural-language prompt or structured requirements")
-    state: DesignState = initial_state(user_prompt, requirements, sizing_overrides, design_assumptions, lineage)
+    state: DesignState = initial_state(user_prompt, requirements, sizing_overrides, design_assumptions, lineage, fabrication)
     limit: int = NODES_PER_ITERATION * (ctx.max_iterations + 1) + FIXED_NODES
     try:
         for snapshot in build_graph(ctx).stream(state, {"recursion_limit": limit}, stream_mode="values"):

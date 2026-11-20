@@ -21,6 +21,7 @@ from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status, run_warnin
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.changes import ChangeSet, apply_changes
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, DesignState, FCSArtifacts, RunLineage, SizingOutput
 
@@ -52,6 +53,7 @@ class AgentRunView:
     report_path: Optional[Path] = None
     used_llm: bool = False
     design_assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
+    fabrication: FabricationSettings = DEFAULT_FABRICATION
     explorer_mode: str = "none"
     options: tuple[dict[str, Any], ...] = ()
     options_explanation: Optional[str] = None
@@ -104,7 +106,7 @@ def to_view(state: DesignState, used_llm: bool) -> AgentRunView:
         used_llm=used_llm, design_assumptions=state.get("design_assumptions") or DEFAULT_ASSUMPTIONS,
         explorer_mode=state.get("explorer_mode", "none"), options=tuple(state.get("explore_options", [])),
         options_explanation=state.get("options_explanation"), explorer_note=state.get("explorer_note"),
-        lineage=state.get("lineage"),
+        lineage=state.get("lineage"), fabrication=state.get("fabrication") or DEFAULT_FABRICATION,
     )
 
 
@@ -114,9 +116,10 @@ class NoChangeError(ValueError):
 
 def _run_agent(ctx_args: dict[str, Any], prompt: str, requirements: Optional[OperationalRequirements],
                sizing_overrides: Optional[dict[str, float]], design_assumptions: Optional[DesignAssumptions],
-               lineage: Optional[RunLineage], llm: Optional[StructuredLLM]) -> AgentRunView:
+               lineage: Optional[RunLineage], llm: Optional[StructuredLLM],
+               fabrication: Optional[FabricationSettings] = None) -> AgentRunView:
     ctx = AgentContext(llm=llm, **ctx_args)
-    return to_view(run_agent(ctx, prompt, requirements, sizing_overrides, design_assumptions, lineage),
+    return to_view(run_agent(ctx, prompt, requirements, sizing_overrides, design_assumptions, lineage, fabrication),
                    used_llm=llm is not None)
 
 
@@ -130,9 +133,10 @@ def _context_args(outputs_root: Path, db_path: Path, with_aero_cad: Optional[boo
 def run(outputs_root: Path, db_path: Path, with_aero_cad: Optional[bool], with_sitl: Optional[bool],
         progress: Callable[[str], None], prompt: str = "", requirements: Optional[OperationalRequirements] = None,
         max_iterations: int = MAX_ITERATIONS,
-        design_assumptions: Optional[DesignAssumptions] = None) -> AgentRunView:
+        design_assumptions: Optional[DesignAssumptions] = None,
+        fabrication: Optional[FabricationSettings] = None) -> AgentRunView:
     """Run the agent on a description (`prompt`) or on validated form input (`requirements`), with the
-    designer's `design_assumptions` (defaults when omitted).
+    designer's `design_assumptions` and validated laser-cut `fabrication` settings (defaults when omitted).
     Raises pipeline.PipelineError when a requested stage's toolchain is missing and
     providers.LLMConfigError for an invalid provider or model setting."""
     if bool(prompt.strip()) == (requirements is not None):
@@ -141,7 +145,7 @@ def run(outputs_root: Path, db_path: Path, with_aero_cad: Optional[bool], with_s
     llm: Optional[StructuredLLM] = make_llm()
     if requirements is None and llm is None:
         return AgentRunView(STATUS_ERROR, llm_problem())
-    return _run_agent(args, prompt.strip(), requirements, None, design_assumptions, None, llm)
+    return _run_agent(args, prompt.strip(), requirements, None, design_assumptions, None, llm, fabrication)
 
 
 def rerun(view: AgentRunView, change: ChangeSet, source: Literal["option", "chat", "manual"], outputs_root: Path,
@@ -159,7 +163,7 @@ def rerun(view: AgentRunView, change: ChangeSet, source: Literal["option", "chat
     req, assumptions, knobs = apply_changes(view.requirements, view.design_assumptions, change)
     args = _context_args(outputs_root, db_path, with_aero_cad, with_sitl, progress, max_iterations)
     lineage = RunLineage(parent_run_id=view.run_id, change_set=change, change_source=source)
-    return _run_agent(args, "", req, knobs, assumptions, lineage, make_llm())
+    return _run_agent(args, "", req, knobs, assumptions, lineage, make_llm(), view.fabrication)
 
 
 def explore(view: AgentRunView, db_path: Path) -> tuple[ExploreOption, ...]:

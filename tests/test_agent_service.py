@@ -15,6 +15,7 @@ from src.tools.sizing.mission_solver import size_aircraft
 from src.ui import agent_service
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
 from src.schemas.assumptions import DesignAssumptions
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges
 from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 
@@ -193,3 +194,26 @@ def test_run_lineage_needs_no_import_order(tmp_path: Path) -> None:
     code = ("from src.schemas.state import RunLineage; RunLineage.model_validate({'parent_run_id': 'r', "
             "'change_source': 'chat', 'change_set': {'label': 'x', 'requirements': {}, 'assumptions': {}, 'knobs': {}}})")
     subprocess.run([sys.executable, "-c", code], check=True, cwd=Path(__file__).resolve().parent.parent)
+
+
+CUSTOM_FABRICATION = FabricationSettings(bed_width_m=0.5, bed_height_m=0.3)
+
+
+def test_run_carries_fabrication_settings(tmp_path: Path, no_key: None) -> None:
+    view = _run(tmp_path, requirements=G1_ELECTRIC_FW, fabrication=CUSTOM_FABRICATION)
+    assert view.fabrication == CUSTOM_FABRICATION
+    written = json.loads((view.out_dir / "fabrication.json").read_text())
+    assert FabricationSettings.model_validate(written) == CUSTOM_FABRICATION
+
+
+def test_a_run_without_settings_views_the_default(tmp_path: Path, no_key: None) -> None:
+    assert _run(tmp_path, requirements=G1_ELECTRIC_FW).fabrication == DEFAULT_FABRICATION
+
+
+def test_rerun_keeps_the_parent_settings(tmp_path: Path, no_key: None) -> None:
+    first = _run(tmp_path, requirements=G1_ELECTRIC_FW, fabrication=CUSTOM_FABRICATION)
+    change = ChangeSet(label="longer", requirements=RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25),
+                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    second = agent_service.rerun(first, change, "manual", tmp_path / "o", tmp_path / "c.db", False, False, lambda _: None)
+    assert second.fabrication == CUSTOM_FABRICATION
+    assert FabricationSettings.model_validate_json((second.out_dir / "fabrication.json").read_text()) == CUSTOM_FABRICATION

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.changes import ChangeSet
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 
 Positive = Annotated[float, Field(gt=0)]
@@ -151,6 +152,7 @@ class DesignState(TypedDict):
     out_dir: Optional[str]
     assumptions: list[str]  # defaults the parser applied, reported verbatim
     design_assumptions: DesignAssumptions  # the designer's technology constants for this run
+    fabrication: FabricationSettings  # laser-cut kit settings for this run (never sent to or changed by the LLM)
     gate_results: list[dict]  # latest critic gates: {name, passed, detail}
     critic_log: list[dict]  # one entry per critic pass
     stage_error: Optional[dict[str, str]]  # {stage, message} of a tool node that failed this iteration

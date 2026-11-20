@@ -1,6 +1,7 @@
 """Design export: the versioned design.json record and the run-folder zip (spec 2026-11-19-export-design-zip)."""
 
 import io
+import json
 import shutil
 import zipfile
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges
 from src.schemas.state import CADArtifacts, FCSArtifacts, RunLineage
 from src.tools.sizing.mission_solver import size_aircraft
@@ -201,3 +203,29 @@ def test_an_unreadable_run_file_does_not_break_the_page(tmp_path: Path, monkeypa
         assert len(_zip_buttons(at)) == 1
     finally:
         locked.chmod(0o644)
+
+
+def test_record_includes_fabrication_and_relative_kit_paths(tmp_path: Path) -> None:
+    cad = _cad(tmp_path).model_copy(update={
+        "kit_dir": str(tmp_path / "kit"), "build_sheet_path": str(tmp_path / "kit" / "build_sheet.md")})
+    rec = design_record(_view(tmp_path, cad=cad))
+    assert rec.cad is not None and rec.cad.kit_dir == "kit" and rec.cad.build_sheet_path == "kit/build_sheet.md"
+    assert rec.fabrication == DEFAULT_FABRICATION
+    custom = FabricationSettings(bed_width_m=0.5)
+    assert design_record(_view(tmp_path, fabrication=custom)).fabrication == custom
+
+
+def test_old_record_without_fabrication_validates(tmp_path: Path) -> None:
+    payload = json.loads(design_record(_view(tmp_path)).model_dump_json())
+    del payload["fabrication"]
+    old = DesignRecord.model_validate_json(json.dumps(payload))
+    assert old.fabrication == DEFAULT_FABRICATION and old.format_version == 1
+
+
+def test_zip_includes_kit_folder(tmp_path: Path) -> None:
+    run_dir = _run_folder(tmp_path)
+    (run_dir / "kit" / "sheets").mkdir(parents=True)
+    (run_dir / "kit" / "sheets" / "birch-ply-1-5-mm-1.dxf").write_text("0\nEOF\n")
+    (run_dir / "kit" / "build_sheet.md").write_text("# build")
+    names = _zip(_view(run_dir)).namelist()
+    assert "r1/kit/sheets/birch-ply-1-5-mm-1.dxf" in names and "r1/kit/build_sheet.md" in names

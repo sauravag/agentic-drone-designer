@@ -124,6 +124,8 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
             notes.append(f"As-built mass {cad.as_built_mass_kg:.2f} kg is {growth:+.0%} vs sized MTOW "
                          f"{sizing.mtow_kg:.2f} kg (outside the ±3% convergence band; catalog parts or the "
                          f"enlarged pod differ from the sizing estimate).")
+        if cad.kit_warning:
+            notes.append(f"Laser-cut kit: {cad.kit_warning}")
         if not SM_MIN <= cad.static_margin <= SM_MAX:
             notes.append(f"Final static margin {cad.static_margin:.3f} is outside {SM_MIN}-{SM_MAX}.")
         if cad.collision_count:

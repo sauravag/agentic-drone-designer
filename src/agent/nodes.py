@@ -20,6 +20,7 @@ from src.agent.explorer import (ExploreOption, explore_closure, explorer_mode, u
                                 unchanged_closes_note)
 from src.agent.prompts import CRITIC_SYSTEM, OPTIONS_SYSTEM, PARSER_SYSTEM, REPORT_SYSTEM
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.schemas.fabrication import DEFAULT_FABRICATION
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
@@ -90,6 +91,7 @@ def parse_requirements(state: DesignState, ctx: AgentContext) -> Update:
                       "assumptions": list(assumptions), "clarification_needed": None}
     _write(update, "requirements.json", req)  # type: ignore[arg-type]
     _write(update, "assumptions.json", state.get("design_assumptions") or DEFAULT_ASSUMPTIONS)  # type: ignore[arg-type]
+    _write(update, "fabrication.json", state.get("fabrication") or DEFAULT_FABRICATION)  # type: ignore[arg-type]
     return update
 
 
@@ -128,7 +130,8 @@ def build_aero_cad(state: DesignState, ctx: AgentContext) -> Update:
         return {}
     req, sizing, bom, out_dir = _require(state, "requirements", "sizing_results", "selected_bom", "out_dir")
     try:
-        aero, cad = pipeline.run_aero_cad(sizing, bom, req, Path(out_dir), ctx.progress)
+        aero, cad = pipeline.run_aero_cad(sizing, bom, req, Path(out_dir), ctx.progress,
+                                         state.get("fabrication") or DEFAULT_FABRICATION)
     except pipeline.DESIGN_ERRORS as exc:
         return {"stage_error": {"stage": "aero_cad", "message": str(exc)}}
     _write(state, "aero.json", aero)

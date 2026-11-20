@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, RunLineage, SizingOutput
 from src.ui.agent_service import AgentRunView
@@ -24,7 +25,8 @@ from src.ui.agent_service import AgentRunView
 RECORD_FILE: Final[str] = "design.json"
 ZIP_MIME: Final[str] = "application/zip"
 ZIP_LABEL: Final[str] = "Download all files (.zip)"
-_CAD_PATHS: Final[tuple[str, ...]] = ("oml_vsp3_path", "oml_step_path", "assembly_step_path", "viewer_model_path")
+_CAD_PATHS: Final[tuple[str, ...]] = ("oml_vsp3_path", "oml_step_path", "assembly_step_path", "viewer_model_path",
+                                       "kit_dir", "build_sheet_path")
 _FCS_PATHS: Final[tuple[str, ...]] = ("param_path", "sitl_report_path")
 
 
@@ -53,6 +55,7 @@ class DesignRecord(BaseModel):
     report_path: Optional[str] = None
     used_llm: bool = False
     design_assumptions: DesignAssumptions
+    fabrication: FabricationSettings = DEFAULT_FABRICATION  # absent in records made before the kit existed
     explorer_mode: str = "none"
     options: tuple[dict[str, Any], ...] = ()
     options_explanation: Optional[str] = None
@@ -89,7 +92,8 @@ def design_record(view: AgentRunView, now: Optional[datetime] = None) -> DesignR
         iterations=view.iterations, warnings=view.warnings, assumptions=view.assumptions, gates=view.gates,
         critic_log=view.critic_log,
         report_path=None if view.report_path is None else _relative(view.report_path, root),
-        used_llm=view.used_llm, design_assumptions=view.design_assumptions, explorer_mode=view.explorer_mode,
+        used_llm=view.used_llm, design_assumptions=view.design_assumptions, fabrication=view.fabrication,
+        explorer_mode=view.explorer_mode,
         options=view.options, options_explanation=view.options_explanation, explorer_note=view.explorer_note,
         lineage=view.lineage,
     )
