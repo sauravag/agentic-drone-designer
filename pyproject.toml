@@ -20,6 +20,7 @@ physics = [
     "neuralfoil",
     "casadi",
     "build123d",
+    "ezdxf>=1.1",  # laser-cut kit DXF sheets (also a build123d dependency; imported directly)
     "jsbsim",
     "pymavlink",
 ]
