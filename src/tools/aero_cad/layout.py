@@ -18,6 +18,7 @@ WING_DIHEDRAL_DEG: Final[float] = 3.0
 WING_Z_FRACTION: Final[float] = 0.25  # wing root height above fuselage axis, fraction of diameter
 DEFAULT_WING_STATION: Final[float] = 0.30  # wing-root LE position, fraction of fuselage length
 WING_STATION_BOUNDS: Final[tuple[float, float]] = (0.10, 0.70)
+WING_STATION_SCAN: Final[tuple[float, ...]] = (0.15, 0.20, 0.25, 0.35, 0.40, 0.45, 0.50, 0.55)  # balance search
 QUARTER_CHORD: Final[float] = 0.25
 
 HTAIL_ASPECT_RATIO: Final[float] = 4.0

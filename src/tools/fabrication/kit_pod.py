@@ -19,10 +19,16 @@ from src.schemas.state import SizingOutput
 from src.tools.aero_cad import components
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
-from src.tools.aero_cad.layout import DEFAULT_WING_STATION, AircraftLayout, fuselage_radius_at, layout_from_sizing
+from src.tools.aero_cad.layout import (
+    DEFAULT_WING_STATION,
+    WING_STATION_SCAN,
+    AircraftLayout,
+    fuselage_radius_at,
+    layout_from_sizing,
+)
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, kit_spar_plan
 from src.tools.fabrication.fuselage_parts import wing_box_floor_m
-from src.tools.fabrication.tubes import BISECTION_ITERATIONS, MIN_WEB_M, KitUnavailable
+from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +36,8 @@ STRUCTURE_CLEARANCE_M: Final[float] = COMPONENT_GAP_M / 2.0  # = the kit's openi
 POD_GROWTH_STEP: Final[float] = 0.02  # fractional diameter step while looking for a pod the battery fits under
 MAX_POD_GROWTH: Final[float] = 1.5  # never widen a pod by more than half for the kit
 FIT_EPS_M: Final[float] = 1e-9  # float round-off on the seating equality
+POD_DIAMETER_TOLERANCE_M: Final[float] = 0.5e-3  # bisection stops once the bracket is this narrow
+SIZING_STATIONS: Final[tuple[float, ...]] = (DEFAULT_WING_STATION, *WING_STATION_SCAN)  # every station balancing tries
 
 
 def _half_opening(item: PlacedComponent) -> tuple[float, float]:
@@ -67,21 +75,34 @@ def fits_kit_formers(item: PlacedComponent, layout: AircraftLayout, settings: Fa
     return corner <= _opening_radius_m(radius, settings) + FIT_EPS_M
 
 
+def _wing_box_floor_m(sizing: SizingOutput, bom: SelectedBOM, diameter_m: float,
+                     settings: FabricationSettings) -> Optional[float]:
+    """Lowest wing-box floor over every wing station the balance search may pick (stations where no wing box can be
+    built at all are skipped: no kit there anyway); None when there is none."""
+    length = components.required_fuselage_length_m(sizing, bom, diameter_m)
+    floors: list[float] = []
+    for station in SIZING_STATIONS:
+        layout = layout_from_sizing(sizing, station, diameter_m, length)
+        try:
+            spar = kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), settings)
+            floors.append(wing_box_floor_m(layout, spar, settings))
+        except KitUnavailable:
+            continue
+    return min(floors) if floors else None
+
+
 def pod_fits_kit(sizing: SizingOutput, bom: SelectedBOM, diameter_m: float, settings: FabricationSettings) -> bool:
     """Every seated slider opens in the formers of the constant section and the seated battery passes under the
-    wing box with STRUCTURE_CLEARANCE_M."""
+    wing box with STRUCTURE_CLEARANCE_M, at the worst wing station the balance search may choose."""
     length = components.required_fuselage_length_m(sizing, bom, diameter_m)
     layout = layout_from_sizing(sizing, DEFAULT_WING_STATION, diameter_m, length)
     seated = [seat_low(s, diameter_m, settings) for s in components.sliders(sizing, bom)]
     middle = 0.5 * layout.fuselage_length_m
     if not all(fits_kit_formers(s.at_x(middle), layout, settings) for s in seated):
         return False
-    try:
-        floor = wing_box_floor_m(layout, kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), settings), settings)
-    except KitUnavailable:
-        return False
+    floor = _wing_box_floor_m(sizing, bom, diameter_m, settings)
     battery = seated[0]
-    return battery.center_m[2] + battery.size_m[2] / 2.0 + STRUCTURE_CLEARANCE_M <= floor
+    return floor is not None and battery.center_m[2] + battery.size_m[2] / 2.0 + STRUCTURE_CLEARANCE_M <= floor
 
 
 def _first_feasible(sizing: SizingOutput, bom: SelectedBOM, start_m: float,
@@ -109,7 +130,7 @@ def kit_fuselage_diameter_m(sizing: SizingOutput, bom: SelectedBOM,
         logger.warning("no pod up to %.0f %% wider seats the battery under the wing box", 100 * (MAX_POD_GROWTH - 1))
         return base
     lo, hi = bracket
-    for _ in range(BISECTION_ITERATIONS):
+    while hi - lo > POD_DIAMETER_TOLERANCE_M:
         mid = 0.5 * (lo + hi)
         lo, hi = (lo, mid) if pod_fits_kit(sizing, bom, mid, settings) else (mid, hi)
     return hi

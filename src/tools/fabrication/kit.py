@@ -26,9 +26,10 @@ import build123d as bd
 from src.schemas.fabrication import PartFamily, TubeStock
 from src.tools.fabrication.tubes import KitUnavailable, SparPlan
 
-__all__ = ["CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "TubePart", "Vec3"]
+__all__ = ["Box2", "CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "TubePart", "Vec3"]
 
 Vec3 = tuple[float, float, float]
+Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local XY
 TubeRole = Literal["spar", "socket", "tail_boom", "tail_spar", "lift_boom", "pin"]
 LinearKind = Literal["stringer", "le", "te"]
 CoverKind = Literal["film", "fuselage"]
@@ -41,6 +42,7 @@ class KitPart:
     outline: bd.Face
     location: bd.Location
     quantity: int = 1
+    openings: tuple[Box2, ...] = ()  # component openings (local XY boxes) a bed split may cut straight through
 
     @property
     def area_m2(self) -> float:

@@ -19,8 +19,8 @@
   outline: on a curved skin the doubler's outer face sits one sheet off the part's plane, where the skin is narrower
   by r - sqrt(r^2 - z^2); 2 mm bounds that for every radius above 6 mm at the 4.5 mm top of a crutch doubler.
   The dovetail is cut at nominal size: its press fit comes from the kerf (like every tab and slot).
-  R23: a cut may pass straight through a component opening (one at least PASSABLE_OPENING_M long, the whole
-  dovetail core SPLIT_CLEARANCE_M inside its ends; never a small hole). Each side rail the line crosses then gets its
+  R23: a cut may pass straight through a component opening tagged in `KitPart.openings` (the whole dovetail core
+  SPLIT_CLEARANCE_M inside its ends; never an untagged slot or hole, whatever its size). Each side rail the line crosses then gets its
   own dovetail (MIN_WEB_M rim) and its own doubler `<label>-D<k>a`, `-D<k>b`, … lapping that rail only.
 """
 
@@ -36,7 +36,7 @@ from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent, boom
 from src.tools.aero_cad.layout import AircraftLayout, fuselage_radius_at
 from src.tools.fabrication.boom_parts import boom_parts, motor_plate_diameter_m, motor_plate_outline
 from src.tools.fabrication.fuselage_parts import firewall_station, profile_corners, socket_axis_m, station_location
-from src.tools.fabrication.kit import KitPart
+from src.tools.fabrication.kit import Box2, KitPart
 from src.tools.fabrication.rib_outline import rect_face
 from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, PIN_ROD_DIAMETER_M
@@ -54,7 +54,6 @@ DOUBLER_MIN_LAP_M: Final[float] = 0.010  # shortest overlap accepted between hol
 DOUBLER_EDGE_INSET_M: Final[float] = 0.002  # doubler edges stay this far inside the part's outline
 DOUBLER_LABEL: Final[re.Pattern[str]] = re.compile(r"^(?P<base>.+)-D(?P<k>\d+)(?P<rail>[a-z])?$")
 MAX_SPLIT_PIECES: Final[int] = 8
-PASSABLE_OPENING_M: Final[float] = 0.05  # a cut may pass through an opening this long (a component's); never a hole
 SPAN_EPS_M: Final[float] = 1e-6  # a hole edge on a rail edge does not count as beside the rail
 CRUISE_MOTOR_NAME: Final[str] = "cruise_motor"
 AREA_EPS_M2: Final[float] = 1e-10
@@ -68,7 +67,9 @@ def _pieces_of(shape: object) -> list[bd.Shape]:
     """A boolean result as a list (Build123d may return a shape, a list or None)."""
     if shape is None:
         return []
-    return list(shape) if isinstance(shape, list) else [shape]  # type: ignore[list-item]
+    if isinstance(shape, list):
+        return list(shape)
+    return [shape] if isinstance(shape, bd.Shape) else []
 
 
 def _faces(shape: object) -> list[bd.Face]:
@@ -257,14 +258,25 @@ def _doubler_lap(face: bd.Face, x_m: float, span: tuple[float, float]) -> Option
 def _material_spans(face: bd.Face, x_m: float) -> list[tuple[float, float]]:
     """Every stretch of material on the line local x = x_m, in y order."""
     edges = _edges(face.intersect(bd.Edge.make_line((x_m, -REACH_M, 0.0), (x_m, REACH_M, 0.0))))
-    return sorted(tuple(sorted((e.start_point().Y, e.end_point().Y))) for e in edges)  # type: ignore[misc]
+    spans: list[tuple[float, float]] = []
+    for e in edges:
+        a, b = e.start_point().Y, e.end_point().Y
+        spans.append((min(a, b), max(a, b)))
+    return sorted(spans)
 
 
-def _crosses_opening(wire: bd.Wire, x_m: float) -> bool:
-    """The cut may pass through this opening: it is a component opening (at least PASSABLE_OPENING_M long along the
-    cut direction), and the whole dovetail core keeps SPLIT_CLEARANCE_M from its ends."""
+def _inside(box: bd.BoundBox, opening: Box2) -> bool:
+    x0, y0, x1, y1 = opening
+    e = SPAN_EPS_M
+    return x0 - e <= box.min.X and box.max.X <= x1 + e and y0 - e <= box.min.Y and box.max.Y <= y1 + e
+
+
+def _crosses_opening(wire: bd.Wire, x_m: float, openings: Sequence[Box2]) -> bool:
+    """The cut may pass through this hole: it is one of the part's tagged component openings (`KitPart.openings`;
+    never a slot or a bolt hole, whatever its size), and the whole dovetail core keeps SPLIT_CLEARANCE_M from its
+    ends."""
     box = wire.bounding_box()
-    return (box.max.X - box.min.X >= PASSABLE_OPENING_M and box.min.X + SPLIT_CLEARANCE_M <= x_m
+    return (any(_inside(box, o) for o in openings) and box.min.X + SPLIT_CLEARANCE_M <= x_m
             and x_m + DOVETAIL_DEPTH_M + SPLIT_CLEARANCE_M <= box.max.X)
 
 
@@ -278,31 +290,33 @@ def _tails_clear(face: bd.Face, joint: _Joint) -> bool:
     return True
 
 
-def _joint_is_clear(face: bd.Face, joint: _Joint) -> bool:
+def _joint_is_clear(face: bd.Face, joint: _Joint, openings: Sequence[Box2]) -> bool:
     """Tails in material with a MIN_WEB_M rim, and the path keeps SPLIT_CLEARANCE_M from every hole and slot except
     a component opening it passes straight through: beside that, the tails' MIN_WEB_M rim is the web (R23)."""
     if not _tails_clear(face, joint):
         return False
     path = bd.Wire.make_polygon([(px, py, 0.0) for px, py in _dovetail_points(joint)], close=False)
-    return all(_crosses_opening(wire, joint.x_m) or path.distance_to(wire) >= SPLIT_CLEARANCE_M
+    return all(_crosses_opening(wire, joint.x_m, openings) or path.distance_to(wire) >= SPLIT_CLEARANCE_M
                for wire in face.inner_wires())
 
 
 def _joint_at(face: bd.Face, x_m: float) -> Optional[_Joint]:
     """A joint on the line x = x_m with one dovetail per rail, or None when a rail has no doubler room."""
-    spans = _material_spans(face, x_m)
-    laps = [_doubler_lap(face, x_m, span) for span in spans]
-    if not spans or any(lap is None for lap in laps):
-        return None
-    return _Joint(x_m, tuple(_Rail(lo, hi, lap) for (lo, hi), lap in zip(spans, laps)))  # type: ignore[arg-type]
+    rails: list[_Rail] = []
+    for lo, hi in _material_spans(face, x_m):
+        lap = _doubler_lap(face, x_m, (lo, hi))
+        if lap is None:
+            return None
+        rails.append(_Rail(lo, hi, lap))
+    return _Joint(x_m, tuple(rails)) if rails else None
 
 
-def _find_joint(face: bd.Face, nominal_m: float) -> Optional[_Joint]:
+def _find_joint(face: bd.Face, nominal_m: float, openings: Sequence[Box2]) -> Optional[_Joint]:
     """The clear joint nearest the nominal cut, within SPLIT_SEARCH_M of it."""
     steps = round(SPLIT_SEARCH_M / SPLIT_SEARCH_STEP_M)
     for k in sorted(range(-steps, steps + 1), key=abs):
         joint = _joint_at(face, nominal_m + k * SPLIT_SEARCH_STEP_M)
-        if joint is not None and _joint_is_clear(face, joint):
+        if joint is not None and _joint_is_clear(face, joint, openings):
             return joint
     return None
 
@@ -348,33 +362,52 @@ def _doubler(face: bd.Face, joint: _Joint, k: int) -> Optional[bd.Face]:
 
 
 def _joint_doublers(face: bd.Face, joint: _Joint) -> Optional[list[bd.Face]]:
-    doublers = [_doubler(face, joint, k) for k in range(len(joint.rails))]
-    return None if any(d is None for d in doublers) else doublers  # type: ignore[return-value]
+    doublers: list[bd.Face] = []
+    for k in range(len(joint.rails)):
+        doubler = _doubler(face, joint, k)
+        if doubler is None:
+            return None
+        doublers.append(doubler)
+    return doublers
 
 
 Split = tuple[list[bd.Face], list[list[bd.Face]]]  # pieces left to right; doublers per joint, one per rail
 
 
-def _try_split(face: bd.Face, count: int, settings: FabricationSettings) -> Optional[Split]:
-    """(pieces, doublers) for `count` equal pieces, or None when a joint finds no clear spot or a piece won't fit."""
+def _joints(face: bd.Face, count: int, openings: Sequence[Box2]) -> Optional[list[_Joint]]:
+    """A clear joint near each of the `count - 1` equal-pitch cuts, or None when one finds no clear spot."""
     box = face.bounding_box()
     pitch = (box.max.X - box.min.X) / count
-    joints = [_find_joint(face, box.min.X + k * pitch) for k in range(1, count)]
-    if any(j is None for j in joints):
-        return None
-    pieces = _cut(face, joints)  # type: ignore[arg-type]
-    doublers = [_joint_doublers(face, j) for j in joints]  # type: ignore[arg-type]
-    if pieces is None or any(d is None for d in doublers):
-        return None
-    if not all(_fits(f, settings) for f in (*pieces, *(d for ds in doublers for d in ds))):  # type: ignore[union-attr]
-        return None
-    return pieces, doublers  # type: ignore[return-value]
+    joints: list[_Joint] = []
+    for k in range(1, count):
+        joint = _find_joint(face, box.min.X + k * pitch, openings)
+        if joint is None:
+            return None
+        joints.append(joint)
+    return joints
 
 
-def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings) -> Split:
+def _try_split(face: bd.Face, count: int, settings: FabricationSettings, openings: Sequence[Box2]) -> Optional[Split]:
+    """(pieces, doublers) for `count` equal pieces, or None when a joint finds no clear spot or a piece won't fit."""
+    joints = _joints(face, count, openings)
+    pieces = None if joints is None else _cut(face, joints)
+    if joints is None or pieces is None:
+        return None
+    doublers: list[list[bd.Face]] = []
+    for joint in joints:
+        found = _joint_doublers(face, joint)
+        if found is None:
+            return None
+        doublers.append(found)
+    if not all(_fits(f, settings) for f in (*pieces, *(d for ds in doublers for d in ds))):
+        return None
+    return pieces, doublers
+
+
+def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings, openings: Sequence[Box2]) -> Split:
     long = _usable_bed(settings)[0]
     for count in range(max(2, math.ceil(_size(face)[0] / long)), MAX_SPLIT_PIECES + 1):
-        result = _try_split(face, count, settings)
+        result = _try_split(face, count, settings, openings)
         if result is not None:
             return result
     raise KitUnavailable(f"{label} cannot be split to fit the {settings.bed_width_m * 1e3:.0f} x "
@@ -390,6 +423,12 @@ def _doubler_labels(label: str, doublers: Sequence[Sequence[bd.Face]]) -> list[t
     return named
 
 
+def _turned(opening: Box2) -> Box2:
+    """An opening box after the ROTATE_TO_X_DEG (-90 deg) turn: (x, y) -> (y, -x)."""
+    x0, y0, x1, y1 = opening
+    return y0, -x1, y1, -x0
+
+
 def split_to_bed(part: KitPart, settings: FabricationSettings) -> tuple[KitPart, ...]:
     """The part unchanged if it fits the usable bed, else its pieces then their doublers (module docstring).
 
@@ -402,7 +441,8 @@ def split_to_bed(part: KitPart, settings: FabricationSettings) -> tuple[KitPart,
         raise KitUnavailable(f"{part.label} is wider than the {short * 1e3:.0f} mm usable bed")
     along_y = h > w
     face = part.outline.rotate(bd.Axis.Z, ROTATE_TO_X_DEG) if along_y else part.outline
-    pieces, doublers = _split_along_x(face, part.label, settings)
+    openings = tuple(_turned(o) for o in part.openings) if along_y else part.openings
+    pieces, doublers = _split_along_x(face, part.label, settings, openings)
     named_doublers = _doubler_labels(part.label, doublers)
     if along_y:
         pieces = [f.rotate(bd.Axis.Z, -ROTATE_TO_X_DEG) for f in pieces]

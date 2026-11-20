@@ -481,9 +481,7 @@ def test_battery_never_overlaps_the_socket(case: str, packed) -> None:
         c = next(p for p in r.components if p.name == name)
         lo, hi = _box(c)
         for tube in sockets:
-            end = np.asarray(tube.start_m) + tube.length_m * np.asarray(tube.axis)
-            t_lo = np.minimum(tube.start_m, end) - tube.tube.od_m / 2
-            t_hi = np.maximum(tube.start_m, end) + tube.tube.od_m / 2
+            t_lo, t_hi = (np.asarray(corner) for corner in cad_packer._tube_box(tube))
             gap = np.maximum(t_lo - hi, lo - t_hi)  # per-axis separation (negative = overlap)
             assert gap.max() >= STRUCTURE_CLEARANCE_M - 1e-9, f"{name} box is within 5 mm of the {tube.label} box"
             assert cad_packer.overlap_volume_m3(c.solid(), tube_solid(tube)) < SOLID_TOL_M3
@@ -499,7 +497,7 @@ def test_formers_have_openings_for_the_placed_battery(case: str, packed) -> None
         solids = {p.label: part_solid(p, DEFAULT_FABRICATION) for p in r.kit.parts}
         crossing = [label for label, s in solids.items() if label.startswith("F-")
                     and s.bounding_box().min.X < hi[0] and lo[0] < s.bounding_box().max.X]
-        assert crossing or name == "avionics_tray", f"no former crosses the {name}: test would be vacuous"
+        assert crossing, f"no former crosses the {name}: the test would be vacuous"
         for label, solid in solids.items():
             volume = cad_packer.overlap_volume_m3(solid, c.solid())
             assert volume < SOLID_TOL_M3, f"{label} intersects the {name}: {volume:.3e} m^3"
@@ -534,6 +532,31 @@ def test_kit_rebuild_failure_falls_back_to_the_shell(designs: dict, tmp_path: Pa
     names = {i.name for i in r.mass_items}
     assert "oml_shell" in names and GLUE_NAME not in names
     assert r.mass.mass_kg == pytest.approx(sum(i.mass_kg for i in r.mass_items), rel=1e-12)
+    sliders = [c for c in r.components if c.name in SLIDERS]
+    assert all(c.center_m[2] == 0.0 for c in sliders)  # re-solved for the shell model: on the axis, not seated
+
+
+def test_unexpected_kit_error_falls_back_to_the_shell(designs: dict, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch,
+                                                     caplog: pytest.LogCaptureFixture) -> None:
+    """Kit failure never fails the run, whatever the geometry kernel raises."""
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("BRep_API: command not done")
+
+    monkeypatch.setattr(cad_packer, "build_kit", broken)
+    r = _pack(designs, "g1", tmp_path)
+    assert r.kit is None and r.structure is not None
+    assert r.kit_warning == "No laser kit: unexpected error building the kit (ValueError: BRep_API: command not done)"
+    assert "oml_shell" in {i.name for i in r.mass_items}
+    assert any(rec.levelname == "ERROR" and rec.exc_info for rec in caplog.records)  # logged with its traceback
+
+
+def test_group_3_fallback_is_logged_at_info_not_warning(designs: dict, tmp_path: Path,
+                                                       caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO", logger=cad_packer.__name__)
+    r = _pack(designs, "g3", tmp_path)
+    no_kit = [rec for rec in caplog.records if cad_packer.NO_KIT_PREFIX in rec.getMessage()]
+    assert r.kit is None and no_kit and all(rec.levelname == "INFO" for rec in no_kit)
 
 
 def test_kit_design_exports_assembly_and_viewer(designs: dict, tmp_path: Path) -> None:

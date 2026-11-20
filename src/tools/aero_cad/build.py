@@ -24,13 +24,13 @@ from src.tools.aero_cad.cad_packer import (
     pack_layout,
 )
 from src.tools.aero_cad.components import required_fuselage_length_m
-from src.tools.aero_cad.layout import DEFAULT_WING_STATION, AircraftLayout, layout_from_sizing
+from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_STATION_SCAN, AircraftLayout, layout_from_sizing
 from src.tools.fabrication.kit_pod import kit_fuselage_diameter_m
 
 logger = logging.getLogger(__name__)
 
 MAX_BALANCE_ITERATIONS: Final[int] = 12
-SCAN_STATIONS: Final[tuple[float, ...]] = (0.15, 0.20, 0.25, 0.35, 0.40, 0.45, 0.50, 0.55)
+SCAN_STATIONS: Final[tuple[float, ...]] = WING_STATION_SCAN
 STATION_TOLERANCE: Final[float] = 1e-4
 
 

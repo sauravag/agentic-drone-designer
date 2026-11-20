@@ -9,11 +9,11 @@ from src.schemas.fabrication import DEFAULT_FABRICATION
 from src.tools.aero_cad import components
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
-from src.tools.aero_cad.layout import DEFAULT_WING_STATION, fuselage_radius_at, layout_from_sizing
+from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_STATION_SCAN, fuselage_radius_at, layout_from_sizing
 from src.tools.fabrication.build_kit import kit_spar_plan
 from src.tools.fabrication.fittings import split_to_bed
 from src.tools.fabrication.fuselage_parts import fuselage_parts, wing_box_floor_m
-from src.tools.fabrication.kit import KitPart
+from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.kit_pod import (
     STRUCTURE_CLEARANCE_M,
     fits_kit_formers,
@@ -32,14 +32,14 @@ STEEP_CONE_DIAMETER_M = 0.33  # g2 pod this wide: tail-cone slope ~0.37, beyond 
 AREA_TOL_M2 = 1e-9
 
 
-def _layout(designs, case: str, diameter_m: float):
+def _layout(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION):
     sizing, bom = designs[case]
     length = components.required_fuselage_length_m(sizing, bom, diameter_m)
-    return layout_from_sizing(sizing, DEFAULT_WING_STATION, diameter_m, length)
+    return layout_from_sizing(sizing, station, diameter_m, length)
 
 
-def _floor(designs, case: str, diameter_m: float) -> float:
-    layout = _layout(designs, case, diameter_m)
+def _floor(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION) -> float:
+    layout = _layout(designs, case, diameter_m, station)
     plan = kit_spar_plan(designs[case][0], layout, load_airfoil(layout.airfoil), SETTINGS)
     return wing_box_floor_m(layout, plan, SETTINGS)
 
@@ -63,6 +63,18 @@ def test_kit_pod_seats_the_battery_under_the_wing_box(case, designs):
     assert _battery_top(designs, case, d) + STRUCTURE_CLEARANCE_M <= _floor(designs, case, d) + 1e-9
     assert pod_fits_kit(sizing, bom, d, SETTINGS)
     assert not pod_fits_kit(sizing, bom, d - 0.001, SETTINGS)  # the smallest such pod (to 1 mm)
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+@pytest.mark.parametrize("station", WING_STATION_SCAN)
+def test_battery_clears_the_wing_box_at_every_station_the_balance_may_pick(case, station, designs):
+    sizing, bom = designs[case]
+    d = kit_fuselage_diameter_m(sizing, bom, SETTINGS)
+    try:
+        floor = _floor(designs, case, d, station)
+    except KitUnavailable:
+        pytest.skip("no wing box can be built at this station (no kit there)")
+    assert _battery_top(designs, case, d) + STRUCTURE_CLEARANCE_M <= floor + 1e-9
 
 
 def test_structure_clearance_is_half_the_component_gap():
@@ -111,7 +123,7 @@ def _crutch_with_opening(length_m: float = 1.2, width_m: float = 0.16, opening=(
     slots = [rect_face(x, side * 0.068, x + 0.003, side * 0.074) if side > 0 else rect_face(x, -0.074, x + 0.003, -0.068)
              for x in (0.12, 0.24, 0.36, 0.84, 0.96, 1.08) for side in (1, -1)]
     face = face.cut(*slots).faces()[0]
-    return KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)))
+    return KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)), openings=((x0, -w / 2, x1, w / 2),))
 
 
 def _fits_bed(face: bd.Face) -> bool:
@@ -134,7 +146,7 @@ def test_crutch_splits_through_a_long_battery_opening():
 def test_a_cut_through_the_opening_gives_each_rail_its_own_dovetail_and_doubler():
     """A 0.9 m plate whose only legal cut lies inside a 0.5 m opening."""
     face = rect_face(0.0, -0.08, 0.9, 0.08).cut(rect_face(0.2, -0.055, 0.7, 0.055)).faces()[0]
-    part = KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)))
+    part = KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)), openings=((0.2, -0.055, 0.7, 0.055),))
     parts = split_to_bed(part, SETTINGS)
     pieces = [p for p in parts if "-D" not in p.label]
     doublers = sorted(p.label for p in parts if "-D" in p.label)
@@ -151,3 +163,18 @@ def test_small_holes_are_never_cut_open():
     parts = split_to_bed(KitPart("C-9", "crutch", face, bd.Location()), SETTINGS)
     pieces = [p for p in parts if "-D" not in p.label]
     assert sum(len(p.outline.inner_wires()) for p in pieces) == len(holes)
+
+
+def test_a_long_untagged_slot_is_never_cut_through():
+    """The same 0.5 m hole, but not tagged as a component opening (a future long slot): no legal cut exists."""
+    face = rect_face(0.0, -0.08, 0.9, 0.08).cut(rect_face(0.2, -0.055, 0.7, 0.055)).faces()[0]
+    with pytest.raises(KitUnavailable, match="C-9 cannot be split"):
+        split_to_bed(KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015))), SETTINGS)
+
+
+def test_tagged_openings_follow_a_part_split_along_y():
+    """A tall part is turned onto x before splitting; its tagged opening turns with it."""
+    face = rect_face(-0.08, 0.0, 0.08, 0.9).cut(rect_face(-0.055, 0.2, 0.055, 0.7)).faces()[0]
+    part = KitPart("C-9", "crutch", face, bd.Location(), openings=((-0.055, 0.2, 0.055, 0.7),))
+    pieces = [p for p in split_to_bed(part, SETTINGS) if "-D" not in p.label]
+    assert len(pieces) == 2 and sum(p.area_m2 for p in pieces) == pytest.approx(part.area_m2, abs=AREA_TOL_M2)

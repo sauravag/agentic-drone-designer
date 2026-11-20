@@ -574,7 +574,9 @@ def _crutch(frame: _Frame) -> KitPart:
         _assert_web(result, face, [face], None, f"C-1: the slot for {name} leaves less than {WEB_TEXT} of crutch")
     x0 = frame.crutch_x[0]
     face = _single_face(result, "C-1").moved(bd.Location((-x0, 0.0, 0.0)))
-    return KitPart("C-1", "crutch", face, bd.Location((x0, 0.0, -frame.crutch_t_m / 2.0)))
+    boxes = [cut.bounding_box() for _, cut in openings]
+    tagged = tuple((b.min.X - x0, b.min.Y, b.max.X - x0, b.max.Y) for b in boxes)  # the split may cut through these
+    return KitPart("C-1", "crutch", face, bd.Location((x0, 0.0, -frame.crutch_t_m / 2.0)), openings=tagged)
 
 
 # ------------------------------------------------------------------------------------------ API ---
