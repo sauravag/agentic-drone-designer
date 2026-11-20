@@ -457,14 +457,16 @@ def test_runtime_errors_become_failed_attempts(monkeypatch: pytest.MonkeyPatch, 
 
 # ---- perturbation ---
 
-def test_perturbed_model_scales_only_the_listed_terms(design: Any) -> None:
+@pytest.mark.parametrize("case", [HOT, SLUGGISH], ids=lambda c: c.name)
+def test_perturbed_model_scales_only_the_listed_terms(design: Any, case: PlantCase) -> None:
     _, _, model = design
-    hot = perturbed_model(model, HOT)
+    hot = perturbed_model(model, case)
     a, h = model.aero, hot.aero
-    assert h.cl_delta_a == pytest.approx(1.3 * a.cl_delta_a) and h.cm_delta_e == pytest.approx(1.3 * a.cm_delta_e)
-    assert h.cl_p == pytest.approx(0.7 * a.cl_p) and h.cm_q == pytest.approx(0.7 * a.cm_q)
+    cp, dm, ine = case.control_power, case.damping, case.inertia
+    assert h.cl_delta_a == pytest.approx(cp * a.cl_delta_a) and h.cm_delta_e == pytest.approx(cp * a.cm_delta_e)
+    assert h.cl_p == pytest.approx(dm * a.cl_p) and h.cm_q == pytest.approx(dm * a.cm_q)
     for name in ("ixx_kgm2", "iyy_kgm2", "izz_kgm2", "ixz_kgm2"):
-        assert getattr(hot, name) == pytest.approx(0.8 * getattr(model, name))
+        assert getattr(hot, name) == pytest.approx(ine * getattr(model, name))
     untouched = {"cl_alpha", "cl0", "cd0", "cn_beta", "cn_r", "cl_beta", "cn_delta_r", "cy_beta"}
     assert all(getattr(h, k) == getattr(a, k) for k in untouched)
     assert hot.lift_rotors == model.lift_rotors and hot.mass_kg == model.mass_kg
@@ -484,3 +486,19 @@ def test_a_case_at_the_current_margin_leaves_pitch_stiffness_alone(design: Any) 
     _, _, model = design
     same = PlantCase("same", 1.0, 1.0, 1.0, model.static_margin)
     assert perturbed_model(model, same) == model
+
+
+def test_aft_cg_is_less_stable_and_forward_cg_more_stable(design: Any) -> None:
+    _, _, model = design
+    assert perturbed_model(model, HOT).aero.cm_alpha >= model.aero.cm_alpha
+    assert perturbed_model(model, SLUGGISH).aero.cm_alpha <= model.aero.cm_alpha
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"control_power": 0.0}, {"damping": -1.0}, {"inertia": float("nan")},
+    {"static_margin": float("inf")}, {"static_margin": float("nan")},
+])
+def test_plant_case_rejects_invalid_values(kwargs: dict[str, float]) -> None:
+    valid = {"control_power": 1.0, "damping": 1.0, "inertia": 1.0, "static_margin": 0.1}
+    with pytest.raises(ValueError):
+        PlantCase("bad", **{**valid, **kwargs})

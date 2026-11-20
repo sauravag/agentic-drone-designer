@@ -40,8 +40,8 @@ from src.tools.aero_cad.components import (  # noqa: F401  (re-exported for call
     overlap_volume_m3,
 )
 from src.tools.aero_cad.layout import AircraftLayout
-from src.tools.aero_cad.stability import SM_MAX, SM_MIN  # noqa: F401  (re-exported for callers)
 from src.tools.aero_cad.mesh_export import export_viewer_model
+from src.tools.aero_cad.stability import SM_MAX, SM_MIN  # noqa: F401  (re-exported for callers)
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
 from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart

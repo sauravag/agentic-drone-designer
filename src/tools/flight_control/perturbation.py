@@ -11,6 +11,7 @@ Known gap: mixed corners (e.g. high control power with high damping) are not flo
 The CG shift keeps tail incidence fixed: Cm_alpha = -CL_alpha * SM' and Cm0 moves by CL0 * (SM0 - SM').
 """
 
+import math
 from dataclasses import dataclass, replace
 from typing import Final
 
@@ -25,6 +26,13 @@ class PlantCase:
     damping: float  # multiplies Cl_p and Cm_q
     inertia: float  # multiplies Ixx, Iyy, Izz, Ixz
     static_margin: float  # fractions of MAC
+
+    def __post_init__(self) -> None:
+        for field in ("control_power", "damping", "inertia"):
+            if not getattr(self, field) > 0:
+                raise ValueError(f"PlantCase {self.name!r}: {field} must be > 0, got {getattr(self, field)}")
+        if not math.isfinite(self.static_margin):
+            raise ValueError(f"PlantCase {self.name!r}: static_margin must be finite, got {self.static_margin}")
 
 
 HOT: Final[PlantCase] = PlantCase("hot", 1.3, 0.7, 0.8, SM_MIN)
@@ -43,6 +51,8 @@ def perturbed_model(model: FlightModel, case: PlantCase) -> FlightModel:
         cm_alpha=-a.cl_alpha * case.static_margin,
         cm0=a.cm0 + a.cl0 * (model.static_margin - case.static_margin),
     )
+    # x_cg_m deliberately stays nominal: the JSBSim exporter puts AERORP and the CG both at x_cg_m, so the CG
+    # move is carried entirely by cm_alpha/cm0. Moving x_cg_m too would double-count it.
     return replace(
         model, aero=aero, static_margin=case.static_margin,
         ixx_kgm2=model.ixx_kgm2 * case.inertia, iyy_kgm2=model.iyy_kgm2 * case.inertia,
