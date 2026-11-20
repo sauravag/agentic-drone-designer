@@ -503,7 +503,7 @@ def test_record_includes_fabrication_and_relative_kit_paths(tmp_path):
         "kit_dir": str(tmp_path / "kit"), "build_sheet_path": str(tmp_path / "kit" / "build_sheet.md")})))
     assert rec.cad.build_sheet_path == "kit/build_sheet.md" and rec.fabrication == DEFAULT_FABRICATION
 def test_old_record_without_fabrication_validates(): # JSON lacking the key → defaults
-def test_zip_includes_kit_folder(tmp_path): # kit/sheets/birch-ply-1-5mm-1.dxf present under r1/
+def test_zip_includes_kit_folder(tmp_path): # kit/sheets/birch-ply-1-5-mm-1.dxf present under r1/
 ```
 
 - [ ] **Step 2–4:** `.venv/bin/python -m pytest tests/test_agent_service.py tests/test_design_archive.py tests/test_agent.py -q` FAIL → implement → PASS.
