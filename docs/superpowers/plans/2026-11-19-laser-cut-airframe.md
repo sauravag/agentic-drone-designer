@@ -454,6 +454,50 @@ def test_every_label_engraved_once(kit, tmp_path): ...  # ENGRAVE TEXT entities 
 
 ---
 
+### Task 8b: Structural checks — centreline overwrap, torsion, tail boom, bearing, crutch rails
+
+Added 2026-11-20 from the external review, user-approved; spec §Structural checks, "Added 2026-11-20". Rulings R24–R28.
+
+**Files:** Modify `src/schemas/fabrication.py` (new settings), `src/tools/fabrication/tubes.py` (torsion,
+interaction, tail-boom check, overwrap sizing), `src/tools/fabrication/fuselage_parts.py` (bearing check +
+`WM-RD`/`WM-LD` doublers, crutch rail minimum), `src/tools/fabrication/kit.py` (`Kit.overwrap`),
+`src/tools/fabrication/build_kit.py`, `src/tools/fabrication/kit_mass.py`, `src/tools/aero_cad/kit_pod.py`
+(rail minimum in pod sizing); Test `tests/test_fabrication_structure.py` (new) plus updates to the existing
+fabrication tests.
+
+**Interfaces — Produces:**
+- `torsion_stress_pa(tube: TubeStock, torque_nm: float) -> float`; `interaction_ok(sigma_pa, tau_pa, settings) -> bool`.
+- `hover_pitch_torque_nm(thrust_n: float, arm_m: float) -> float`; `aero_torque_nm(...)`, integrated tip to y.
+- `@dataclass(frozen=True) Overwrap(layers: int, layer_thickness_m: float, lap_m: float, od_m: float, mass_kg: float)`;
+  `size_overwrap(moment_nm: float, socket: TubeStock, plate_gap_m: float, settings) -> Overwrap`, which raises
+  `KitUnavailable` beyond `overwrap_max_layers` or when 2·lap exceeds the plate gap.
+- `Kit.overwrap: Optional[Overwrap]`; `kit_mass_items` includes it, labelled `OW-1`.
+- `tail_boom_check(tube, sizing, layout, settings) -> None`, which raises `KitUnavailable("tail boom ...")`.
+- Bearing: `WM-RD`/`WM-LD` KitParts (family `plate`) appear only when the plain plate fails.
+
+- [ ] **Step 1: Write failing tests**
+
+```python
+def test_torsion_stress_thin_wall_formula(): ...            # 25x23 tube, 20 N·m → τ = T·r/J (≈ 23 MPa)
+def test_interaction_rejects_combined_load_each_alone_passes(): ...
+def test_overwrap_layers_grow_with_moment(): ...            # monotone n; mass formula; lap ≥ 2·OD
+def test_overwrap_too_long_for_plate_gap_falls_back(): ...  # KitUnavailable names "overwrap"
+def test_g2_kit_has_an_overwrap_and_its_mass_counts(designs): ...  # Kit.overwrap set; OW-1 in mass items
+def test_hover_pitch_torque_checked_at_boom_station(designs): ... # g2 spar segments outboard of joint pass the interaction
+def test_tail_boom_too_weak_falls_back(): ...               # tiny layout boom + big tail → KitUnavailable("tail boom")
+def test_bearing_adds_socket_boss_doublers_only_when_needed(): ... # low load: none; high load: WM-RD/WM-LD
+def test_crutch_rail_below_minimum_is_unavailable(): ...
+def test_g1_g2_still_build_kits_with_positive_margin(designs): ... # no regression of R23 results
+```
+
+- [ ] **Step 2–4:** `.venv/bin/python -m pytest tests/test_fabrication_structure.py -q` FAIL → implement → PASS; then the full suite.
+- [ ] **Step 5:** Commit `feat: structural checks — centreline overwrap, torsion, tail boom, bearing, crutch rails`.
+
+Report the g1/g2 overwrap (layers, lap, mass), boss doublers present (yes or no), the governing interaction
+ratio per spar member and for the tail boom, the new pod D, and the static margin.
+
+---
+
 ### Task 9: Build sheet, parts list and 3D export
 
 **Files:** Modify `src/tools/fabrication/kit_export.py`, `src/tools/aero_cad/cad_packer.py` (`export_artifacts`, `_export_assembly`), `src/tools/aero_cad/mesh_export.py`, `src/schemas/state.py`; Test `tests/test_fabrication_export.py`, `tests/test_aero_cad.py`, `tests/test_mesh_export.py`
@@ -461,6 +505,7 @@ def test_every_label_engraved_once(kit, tmp_path): ...  # ENGRAVE TEXT entities 
 **Interfaces — Produces:**
 - `export_kit(kit: Kit, settings, out_dir: Path) -> KitFiles` (`@dataclass(frozen=True) KitFiles(kit_dir: Path,
   build_sheet: Path, parts_csv: Path, sheets: tuple[Path, ...])`).
+- `mesh_export.model_parts`: the kit becomes two viewer parts, `structure (ply)` (sheet parts) and `structure (carbon)` (tubes and overwrap), not one `structure` blob (external review 1.3). The build sheet gets a Centreline joint section: overwrap layers, lap per side, cloth, a lay-up step order (insert the sockets through the plates, glue the mitre, then wrap between the plates), and the WM-RD/WM-LD bosses when present.
 - `kit_solids(kit, settings) -> list[bd.Solid]` (extrude each outline by its sheet thickness, apply `location`;
   tubes as hollow cylinders).
 - `build_sheet.md` sections, in order: Summary (kit mass, sheets per stock), Parts (label, family, stock,
@@ -547,6 +592,7 @@ def test_build_sheet_offered_for_download(...)
 **Files:** Modify `REQUIREMENTS.md` §4.3 item 2 (spar rule → stock-tube selection with flight/hover bending check and fit; kit outputs), `README.md` (run-files table: `kit/`; one paragraph on building the kit and the settings).
 
 - [ ] **Step 1:** Edit the docs.
+- [ ] **Step 1b:** In `src/agent/design_chat.py`'s `DESIGNER_SYSTEM`, add one line telling the LLM to prefer multi-lever what-ifs, since the option explorer already covers single levers, and test that the line is in the prompt (external review 3.2). Add an amendment note at the top of `docs/superpowers/specs/2026-11-19-share-designs-design.md`: the exporter writes every entry, `design.json` included, under one top-level `<run_id>/` folder, so the opener must accept that layout (external review 1.1).
 - [ ] **Step 2:** Run `.venv/bin/python -m pytest -q` — Expected: all pass (≥ 672 + new), 13 skipped or fewer.
 - [ ] **Step 3:** Run `.venv/bin/python -m pytest --cov=src/tools/fabrication --cov-report=term-missing tests/test_fabrication_*.py -q` — Expected: ≥ 80 %.
 - [ ] **Step 4:** Commit `docs: laser-cut kit in the SRS and README`.

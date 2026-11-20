@@ -200,6 +200,53 @@ naming the reason. The design run's status is unaffected.
   arm measured from the centreline). Fit: tube OD ≤ local airfoil thickness at the
   spar station minus covering on both faces and a minimum rib web.
 
+#### Added 2026-11-20 (external review, user-approved)
+
+Each check below has every input in `FabricationSettings` or `SizingOutput`. A failure that no stock part or
+doubler can fix raises `KitUnavailable` naming the check, and the run falls back to the shell model.
+
+- **Centreline joint (carbon overwrap, the user's choice).** `SK-R` and `SK-L` meet in a glued mitre, and
+  the glue line cannot carry the wing-root moment. The mitre is overwrapped with wet-laid carbon cloth. Treat
+  the wrap as a thin tube on the socket OD: n layers of `overwrap_layer_thickness_m`. Choose the smallest n
+  (≤ `overwrap_max_layers`) with M_centre·c/I_wrap ≤ `overwrap_allow_pa`/FS, where M_centre is the socket
+  moment at the centreline (the worse of flight and hover, as above) and c = OD/2 + n·t.
+  - Lap per side: L = max(2·OD, σ_wrap·n·t·FS/`epoxy_lap_shear_pa`).
+  - The whole wrap (2L) must fit between the two side plates' inner faces.
+  - Wrap mass: π·(OD + n·t)·n·t·2L·`overwrap_density_kg_m3`. It counts toward kit mass and the CG, it is a
+    packing obstacle at its wrapped OD, and the build sheet lists it.
+  - The spar roots inside the sockets are not glued to each other: the wings stay detachable.
+- **Spar torsion.** Two torque sources, combined with the bending stress σ by
+  (σ/σ_allow)² + (τ/`carbon_shear_allow_pa`)² ≤ 1/FS², at the joint, at every step and at the boom clamp:
+  - Hover pitch control (quadplane): one rotor at `vtol_thrust_per_motor_n` and its fore/aft partner at
+    zero, giving T = thrust × the longer boom arm from the spar. This torque is applied at the boom station
+    and carried inboard. Yaw uses rotor reaction torque, which is small and ignored.
+  - Flight: q_max·c²·|Cm0| per unit span plus the lift's offset from the spar, n_limit·L'(y)·(x_spar − x_ac)·c,
+    integrated from the tip inboard. q_max is set by the design's maximum speed. Cm0 comes from the airfoil
+    when it is known; otherwise use a named conservative default.
+  - Shear stress: τ = T·(OD/2)/J, J = π(OD⁴ − ID⁴)/32.
+- **Tail boom strength.** Today the boom is chosen by diameter alone (R13); now it is also checked:
+  - Bending: M = n_limit·q_max·S_tail·`TAIL_CL_MAX` × the tail arm from the boom mount, using the horizontal
+    and vertical tails' resultant.
+  - Torsion: the fin's load × the height of its centre of pressure above the boom.
+  - Same interaction check as the spar. If the largest tube ≤ layout diameter fails, the kit is unavailable.
+- **Socket bearing in the side plates.** Each plate carries its wing's shear load: F = n_limit·MTOW·g/2 in
+  flight (and the hover equivalent). The check is σ_b = F/(OD·t_plate) ≤ `ply_bearing_allow_pa`/FS.
+  - If it fails, add a 3 mm socket-boss doubler (`WM-RD`, `WM-LD`) glued over the hole, an annulus of
+    radial width `SOCKET_BOSS_WIDTH_M`, and recheck with the doubled thickness.
+- **Crutch rail width.** Every side rail of the crutch beside a component opening must be at least
+  `crutch_rail_min_m` wide. It carries fuselage bending, whereas MIN_WEB_M is only a cut-quality minimum.
+  The kit-aware pod sizing (R23) includes this rule.
+
+New settings (defaults, all adjustable):
+- `carbon_shear_allow_pa` = 60 MPa (in-plane shear of roll-wrapped tube, conservative)
+- `ply_bearing_allow_pa` = 15 MPa (birch ply edge bearing, conservative)
+- `overwrap_layer_thickness_m` = 0.25 mm (200 g/m² cloth, wet lay-up)
+- `overwrap_allow_pa` = 250 MPa (hand-laid 0/90 cloth, conservative)
+- `overwrap_density_kg_m3` = 1500
+- `overwrap_max_layers` = 8
+- `epoxy_lap_shear_pa` = 15 MPa
+- `crutch_rail_min_m` = 8 mm
+
 ### UI
 
 - An expander "Laser kit settings" next to the assumptions panel, editing `FabricationSettings` (bed, kerf,
@@ -210,7 +257,7 @@ naming the reason. The design run's status is unaffected.
 ### Outputs (run folder)
 
 `kit/sheets/<stock>-<n>.dxf`, `kit/build_sheet.md`, `kit/parts.csv`. `assembly.step` and `viewer_model.json`
-contain the kit parts.
+contain the kit parts. In the viewer the kit is two parts, `structure (ply)` and `structure (carbon)`, so X-ray view tells tubes from plywood.
 
 ## Calls I made (please check)
 
