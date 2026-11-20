@@ -3,6 +3,9 @@
 > **Status: PARKED (2026-11-19).** Only the export half was built; see
 > `2026-11-19-export-design-zip-design.md`. Opening a shared zip in the app is deferred.
 
+> **Amendment (2026-11-20):** the exporter writes every entry, `design.json` included, under one top-level
+> `<run_id>/` folder, so the opener must accept that layout.
+
 ## Intent
 
 A designer wants to hand a finished design to someone else. One download button per design produces a zip of

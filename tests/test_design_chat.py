@@ -270,3 +270,9 @@ def test_the_service_needs_an_llm_and_requirements(db: Path, monkeypatch: pytest
     monkeypatch.setattr(agent_service, "make_llm", lambda: ScriptedLLM(designer_turns=[_final("ok")]))
     with pytest.raises(ValueError, match="requirements"):
         agent_service.chat(agent_service.AgentRunView(status="error"), (), "q", db)
+
+
+def test_designer_system_prefers_multi_lever_what_ifs() -> None:
+    # Arrange / Act / Assert
+    assert "change several levers together" in DESIGNER_SYSTEM
+    assert "option explorer already covers the single levers" in DESIGNER_SYSTEM

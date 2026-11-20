@@ -126,17 +126,17 @@ class FabricationSettings(BaseModel):
     )
     ply_bearing_allow_pa: float = Field(15e6, gt=0.0, description="Allowable birch-ply edge bearing stress (Pa).")
     ply_shear_allow_pa: float = Field(
-        7e6, gt=0.0, description="Allowable birch aviation-ply panel shear stress (Pa), for shear-out checks (R33)."
+        7e6, gt=0.0, description="Allowable birch aviation-ply panel shear stress (Pa), for shear-out checks."
     )
     overwrap_layer_thickness_m: float = Field(
-        0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m), 200 g/m^2 cloth."
+        0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m); must exceed the dry cloth's areal mass at the cured density."
     )
     overwrap_cloth_g_m2: float = Field(
         200.0, gt=0.0, description="Areal weight of the dry carbon cloth one overwrap layer is laid from (g/m^2)."
     )
     overwrap_allow_pa: float = Field(250e6, gt=0.0, description="Allowable stress of hand-laid 0/90 cloth (Pa).")
     overwrap_density_kg_m3: float = Field(1500.0, gt=0.0, description="Cured overwrap density (kg/m^3).")
-    overwrap_max_layers: int = Field(12, ge=1, description="Most cloth layers a centreline overwrap may have (R29).")
+    overwrap_max_layers: int = Field(12, ge=1, description="Most cloth layers a centreline overwrap may have.")
     epoxy_lap_shear_pa: float = Field(15e6, gt=0.0, description="Epoxy lap-shear strength (Pa); sizes the wrap lap.")
     crutch_rail_min_m: float = Field(
         0.008, gt=0.0, description="Minimum crutch side-rail width beside a component opening (m)."

@@ -187,6 +187,8 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 | `bom.json` | selected COTS parts and total hardware mass |
 | `oml.step`, `oml.vsp3`, `assembly.step` | outer mould line, and internal structure with packed components |
 | `viewer_model.json`, `viewer.html` | `viewer_model.json` is the display mesh (tessellated parts) and CG; `viewer.html` is the self-contained page with that mesh and the replayed SITL flight trace inlined |
+| `kit/sheets/*.dxf` | laser-cut kit sheets (Group 1–2 designs): one DXF per sheet of stock, in mm, kerf-compensated |
+| `kit/build_sheet.md`, `kit/parts.csv` | build sheet (parts, stock tubes, joins, centreline overwrap lay-up, covering) and the parts list |
 | `ardupilot.param` | ArduPlane / QuadPlane parameters flown in SITL |
 | `sitl_report.json` | take-off, transition and roll/pitch doublet telemetry and metrics |
 | `critic_log.json`, `run_summary.json` | every critic pass and the final status |
@@ -201,6 +203,26 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 assumptions, sizing, parts, aero, CAD, flight test, critic gates and history, explorer options and lineage, with
 paths relative to the run folder. It is built when you download and exists only inside the zip; it is what a
 future "open a shared design" feature will read.
+
+## Building the laser-cut kit
+
+Group 1–2 designs (MTOW up to the DoD Group 2 limit) get a laser-cut internal structure: plywood ribs, formers,
+crutch and wing-mount plates cut from sheet, with stock carbon tubes for the spars and booms. Everything is in
+`kit/` inside the run folder:
+
+- `kit/sheets/<stock>-<n>.dxf`: one file per sheet of stock, in millimetres, with parts nested on the bed. Layers:
+  `CUT_OUTER` (outer outlines), `CUT_INNER` (holes and slots) and `ENGRAVE` (part labels). Outlines are
+  kerf-compensated, so slots press-fit.
+- `kit/build_sheet.md`: the parts, the tubes to cut, glued joins, covering and the kit mass. Its centreline joint
+  section gives the carbon overwrap lay-up: cloth, layer count and thickness, lap per side, and the order to wrap
+  the mitre between the two spar halves (the spar roots stay unglued so the wings detach).
+- `kit/parts.csv`: the parts list.
+
+The kit mass and CG feed into the as-built design. To change the bed, kerf, sheet and tube stock or the structural
+allowables, use **Laser kit settings** in the web form, or pass `--fabrication PATH` (a `FabricationSettings`
+JSON) on the command line. The settings used are saved with the run. Group 3 designs, or a design where no stock
+tube passes the structural checks or a part cannot fit the bed, get no kit: the run falls back to the shell mass
+model and the report carries a warning saying why.
 
 ## Critic gates (SRS §5)
 
