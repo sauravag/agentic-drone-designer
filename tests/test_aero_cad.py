@@ -17,6 +17,7 @@ from src.schemas.fabrication import DEFAULT_FABRICATION  # noqa: E402
 from src.tools.aero_cad import build, cad_packer, components, mass_properties, stability, structure  # noqa: E402
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_selig_dat  # noqa: E402
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
+from src.tools.fabrication import kit_export  # noqa: E402
 from src.tools.fabrication.kit import KitUnavailable  # noqa: E402
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
@@ -620,3 +621,67 @@ def test_tray_mass_follows_sized_avionics(designs: dict) -> None:
 def mm_systems_fraction() -> float:
     from src.tools.sizing.mass_model import SYSTEMS_FRACTION
     return SYSTEMS_FRACTION
+
+
+# ------------------------------------------------------------------------- kit files and 3D export ---
+def test_artifacts_carry_kit_paths(designs: dict, tmp_path: Path) -> None:
+    sizing, bom = designs["g1"]
+    lay = _fitted_layout(sizing, bom)
+    art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3",
+                                   _synthetic_oml(lay, tmp_path / "oml.step"), tmp_path)
+    assert art.kit_warning is None and art.kit_dir == str(tmp_path / "kit")
+    assert art.build_sheet_path is not None and Path(art.build_sheet_path).exists()
+    assert list((tmp_path / "kit" / "sheets").glob("*.dxf")) and (tmp_path / "kit" / "parts.csv").exists()
+    assert art.kit_mass_kg is not None and art.kit_mass_kg > 0
+
+
+def test_artifact_kit_mass_is_the_packed_kit_mass(packed, tmp_path: Path) -> None:
+    r = packed("g1")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    assert art.kit_mass_kg == pytest.approx(kit_mass_kg(r.kit, DEFAULT_FABRICATION), rel=1e-12)
+
+
+def test_fallback_artifacts_carry_the_warning(packed, tmp_path: Path) -> None:
+    r = packed("g3")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    assert art.kit_dir is None and art.build_sheet_path is None and art.kit_mass_kg is None
+    assert art.kit_warning == r.kit_warning and art.kit_warning.startswith("No laser kit: ")
+    assert not (tmp_path / "kit").exists()
+
+
+@pytest.mark.parametrize("error", [KitUnavailable("DXF writer broke"), RuntimeError("DXF writer broke")])
+def test_kit_file_failure_does_not_fail_the_run(packed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                caplog: pytest.LogCaptureFixture, error: Exception) -> None:
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(kit_export, "write_sheets", broken)
+    r = packed("g1")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    assert art.kit_warning == "kit files could not be written: DXF writer broke"
+    assert art.kit_dir is None and art.build_sheet_path is None
+    assert art.kit_mass_kg == pytest.approx(kit_mass_kg(r.kit, DEFAULT_FABRICATION))  # the kit was still packed
+    assert Path(art.assembly_step_path).exists() and art.viewer_model_path is not None
+    assert any(rec.levelname == "ERROR" and rec.exc_info for rec in caplog.records)
+
+
+def test_kit_solid_failure_keeps_the_assembly_without_structure(packed, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("BRep_API: command not done")
+
+    monkeypatch.setattr(cad_packer, "kit_solids", broken)
+    r = packed("g1")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    assert Path(art.assembly_step_path).exists()
+    assert art.kit_warning == "kit solids could not be built: BRep_API: command not done"
+    assert art.build_sheet_path is not None  # the kit files were still written
+
+
+def test_assembly_carries_the_kit_solids_not_shell_ribs(packed, tmp_path: Path) -> None:
+    r = packed("g1")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    solids = build123d.import_step(art.assembly_step_path).solids()
+    expected = (len(r.oml.solids()) + len(kit_export.kit_solids(r.kit, DEFAULT_FABRICATION))
+                + sum(len(c.solid().solids()) for c in r.components))
+    assert len(solids) == expected

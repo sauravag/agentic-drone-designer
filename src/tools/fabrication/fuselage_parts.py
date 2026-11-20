@@ -528,12 +528,14 @@ def check_skirt_clears_crutch(socket: Hole, depth_m: float, crutch_t_m: float) -
         raise KitUnavailable("socket web shear: the socket boss would reach down to the crutch")
 
 
-def pin_boss_blank(plate: bd.Face, pin: Hole, label: str) -> bd.Face:
-    """R31 plate pin boss before drilling: an annulus PIN_BOSS_WIDTH_M wide round the pin hole, clipped to the
-    plate's real material (its outline less tab notches, openings and other holes; its own pin hole counts as
-    material, the boss is drilled afterwards), so it never hangs over a notch, opening or edge."""
-    ring = circle_face(Hole(pin.x_m, pin.y_m, pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
-    material = plate.fuse(circle_face(pin)).clean()
+def pin_boss_blank(plate: bd.Face, plate_pin: Hole, boss_pin: Hole, label: str) -> bd.Face:
+    """R31 plate pin boss before drilling: an annulus PIN_BOSS_WIDTH_M wide round `boss_pin` (where the oblique pin
+    line crosses the boss slab, the hole the boss is drilled at), clipped to the plate's real material (its outline
+    less tab notches, openings and other holes), so it never hangs over a notch, opening or edge. The plate's own
+    pin hole (`plate_pin`, at the plate mid-plane) and the boss's hole count as material: the boss is drilled
+    afterwards, so neither leaves a sliver void."""
+    ring = circle_face(Hole(boss_pin.x_m, boss_pin.y_m, boss_pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
+    material = plate.fuse(circle_face(plate_pin), circle_face(boss_pin)).clean()
     return _single_face(_common(ring, material), label)
 
 
@@ -551,7 +553,7 @@ def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads,
     if spar.pin.plate_boss:
         labels = dict(zip((1, -1), PIN_BOSS_LABELS))
         plate_pin = frame.mount.holes[1]
-        blanks = {side: pin_boss_blank(plates[side].outline, plate_pin, labels[side]) for side in labels}
+        blanks = {side: pin_boss_blank(plates[side].outline, plate_pin, pin, labels[side]) for side in labels}
         parts += _bosses(frame, pin, blanks, labels)
     return parts
 

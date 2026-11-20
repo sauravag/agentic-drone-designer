@@ -1,5 +1,9 @@
-"""Task 8: nest kit parts on bed-sized sheets and write kerf-compensated DXF cut files."""
+"""Task 8: nest kit parts on bed-sized sheets and write kerf-compensated DXF cut files.
+Task 9: the build sheet, parts list and kit solids (`export_kit`, `kit_solids`)."""
 
+import csv
+import math
+import re
 import time
 from itertools import combinations
 from pathlib import Path
@@ -12,7 +16,18 @@ from ezdxf import bbox as dxf_bbox
 from src.schemas.fabrication import DEFAULT_FABRICATION
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication import nesting
-from src.tools.fabrication.kit_export import LABEL_HEIGHT_M, LABEL_MIN_HEIGHT_M, label_layout, write_sheets
+from src.tools.fabrication.kit_export import (
+    LABEL_HEIGHT_M,
+    LABEL_MIN_HEIGHT_M,
+    PARTS_CSV_COLUMNS,
+    carbon_solids,
+    export_kit,
+    kit_solids,
+    label_layout,
+    ply_solids,
+    write_sheets,
+)
+from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, part_item
 from src.tools.fabrication.nesting import MM_PER_M, Placement, kerf_outline, nest, placed_outline
 from tests.cad_helpers import hole_diameters
 from tests.test_fabrication_kit import _build
@@ -317,3 +332,146 @@ def test_build_kit_rejects_duplicate_labels():
 
     with pytest.raises(KitUnavailable, match="P-3"):
         _assert_unique_labels([_plate("P-3", 0.05, 0.05), _plate("P-3", 0.05, 0.05)], [])
+
+
+# ---------------------------------------------------------------------- Task 9: build sheet, parts list ---
+BUILD_SHEET_SECTIONS = ("Summary", "Parts", "Tubes", "Linear stock", "Joins", "Centreline joint", "Covering",
+                        "Hardware")
+MASS_TOL_KG = 1e-6
+VOLUME_MASS_REL = 1e-6
+
+
+@pytest.fixture(scope="module")
+def kit_files(kit, tmp_path_factory):
+    return export_kit(kit, S, tmp_path_factory.mktemp("kit_g1"))
+
+
+@pytest.fixture(scope="module")
+def g2_kit_files(g2_kit, tmp_path_factory):
+    return export_kit(g2_kit, S, tmp_path_factory.mktemp("kit_g2"))
+
+
+def _section(text: str, heading: str) -> str:
+    """The body of `## heading` up to the next `## `."""
+    match = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+    assert match, f"no section {heading!r}"
+    return match.group(1)
+
+
+def test_export_kit_writes_the_sheets_build_sheet_and_parts_list(kit_files):
+    assert kit_files.kit_dir.name == "kit" and kit_files.build_sheet == kit_files.kit_dir / "build_sheet.md"
+    assert kit_files.parts_csv == kit_files.kit_dir / "parts.csv"
+    assert kit_files.sheets and all(p.exists() and p.parent == kit_files.kit_dir / "sheets" for p in kit_files.sheets)
+    assert kit_files.build_sheet.exists() and kit_files.parts_csv.exists()
+
+
+def test_build_sheet_lists_every_label(kit, kit_files):
+    text = kit_files.build_sheet.read_text()
+    for label in [p.label for p in kit.parts] + [t.label for t in kit.tubes]:
+        assert f"| {label} |" in text, label
+
+
+def test_build_sheet_sections_come_in_order(kit_files):
+    headings = re.findall(r"^## (.+)$", kit_files.build_sheet.read_text(), re.M)
+    assert tuple(headings) == BUILD_SHEET_SECTIONS
+
+
+def test_build_sheet_summary_carries_the_packing_kit_mass_and_sheet_counts(kit, kit_files):
+    summary = _section(kit_files.build_sheet.read_text(), "Summary")
+    total = float(re.search(r"Kit mass: \*\*([0-9.]+) kg\*\*", summary).group(1))
+    assert total == pytest.approx(kit_mass_kg(kit, S), abs=5e-5)
+    mass_table = summary.split("| Item | Mass (g) |")[1].split("\n\n")[0]
+    grams = [float(g) for g in re.findall(r"^\| [^|]+ \| ([0-9.]+) \|$", mass_table, re.M)]
+    assert len(grams) == 6
+    assert sum(grams) / 1000 == pytest.approx(kit_mass_kg(kit, S), abs=1e-4)  # breakdown adds up, tubes included
+    for stock, placements in nest(kit.parts, S).items():
+        assert f"| {stock} | {len({p.sheet for p in placements})} |" in summary
+
+
+def test_build_sheet_tubes_give_od_id_and_length_in_mm(kit, kit_files):
+    tubes = _section(kit_files.build_sheet.read_text(), "Tubes")
+    spar = next(t for t in kit.tubes if t.label == "SP-R1")
+    assert f"| SP-R1 | spar | 12.0 × 10.0 | {spar.length_m * 1000:.1f} |" in tubes
+
+
+def test_build_sheet_linear_stock_totals_each_kind(kit, kit_files):
+    linear = _section(kit_files.build_sheet.read_text(), "Linear stock")
+    stringers = sum(s.length_m for s in kit.linear if s.kind == "stringer")
+    assert f"| stringer | 3.0 × 3.0 mm | {stringers * 1000:.0f} |" in linear
+
+
+def test_build_sheet_joins_and_covering(kit, kit_files):
+    text = kit_files.build_sheet.read_text()
+    assert all(join in _section(text, "Joins") for join in kit.joins)
+    covering = _section(text, "Covering")
+    assert f"{kit.film_area_m2:.3f} m²" in covering and f"{kit.film_area_m2 * S.film_kg_m2 * 1000:.1f} g" in covering
+    assert f"{kit.fuselage_cover_area_m2:.3f} m²" in covering
+
+
+def test_centreline_joint_gives_the_overwrap_and_the_lay_up_order(kit, kit_files):
+    joint = _section(kit_files.build_sheet.read_text(), "Centreline joint")
+    wrap = kit.overwrap
+    assert f"{wrap.layers} layers" in joint and "0.25 mm" in joint and "200 g/m² carbon" in joint
+    assert f"{wrap.lap_m * 1000:.1f} mm per side" in joint and f"{wrap.od_m * 1000:.1f} mm" in joint
+    assert f"{wrap.mass_kg * 1000:.1f} g" in joint
+    steps = [joint.index(s) for s in ("Insert the sockets", "Glue the mitre", "Wrap between the plates")]
+    assert steps == sorted(steps)
+    assert "| WM-RD |" in joint and "| WM-LD |" in joint  # g1's socket bosses
+
+
+def test_g2_build_sheet_lists_the_pin_bosses_and_its_pin_size(g2_kit, g2_kit_files):
+    text = g2_kit_files.build_sheet.read_text()
+    joint = _section(text, "Centreline joint")
+    for label in ("WM-RPD", "WM-LPD", "WR-PD", "WL-PD"):
+        assert f"| {label} |" in joint, label
+    assert "2 × 5 mm anti-rotation pins" in _section(text, "Hardware")
+
+
+def test_g1_hardware_lists_the_fixed_items_and_4_mm_pins(kit_files):
+    hardware = _section(kit_files.build_sheet.read_text(), "Hardware")
+    for item in ("2 nylon wing bolts M5", "2 captive-nut plates", "2 × 4 mm anti-rotation pins", "2 wing connectors"):
+        assert item in hardware
+
+
+def test_parts_csv_mass_sums_to_part_mass(kit, kit_files):
+    with kit_files.parts_csv.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        rows = list(reader)
+    assert tuple(reader.fieldnames) == PARTS_CSV_COLUMNS
+    assert [r["label"] for r in rows] == [p.label for p in kit.parts]
+    assert sum(float(r["mass_g"]) for r in rows) / 1000 == pytest.approx(
+        sum(part_item(p, S).mass_kg for p in kit.parts), abs=MASS_TOL_KG)
+    assert all(r["sheet"] for r in rows)
+    rib = next(r for r in rows if r["family"] == "rib")
+    assert rib["stock"] == "Birch ply 1.5 mm" and float(rib["thickness_mm"]) == 1.5
+
+
+def test_parts_csv_includes_the_doublers(g2_kit, g2_kit_files):
+    with g2_kit_files.parts_csv.open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    labels = {r["label"] for r in rows}
+    assert {"WM-RPD", "WM-LPD", "WR-PD", "WL-PD", "WM-RD", "WM-LD"} <= labels
+    assert sum(float(r["mass_g"]) for r in rows) / 1000 == pytest.approx(
+        sum(part_item(p, S).mass_kg for p in g2_kit.parts), abs=MASS_TOL_KG)
+
+
+def test_kit_solid_volume_matches_part_mass(kit):
+    ply = ply_solids(kit, S)
+    carbon = carbon_solids(kit)
+    tubes = carbon[:len(kit.tubes)]
+    densities = [S.sheet_for(p.family).density_kg_m3 for p in kit.parts for _ in range(p.quantity)]
+    solid_mass = sum(s.volume * rho for s, rho in zip(ply, densities, strict=True))
+    solid_mass += sum(s.volume for s in tubes) * S.carbon_density_kg_m3
+    items = {i.name: i.mass_kg for i in kit_mass_items(kit, S)}
+    expected = sum(items[p.label] for p in kit.parts) + sum(items[t.label] for t in kit.tubes)
+    assert solid_mass == pytest.approx(expected, rel=VOLUME_MASS_REL)
+    assert len(kit_solids(kit, S)) == len(ply) + len(carbon)
+
+
+def test_overwrap_halves_are_solids_round_the_sockets(kit):
+    halves = carbon_solids(kit)[len(kit.tubes):]
+    wrap = kit.overwrap
+    socket_od = next(t.tube.od_m for t in kit.tubes if t.role == "socket")
+    annulus = math.pi / 4 * (wrap.od_m**2 - socket_od**2)
+    assert len(halves) == 2
+    assert sum(h.volume for h in halves) == pytest.approx(2 * annulus * wrap.lap_m, rel=VOLUME_MASS_REL)

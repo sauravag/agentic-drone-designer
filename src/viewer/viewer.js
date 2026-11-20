@@ -7,7 +7,8 @@ const DEG = Math.PI / 180;
 const PALETTE = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45',
   '#469990', '#9a6324', '#800000', '#808000', '#000075', '#fabed4', '#ffd8b1', '#aaffc3'];
 const SKIN_COLOR = '#9fb3c8';
-const STRUCTURE_COLOR = '#8a8f96';
+const STRUCTURE_COLOR = '#8a8f96';  // shell-model ribs and spars
+const KIT_STRUCTURE_COLORS = Object.freeze({ 'structure (ply)': '#c9a66b', 'structure (carbon)': '#2e3238' });
 const TRAIL_COLOR = '#f59e0b';
 const SCALE_BAR_COLOR = '#f97316';
 const XRAY_SKIN_OPACITY = 0.2;
@@ -118,8 +119,12 @@ function formatMass(massKg) {
 // ---------------------------------------------------------------------------------------------------------
 
 function partMaterial(group, color) {
-  const base = group === 'skin' ? SKIN_COLOR : group === 'structure' ? STRUCTURE_COLOR : color;
+  const base = group === 'skin' ? SKIN_COLOR : color;
   return new THREE.MeshStandardMaterial({ color: base, side: THREE.DoubleSide, metalness: 0.1, roughness: 0.7 });
+}
+
+function structureColor(name) {
+  return Object.hasOwn(KIT_STRUCTURE_COLORS, name) ? KIT_STRUCTURE_COLORS[name] : STRUCTURE_COLOR;
 }
 
 function buildAircraft(model) {
@@ -127,7 +132,9 @@ function buildAircraft(model) {
   const entries = [];
   let componentIndex = 0;
   for (const part of model.parts) {
-    const color = part.group === 'component' ? PALETTE[componentIndex++ % PALETTE.length] : null;
+    let color = null;
+    if (part.group === 'component') color = PALETTE[componentIndex++ % PALETTE.length];
+    else if (part.group === 'structure') color = structureColor(part.name);
     const geometry = partGeometry(part, model.cg_m);
     const mesh = geometry ? new THREE.Mesh(geometry, partMaterial(part.group, color)) : null;
     if (mesh) {
@@ -232,7 +239,7 @@ function applyMode(aircraft, cgMarker, xray) {
 function fillLegend(aircraft) {
   const list = document.getElementById('legend-list');
   for (const { part, color } of aircraft.entries) {
-    if (part.group !== 'component') continue;
+    if (part.group === 'skin') continue; // structure (ply / carbon, or the shell model's) and every component
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = color;

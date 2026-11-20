@@ -44,7 +44,8 @@ from src.tools.aero_cad.mesh_export import export_viewer_model
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
 from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart
-from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
+from src.tools.fabrication.kit_export import KitFiles, export_kit, kit_solids, remove_kit_files
+from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual_gear_item
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
@@ -60,6 +61,9 @@ STEP_IMPORT_TO_M: Final[float] = 1e-3  # OCC's STEP reader always returns millim
 STRUCTURE_PART_PREFIXES: Final[tuple[str, ...]] = ("WM-", "FW-", "BM-")  # wing-box plates, firewall, boom mounts
 STRUCTURE_TUBE_ROLES: Final[tuple[str, ...]] = ("socket",)
 NO_KIT_PREFIX: Final[str] = "No laser kit: "
+KIT_FILES_PREFIX: Final[str] = "kit files could not be written: "
+KIT_SOLIDS_PREFIX: Final[str] = "kit solids could not be built: "
+WARNING_SEPARATOR: Final[str] = "; "
 
 Box3 = tuple[tuple[float, float, float], tuple[float, float, float]]  # axis-aligned (min corner, max corner)
 
@@ -85,6 +89,7 @@ class PackingResult:
     kit: Optional[Kit] = None
     kit_warning: Optional[str] = None  # why there is no kit, when there is none
     mass_items: tuple[mp.MassItem, ...] = ()  # the items combined into `mass`
+    settings: FabricationSettings = DEFAULT_FABRICATION  # what the kit was built with (its export uses them too)
 
     @property
     def interference_count(self) -> int:
@@ -367,7 +372,7 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
         collision_count=count_collisions(components, parts.boom_obstacles(layout)),
         containment_violations=parts.containment_violations(components, oml),
         shell_areal_density_kg_m2=final.shell_areal_density_kg_m2, oml=oml, structure=final.structure,
-        kit=final.kit, kit_warning=final.kit_warning, mass_items=mass_items,
+        kit=final.kit, kit_warning=final.kit_warning, mass_items=mass_items, settings=settings,
     )
     if not result.is_balanced:
         logger.warning("packing unbalanced: SM %.3f (band %.2f-%.2f), %d collisions, %d skin interferences",
@@ -375,25 +380,54 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     return result
 
 
-def _structure_solids(result: PackingResult) -> list[bd.Shape]:
-    """Shell-model ribs and spars (none with a kit)."""
-    if result.structure is None:
-        return []
-    return [*result.structure.ribs, *result.structure.spars]
+def _structure_solids(result: PackingResult) -> tuple[list[bd.Shape], Optional[str]]:
+    """The airframe structure for the assembly: the kit's solids (replacing the shell ribs and spars) when there is a
+    kit, else the shell-model ribs and spars. A kit-solid failure never fails the run: it is logged, the assembly goes
+    without structure, and the warning says why."""
+    if result.kit is None:
+        return ([] if result.structure is None else [*result.structure.ribs, *result.structure.spars]), None
+    try:
+        return list(kit_solids(result.kit, result.settings)), None
+    except Exception as exc:  # noqa: BLE001 - geometry-kernel errors must not fail the run
+        warning = f"{KIT_SOLIDS_PREFIX}{exc}"
+        logger.exception("%s - the assembly carries no kit structure", warning)
+        return [], warning
 
 
-def _export_assembly(result: PackingResult, path: Path) -> Path:
-    solids = [result.oml, *_structure_solids(result), *(c.solid() for c in result.components)]
+def _export_assembly(result: PackingResult, path: Path, structure: Sequence[bd.Shape]) -> Path:
+    solids = [result.oml, *structure, *(c.solid() for c in result.components)]
     path.parent.mkdir(parents=True, exist_ok=True)
     if not bd.export_step(bd.Compound(solids), str(path), unit=bd.Unit.M):
         raise CADPackingError(f"STEP export failed: {path}")
     return path
 
 
+def _export_kit_files(result: PackingResult, out_dir: Path) -> tuple[Optional[KitFiles], Optional[str]]:
+    """The kit's DXF sheets, build sheet and parts list (none, and an earlier run's removed, without a kit). Any
+    failure is logged and returned as a warning: the run goes on with the kit as packed."""
+    try:
+        if result.kit is None:
+            remove_kit_files(out_dir)
+            return None, None
+        return export_kit(result.kit, result.settings, out_dir), None
+    except Exception as exc:  # noqa: BLE001 - nesting, DXF or file errors must not fail the run
+        warning = f"{KIT_FILES_PREFIX}{exc}"
+        logger.exception("%s - the run continues without them", warning)
+        return None, warning
+
+
+def _kit_warning(*warnings: Optional[str]) -> Optional[str]:
+    present = [w for w in warnings if w]
+    return WARNING_SEPARATOR.join(present) if present else None
+
+
 def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_dir: Path) -> CADArtifacts:
-    """Write `assembly.step` and report CG, static margin, interference, as-built mass and inertia.
-    `collision_count` covers part-part, part-boom and part-skin interference."""
-    assembly: Path = _export_assembly(result, out_dir / "assembly.step")
+    """Write `assembly.step` (with the kit's solids when there is a kit), the viewer model and the kit files, and
+    report CG, static margin, interference, as-built mass and inertia. `collision_count` covers part-part, part-boom
+    and part-skin interference. No kit-file or kit-solid failure fails the run: `kit_warning` says what went wrong."""
+    kit_files, files_warning = _export_kit_files(result, out_dir)
+    structure, solids_warning = _structure_solids(result)
+    assembly: Path = _export_assembly(result, out_dir / "assembly.step", structure)
     viewer_model: Optional[Path] = export_viewer_model(result, out_dir)
     ixx, iyy, izz, ixz = mp.body_inertia(result.mass)
     return CADArtifacts(
@@ -401,6 +435,10 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
         x_cg_m=result.mass.cg_m[0], static_margin=result.static_margin, collision_count=result.interference_count,
         as_built_mass_kg=result.mass.mass_kg, ixx_kgm2=ixx, iyy_kgm2=iyy, izz_kgm2=izz, ixz_kgm2=ixz,
         viewer_model_path=str(viewer_model) if viewer_model else None,
+        kit_dir=str(kit_files.kit_dir) if kit_files else None,
+        build_sheet_path=str(kit_files.build_sheet) if kit_files else None,
+        kit_mass_kg=kit_mass_kg(result.kit, result.settings) if result.kit is not None else None,
+        kit_warning=_kit_warning(result.kit_warning, files_warning, solids_warning),
     )
 
 

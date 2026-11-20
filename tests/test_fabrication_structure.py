@@ -405,12 +405,35 @@ def test_pin_boss_is_clipped_to_the_plate_material_not_its_box():
     plate = rect_face(0.0, 0.0, 0.100, 0.040)
     opening = rect_face(0.050 + 0.0026 + 0.0021, 0.010, 0.080, 0.030)  # beside the pin, inside the ring's reach
     plate = plate.cut(opening, circle_face(pin)).faces()[0]
-    blank = pin_boss_blank(plate, pin, "WM-RPD")
+    blank = pin_boss_blank(plate, pin, pin, "WM-RPD")
     overlap = blank.intersect(opening)
     pieces = overlap if isinstance(overlap, list) else ([] if overlap is None else [overlap])
     assert sum(f.area for p in pieces for f in p.faces()) == pytest.approx(0.0, abs=1e-12)
     ring_area = math.pi * ((pin.diameter_m / 2 + PIN_BOSS_WIDTH_M) ** 2)
     assert 0.0 < blank.area < ring_area  # clipped by the opening, and the hole is not yet drilled
+
+
+def test_pin_boss_ring_is_centred_on_the_hole_it_is_drilled_at():
+    """An oblique pin crosses the plate mid-plane and the boss slab at different points: the ring must be concentric
+    with the boss's own (inner-face) hole, not the plate's, or the annulus is off-centre."""
+    plate_pin = Hole(0.050, 0.020, 0.0052)
+    boss_pin = Hole(0.0515, 0.0205, 0.0052)
+    plate = rect_face(0.0, 0.0, 0.100, 0.040).cut(circle_face(plate_pin)).faces()[0]
+    blank = pin_boss_blank(plate, plate_pin, boss_pin, "WM-RPD")
+    centre = blank.center()
+    assert (centre.X, centre.Y) == pytest.approx((boss_pin.x_m, boss_pin.y_m), abs=1e-9)
+    assert blank.area == pytest.approx(math.pi * (boss_pin.diameter_m / 2 + PIN_BOSS_WIDTH_M) ** 2, rel=1e-9)
+    assert not blank.inner_wires()  # the plate's own hole counts as material: no sliver void
+
+
+def test_g2_pin_bosses_are_concentric_with_their_holes(g2_kit):
+    parts = {p.label: p for p in g2_kit.parts}
+    for label in PIN_BOSS_LABELS:
+        outline = parts[label].outline
+        (hole,) = outline.inner_wires()
+        centre = hole.edges()[0].arc_center
+        arcs = [e for e in outline.outer_wire().edges() if e.geom_type == bd.GeomType.CIRCLE]
+        assert arcs and all((e.arc_center - centre).length < 1e-9 for e in arcs), label
 
 
 def test_g2_pin_bosses_lie_on_their_plates(g2_kit):

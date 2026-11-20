@@ -106,6 +106,10 @@ class CADArtifacts(_Frozen):
     izz_kgm2: Positive
     ixz_kgm2: float
     viewer_model_path: Optional[str] = None  # display mesh for the 3D viewer; None if export failed
+    kit_dir: Optional[str] = None  # laser-cut kit folder (DXF sheets, build sheet, parts list); None without kit files
+    build_sheet_path: Optional[str] = None
+    kit_mass_kg: Optional[NonNegative] = None  # packed kit mass (tubes, overwrap, covering, glue); None without a kit
+    kit_warning: Optional[str] = None  # why there is no kit, or why its files or solids could not be written
 
 
 class FCSArtifacts(_Frozen):

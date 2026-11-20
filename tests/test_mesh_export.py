@@ -12,8 +12,12 @@ import pytest
 build123d = pytest.importorskip("build123d")
 
 from src.pipeline import design_warnings  # noqa: E402
+from src.schemas.fabrication import DEFAULT_FABRICATION  # noqa: E402
 from src.schemas.state import CADArtifacts  # noqa: E402
 from src.tools.aero_cad import mesh_export  # noqa: E402
+from src.tools.fabrication.kit_export import carbon_solids, ply_solids  # noqa: E402
+from src.tools.fabrication.kit_mass import kit_mass_items  # noqa: E402
+from tests.test_fabrication_kit import _build  # noqa: E402
 
 
 def _box(size: float = 0.1) -> "build123d.Solid":
@@ -23,7 +27,8 @@ def _box(size: float = 0.1) -> "build123d.Solid":
 def _fake_result(component_names: tuple[str, ...] = ("battery",), ribs: int = 3, spars: int = 2) -> types.SimpleNamespace:
     comps = tuple(types.SimpleNamespace(name=n, mass_kg=1.0, solid=lambda: _box()) for n in component_names)
     structure = types.SimpleNamespace(ribs=tuple(_box() for _ in range(ribs)), spars=tuple(_box() for _ in range(spars)))
-    return types.SimpleNamespace(oml=_box(0.5), structure=structure, components=comps)
+    return types.SimpleNamespace(oml=_box(0.5), structure=structure, components=comps, kit=None,
+                                 settings=DEFAULT_FABRICATION)
 
 
 def test_a_box_tessellates_inside_its_bounds() -> None:
@@ -33,6 +38,17 @@ def test_a_box_tessellates_inside_its_bounds() -> None:
     assert xyz.min(axis=0) == pytest.approx([0, 0, 0], abs=1e-6)
     assert xyz.max(axis=0) == pytest.approx([1, 0.5, 0.25], abs=1e-6)
     assert max(part.indices) < len(xyz)
+
+
+def test_tessellation_matches_build123d_on_a_many_faced_solid() -> None:
+    """The indexed triangle read gives exactly build123d's mesh (its iterator is ~10 ms per face on OCP)."""
+    plate = build123d.Rectangle(0.2, 0.1) - build123d.Pos(0.05, 0) * build123d.Circle(0.01)
+    solid = build123d.extrude(plate.faces()[0], amount=0.003).solids()[0]
+    vertices, triangles = build123d.Solid(solid.wrapped).tessellate(mesh_export.LINEAR_TOLERANCE_M,
+                                                                    mesh_export.ANGULAR_TOLERANCE_RAD)
+    part = mesh_export.tessellate(solid, "plate", "structure", None)
+    assert part.positions == tuple(c for v in vertices for c in (v.X, v.Y, v.Z))
+    assert part.indices == tuple(i for tri in triangles for i in tri)
 
 
 def test_the_model_file_round_trips(tmp_path: Path) -> None:
@@ -52,10 +68,39 @@ def test_repeated_component_names_get_suffixes() -> None:
     assert parts[0].group == "skin" and parts[0].mass_kg is None
 
 
-def test_structure_is_one_merged_part() -> None:
+def test_shell_structure_is_one_merged_part() -> None:
     parts = mesh_export.model_parts(_fake_result())
     structure = [p for p in parts if p.group == "structure"]
     assert len(structure) == 1 and structure[0].mass_kg is None and len(structure[0].indices) > 0
+
+
+@pytest.fixture(scope="module")
+def g1_kit(designs: dict, g1_kit_inputs: tuple) -> object:
+    return _build(designs, g1_kit_inputs, "g1")
+
+
+def _bounds(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return points.min(axis=0), points.max(axis=0)
+
+
+def test_viewer_structure_part_comes_from_the_kit(g1_kit: object) -> None:
+    result = _fake_result(spars=0, ribs=0)
+    result = types.SimpleNamespace(**{**vars(result), "structure": None, "kit": g1_kit})
+    parts = mesh_export.model_parts(result)
+    structure = {p.name: p for p in parts if p.group == "structure"}
+    assert set(structure) == {"structure (ply)", "structure (carbon)"}
+    items = {i.name: i.mass_kg for i in kit_mass_items(g1_kit, DEFAULT_FABRICATION)}
+    ply_kg = sum(items[p.label] for p in g1_kit.parts)
+    carbon_kg = sum(items[t.label] for t in g1_kit.tubes) + g1_kit.overwrap.mass_kg
+    assert structure["structure (ply)"].mass_kg == pytest.approx(ply_kg)
+    assert structure["structure (carbon)"].mass_kg == pytest.approx(carbon_kg)
+    for name, solids in (("structure (ply)", ply_solids(g1_kit, DEFAULT_FABRICATION)),
+                         ("structure (carbon)", carbon_solids(g1_kit))):
+        mesh = np.array(structure[name].positions).reshape(-1, 3)
+        box = build123d.Compound(solids).bounding_box()
+        assert len(structure[name].indices) > 0
+        assert np.allclose(_bounds(mesh), ([box.min.X, box.min.Y, box.min.Z], [box.max.X, box.max.Y, box.max.Z]),
+                           atol=mesh_export.LINEAR_TOLERANCE_M)
 
 
 def test_export_failure_returns_none_and_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
