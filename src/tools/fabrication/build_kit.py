@@ -6,6 +6,8 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
   of its outer member's actual end (R18 bonded overlap; that end may be trimmed inboard of the step, see below).
 - `SK-R`, `SK-L` socket tubes on each wing's spar axis from the centreline to the skin joint (R14). They, and the
   spar roots inside them, meet the other side's pair in a mitre at the centreline (`MITRE_LABELS`).
+- R36 wing retention (`Kit.wing_bolt`): one M5 bolt per side from the wing-box plate's inner face into the nut
+  captive in `NP-R` / `NP-L`; the bolt is hardware (glue and hardware allowance), the nut plates are kit parts.
 - `PN-R`, `PN-L` anti-rotation pins (`SparPlan.pin`: 4 mm, or larger per R31) on the 70 % chord line, from the
   wing-box plate's inner face to PIN_REACH_M outboard of the root doubler (R18).
 - `TB-1`, `LB-R`, `LB-L` booms as `boom_parts` places them.
@@ -64,6 +66,7 @@ from src.tools.fabrication.kit import (
     TubePart,
     TubeRole,
     Vec3,
+    WingBolt,
 )
 from src.tools.fabrication.rib_outline import camber_point, keeps_web, notched_profile
 from src.tools.fabrication.tubes import (
@@ -92,6 +95,13 @@ from src.tools.fabrication.wing_parts import (
     tail_spar_tubes,
     wing_rib_stations,
     wing_ribs,
+)
+from src.tools.fabrication.wing_retention import (
+    BOLT_CHORD_FRACTION,
+    BOLT_THREAD_MARGIN_M,
+    BOLT_WASHER_THICKNESS_M,
+    M5_NUT_HEIGHT_M,
+    bolt_length_m,
 )
 
 MAX_DOD_GROUP: Final[int] = 2
@@ -336,6 +346,20 @@ def _overwrap(spar: SparPlan, fuselage: Sequence[KitPart], settings: Fabrication
     return size_overwrap(spar.centre_moment_nm, spar.socket, _plate_gap_m(fuselage, settings), settings)
 
 
+def _wing_bolt(layout: AircraftLayout, spar: SparPlan, fuselage: Sequence[KitPart],
+               settings: FabricationSettings) -> WingBolt:
+    """R36: the bolt grips from the right plate's inner face (washer under the head) through the root doubler and
+    the captive nut (seated in `NP-R`, standing M5_NUT_HEIGHT_M outboard of the doubler), plus a thread margin."""
+    plate = next(p for p in fuselage if p.label == "WM-R")
+    t_plate, t_root = settings.sheet_for("plate").thickness_m, settings.sheet_for("doubler").thickness_m
+    outer = plate.location.position.Y
+    grip = (spar.joint_y_m + t_root + M5_NUT_HEIGHT_M - (outer - t_plate) + BOLT_WASHER_THICKNESS_M
+            + BOLT_THREAD_MARGIN_M)
+    x, z = socket_axis_m(layout, outer - t_plate / 2.0, BOLT_CHORD_FRACTION)
+    aft = (BOLT_CHORD_FRACTION - SPAR_CHORD_STATION) * layout.wing.chord_at(spar.joint_y_m)
+    return WingBolt(length_m=bolt_length_m(grip), grip_m=grip, plate_x_m=x, plate_z_m=z, aft_of_spar_m=aft)
+
+
 def _assert_unique_labels(parts: Sequence[KitPart], tubes: Sequence[TubePart]) -> None:
     """Labels identify parts on the sheets, in the build sheet and in the DXF kerf cache: never two alike."""
     counts = Counter([*(p.label for p in parts), *(t.label for t in tubes)])
@@ -376,4 +400,4 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     _assert_unique_labels(parts, tubes)
     return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout), spar=spar,
-               joins=join_notes(parts), overwrap=overwrap)
+               joins=join_notes(parts), overwrap=overwrap, wing_bolt=_wing_bolt(layout, spar, fuselage, settings))

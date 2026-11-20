@@ -25,9 +25,10 @@ import build123d as bd
 
 from src.schemas.fabrication import PartFamily, TubeStock
 from src.tools.fabrication.tubes import KitUnavailable, Overwrap, SparPlan
+from src.tools.fabrication.wing_retention import WingBolt
 
 __all__ = ["Box2", "CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "OVERWRAP_LABEL", "Overwrap",
-           "TubePart", "Vec3"]
+           "TubePart", "Vec3", "WingBolt"]
 
 Vec3 = tuple[float, float, float]
 Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local XY
@@ -93,6 +94,7 @@ class Kit:
     spar: SparPlan
     joins: tuple[str, ...]  # human-readable, e.g. "C-1a + C-1b at x = 0.512 m"
     overwrap: Overwrap  # carbon cloth over the centreline socket mitre (R24)
+    wing_bolt: WingBolt  # R36 wing retention: each side's bolt, for the build sheet
 
     def overwrap_halves(self) -> tuple[TubePart, ...]:
         """The overwrap as one tube per socket (wrapped OD over the socket OD), each lapping its socket from the

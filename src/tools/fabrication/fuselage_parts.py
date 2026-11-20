@@ -22,6 +22,8 @@
   F / (2 w t) <= ply_shear_allow_pa / FS), a socket-boss doubler `WM-RD` / `WM-LD` (an annulus SOCKET_BOSS_WIDTH_M
   wide plus a skirt below the hole grown until the web passes, cut from plate stock) is glued round the socket hole
   on each plate's inner face; none is cut when the plate suffices. R31 pin bosses `WM-RPD` / `WM-LPD` likewise.
+  Each plate also carries the R36 wing bolt's M5 clearance hole between the socket and the pin; the bolt's washer
+  seats on the inner face clear of the bosses, and its head clear of every component (`wing_retention`).
 - Boom mounts `BM-1`, `BM-2`: 3 mm bulkheads in the tail cone carrying the stock tail-boom tube, one just aft of
   the boom root, one as far aft as a MIN_WEB_M rim around the boom hole allows (at least 30 mm apart).
 
@@ -34,7 +36,7 @@ DXF export.
 
 import math
 from dataclasses import dataclass
-from typing import Final, Optional, Sequence
+from typing import Final, NamedTuple, Optional, Sequence
 
 import build123d as bd
 
@@ -51,7 +53,6 @@ from src.tools.aero_cad.structure import SPAR_CHORD_STATION, STATION_EPS
 from src.tools.fabrication.kit import KitPart, Vec3
 from src.tools.fabrication.rib_outline import (
     Hole,
-    camber_point,
     circle_face,
     drill,
     keeps_web,
@@ -70,7 +71,16 @@ from src.tools.fabrication.tubes import (
     boom_tube,
     overwrap_layers,
 )
-from src.tools.fabrication.wing_parts import PIN_BOSS_WIDTH_M, PIN_CHORD_FRACTION, pin_hole_m
+from src.tools.fabrication.wing_parts import PIN_BOSS_WIDTH_M, PIN_CHORD_FRACTION, pin_hole_m, socket_axis_m
+from src.tools.fabrication.wing_retention import (
+    BOLT_CHORD_FRACTION,
+    BOLT_HEAD_STACK_M,
+    BOLT_WASHER_DIAMETER_M,
+    M5_CLEARANCE_HOLE_M,
+    check_clear_of_holes,
+    check_clear_of_outlines,
+    check_head_clear,
+)
 
 FORMER_PITCH_M: Final[float] = 0.12
 FIRST_FORMER_FRACTION: Final[float] = 0.10  # of fuselage length
@@ -103,6 +113,14 @@ PIN_BOSS_LABELS: Final[tuple[str, str]] = ("WM-RPD", "WM-LPD")  # plate-side pin
 Cut = tuple[str, bd.Face]  # (what passes through, cutter in the part's local XY)
 
 
+class PlateHoles(NamedTuple):
+    """A wing-box plate's holes in its local (x, z): the socket, the anti-rotation pin and the R36 wing bolt."""
+
+    socket: Hole
+    pin: Hole
+    bolt: Hole
+
+
 @dataclass(frozen=True)
 class _Mount:
     """Wing-box side plate (right side; the left is its mirror). x runs from the forward socket former's front face
@@ -115,7 +133,7 @@ class _Mount:
     tab_z_m: tuple[float, float]
     y_inner_m: float
     y_outer_m: float
-    holes: tuple[Hole, Hole]  # socket, pin, in (x, z)
+    holes: "PlateHoles"  # in (x, z)
 
 
 @dataclass(frozen=True)
@@ -253,16 +271,6 @@ def _assert_clear(frame: _Frame, label: str, x_m: float, outline: bd.Face) -> No
 
 
 # ------------------------------------------------------------------------------------- stations ---
-def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0, fraction: float = SPAR_CHORD_STATION) -> tuple[float, float]:
-    """(x, z) where a wing's spar axis (or, with `fraction`, its chord line at that fraction on the camber line)
-    crosses span station y. Each socket tube is coaxial with its own wing's spar, so it follows the dihedral and
-    meets the other at the centreline (y = 0)."""
-    wing = layout.wing
-    chord = wing.chord_at(y_m)
-    dx, dz = camber_point(load_airfoil(layout.airfoil), chord, fraction)
-    return wing.x_le_root_m + dx, wing.z_at(y_m) + dz
-
-
 def _mount_stations(layout: AircraftLayout, spar: SparPlan) -> tuple[float, float, float]:
     """(fore, aft, pin) former stations: either side of the x band the two socket tubes sweep (OD/2 + 10 mm
     clear), and just aft of the root pin, where the wing-box plates end."""
@@ -366,15 +374,18 @@ def _oblique_diameter_m(layout: AircraftLayout, fraction: float, od_m: float, th
     return oblique_diameter_m(od_m, thickness_m, math.hypot(x1 - x0, z1 - z0) / span)
 
 
-def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, y_m: float) -> tuple[Hole, Hole]:
-    """Socket and pin holes (x, z) where each wing's spar axis / pin line crosses the plate mid-plane at y, sized
-    for the rod's oblique crossing plus the fit clearance."""
+def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, y_m: float) -> PlateHoles:
+    """Socket, pin and wing-bolt holes (x, z) where each wing's spar axis / pin line / bolt line crosses the plate
+    slab whose mid-plane is at y, sized for the rod's oblique crossing plus the fit clearance (the bolt's M5
+    clearance hole needs none)."""
     t, clearance = settings.sheet_for("plate").thickness_m, settings.fit_clearance_m
     socket_d = _oblique_diameter_m(layout, SPAR_CHORD_STATION, spar.socket.od_m, t) + clearance
     pin_nominal = pin_hole_m(spar.pin.rod_m, settings) - clearance
     pin_d = _oblique_diameter_m(layout, PIN_CHORD_FRACTION, pin_nominal, t) + clearance
-    return (Hole(*socket_axis_m(layout, y_m), socket_d),
-            Hole(*socket_axis_m(layout, y_m, PIN_CHORD_FRACTION), pin_d))
+    bolt_d = _oblique_diameter_m(layout, BOLT_CHORD_FRACTION, M5_CLEARANCE_HOLE_M, t)
+    return PlateHoles(Hole(*socket_axis_m(layout, y_m), socket_d),
+                      Hole(*socket_axis_m(layout, y_m, PIN_CHORD_FRACTION), pin_d),
+                      Hole(*socket_axis_m(layout, y_m, BOLT_CHORD_FRACTION), bolt_d))
 
 
 def _plate_outer_y(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings, rim_m: float) -> float:
@@ -405,15 +416,16 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
     skin = min(fuselage_radius_at(layout, x) for x in (fore, x_max, *profile_corners(layout, fore, x_max)))
     rim = skin - settings.fuselage_cover_thickness_m - MIN_WEB_M
     y_outer = _plate_outer_y(layout, spar, settings, rim)
-    socket, pin = _plate_holes(layout, spar, settings, y_outer - t_plate / 2.0)
-    z_bottom, z_top = socket.y_m - socket.diameter_m / 2.0 - MIN_WEB_M, math.sqrt(rim**2 - y_outer**2)
+    holes = _plate_holes(layout, spar, settings, y_outer - t_plate / 2.0)
+    z_bottom = holes.socket.y_m - holes.socket.diameter_m / 2.0 - MIN_WEB_M
+    z_top = math.sqrt(rim**2 - y_outer**2)
     if z_bottom <= settings.sheet_for("crutch").thickness_m / 2.0:
         raise KitUnavailable("the wing-box plates would reach down to the crutch")
     tab_z = (z_bottom + MOUNT_TAB_INSET_M, z_top - MOUNT_TAB_INSET_M)
     if tab_z[1] - tab_z[0] < MOUNT_TAB_MIN_HEIGHT_M:
         raise KitUnavailable(f"the wing-box plates are too shallow ({(z_top - z_bottom) * 1e3:.1f} mm) for their tabs")
     return _Mount(fore, x_max, (fore + t_former, pin_station), (z_bottom, z_top), tab_z,
-                  y_outer - t_plate, y_outer, (socket, pin))
+                  y_outer - t_plate, y_outer, holes)
 
 
 def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
@@ -427,7 +439,7 @@ def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: Fabricati
     floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m]
     depth = socket_boss_depth_m(spar, settings, loads)
     if depth is not None:
-        hole = _inner_face_holes(layout, spar, settings, mount)[0]
+        hole = _inner_face_holes(layout, spar, settings, mount).socket
         floors.append(hole.y_m - hole.diameter_m / 2.0 - depth)
     return min(floors)
 
@@ -451,8 +463,8 @@ def _mount_plate(frame: _Frame, side: int) -> KitPart:
     plain = _single_face(body.fuse(*tabs).clean(), label)
     pieces = _cut_openings(plain, plain, _plate_component_cuts(frame, side), None, tabs, label, "plate")
     outline = _single_face(bd.Compound(pieces), label)
-    socket, pin = m.holes
-    for hole, others, name in ((socket, [], "socket"), (pin, [socket], "pin")):
+    socket, pin, bolt = m.holes
+    for hole, others, name in ((socket, [], "socket"), (pin, [socket], "pin"), (bolt, [socket, pin], "wing bolt")):
         if not keeps_web(outline, hole, others):
             raise KitUnavailable(f"no room for the {name} hole with a {WEB_TEXT} web in {label}")
     outline = drill(outline, m.holes, label)
@@ -498,8 +510,9 @@ def socket_boss_depth_m(spar: SparPlan, settings: FabricationSettings, loads: Pl
 
 
 def _inner_face_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
-                      mount: _Mount) -> tuple[Hole, Hole]:
-    """Socket and pin holes where the lines cross a boss slab on the plate's inner face."""
+                      mount: _Mount) -> PlateHoles:
+    """Socket, pin and bolt holes where the lines cross a slab on the plate's inner face (a boss, or the bolt's
+    washer)."""
     t = settings.sheet_for("plate").thickness_m
     return _plate_holes(layout, spar, settings, mount.y_inner_m - t / 2.0)
 
@@ -543,7 +556,7 @@ def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads,
                      plates: dict[int, KitPart]) -> list[KitPart]:
     """R27/R32/R33 socket bosses (annulus + skirt below) and R31 pin bosses (an annulus clipped to each plate's real
     material, so it adds no height), each only when needed."""
-    socket, pin = _inner_face_holes(frame.layout, spar, frame.settings, frame.mount)
+    socket, pin, _ = _inner_face_holes(frame.layout, spar, frame.settings, frame.mount)
     depth = socket_boss_depth_m(spar, frame.settings, loads)
     parts: list[KitPart] = []
     if depth is not None:
@@ -552,10 +565,25 @@ def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads,
         parts += _bosses(frame, socket, {1: blank, -1: blank}, BOSS_LABELS)
     if spar.pin.plate_boss:
         labels = dict(zip((1, -1), PIN_BOSS_LABELS))
-        plate_pin = frame.mount.holes[1]
+        plate_pin = frame.mount.holes.pin
         blanks = {side: pin_boss_blank(plates[side].outline, plate_pin, pin, labels[side]) for side in labels}
         parts += _bosses(frame, pin, blanks, labels)
     return parts
+
+
+def _check_bolt_seats(frame: _Frame, spar: SparPlan, bosses: Sequence[KitPart]) -> None:
+    """R36: the bolt's washer seats on each plate's inner face MIN_WEB_M clear of the socket, the pin and every boss,
+    and its head (BOLT_HEAD_STACK_M proud of that face) is clear of every component."""
+    m = frame.mount
+    socket, pin, bolt = _inner_face_holes(frame.layout, spar, frame.settings, m)
+    washer = Hole(bolt.x_m, bolt.y_m, BOLT_WASHER_DIAMETER_M)
+    half = BOLT_WASHER_DIAMETER_M / 2.0
+    for side, label in ((1, "WM-R"), (-1, "WM-L")):
+        check_clear_of_holes(washer, (socket, pin), label, "the socket or the pin")
+        check_clear_of_outlines(washer, [b.outline for b in bosses], label, "a boss")
+        y0, y1 = sorted((side * m.y_inner_m, side * (m.y_inner_m - BOLT_HEAD_STACK_M)))
+        head = ((bolt.x_m - half, y0, bolt.y_m - half), (bolt.x_m + half, y1, bolt.y_m + half))
+        check_head_clear(frame.components, head, label)
 
 
 # ---------------------------------------------------------------------------------- half-formers ---
@@ -754,5 +782,6 @@ def fuselage_parts(
     )
     formers = _half_formers(frame)  # first, so a too-big component is reported against the former it breaks
     plates = {side: _mount_plate(frame, side) for side in (-1, 1)}
-    return (_crutch(frame), *formers, *_firewall(frame), plates[-1], plates[1],
-            *_wing_box_bosses(frame, spar, loads, plates), *_boom_mount_parts(frame))
+    bosses = _wing_box_bosses(frame, spar, loads, plates)
+    _check_bolt_seats(frame, spar, bosses)
+    return (_crutch(frame), *formers, *_firewall(frame), plates[-1], plates[1], *bosses, *_boom_mount_parts(frame))

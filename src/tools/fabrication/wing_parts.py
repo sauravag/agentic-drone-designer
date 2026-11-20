@@ -4,7 +4,9 @@ Wing ribs start at the spar joint on the fuselage skin and repeat every `RIB_PIT
 has the spar hole sized to the spar tube at its station, a wiring hole inboard of the aileron servo,
 lightening holes, and is split at the hinge inside the aileron span. The root rib is a 3 mm doubler with
 an anti-rotation pin hole (the R31 rod); when the pin needs one, a pin boss doubler `WR-PD` / `WL-PD`
-(an annulus PIN_BOSS_WIDTH_M wide round the pin hole, doubler stock) is glued to the root rib's outboard face.
+(an annulus PIN_BOSS_WIDTH_M wide round the pin hole, doubler stock) is glued to the root rib's outboard face. The
+root rib also carries the R36 wing bolt hole, and the captive-nut plate `NP-R` / `NP-L` is glued to its outboard face
+(`wing_retention`).
 Each tail surface's ribs carry its own stock spar, strength-sized at the root for the R35 tail load
 (`tail_spar_tubes`), wherever it fits the local depth.
 """
@@ -18,7 +20,7 @@ import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings, PartFamily, TubeStock
 from src.schemas.state import SizingOutput
-from src.tools.aero_cad.airfoil_geometry import AirfoilShape
+from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
 from src.tools.aero_cad.layout import (
     FUSELAGE_PROFILE,
     AILERON_CHORD_FRACTION,
@@ -55,10 +57,19 @@ from src.tools.fabrication.tubes import (
     tail_surface_load_n,
     usable_depth_m,
 )
+from src.tools.fabrication.wing_retention import (
+    BOLT_CHORD_FRACTION,
+    M5_CLEARANCE_HOLE_M,
+    NUT_PLATE_DIAMETER_M,
+    NUT_PLATE_LABELS,
+    check_clear_of_holes,
+    nut_plate_outline,
+)
 
 AILERON_HINGE_FRACTION: Final[float] = 1.0 - AILERON_CHORD_FRACTION
 TAIL_HINGE_FRACTION: Final[float] = 1.0 - TAIL_CONTROL_CHORD_FRACTION
-WIRING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.50, 0.45, 0.40)  # 50 % chord, forward if too thin
+WIRING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.50, 0.45, 0.40, 0.35)  # 50 % chord, forward if too thin
+# (or, on the root rib, if the R36 wing bolt and its nut plate are in the way)
 WIRING_HOLE_DIAMETER_M: Final[float] = 0.008
 PIN_CHORD_FRACTION: Final[float] = 0.70
 PIN_BOSS_WIDTH_M: Final[float] = 0.003  # R31 pin boss annulus radial width
@@ -104,15 +115,25 @@ def wing_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
     return tuple(start_m + k * RIB_PITCH_M for k in range(count))
 
 
+def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0, fraction: float = SPAR_CHORD_STATION) -> tuple[float, float]:
+    """(x, z) where a wing's spar axis (or, with `fraction`, its chord line at that fraction on the camber line)
+    crosses span station y. Each socket tube is coaxial with its own wing's spar, so it follows the dihedral and
+    meets the other at the centreline (y = 0)."""
+    wing = layout.wing
+    dx, dz = camber_point(load_airfoil(layout.airfoil), wing.chord_at(y_m), fraction)
+    return wing.x_le_root_m + dx, wing.z_at(y_m) + dz
+
+
 def _label(prefix: str, index: int) -> str:
     return f"{prefix}{index + 1:02d}"
 
 
 def _rib_pieces(
     label: str, family: PartFamily, profile: bd.Face, chord: float, holes: Sequence[Hole],
-    hinge_x_m: Optional[float], airfoil: AirfoilShape, location: bd.Location,
+    hinge_x_m: Optional[float], airfoil: AirfoilShape, location: bd.Location, keep_out: Sequence[Hole] = (),
 ) -> tuple[KitPart, ...]:
-    """One notched rib profile (or its fore + aft pieces at the hinge), drilled and lightened.
+    """One notched rib profile (or its fore + aft pieces at the hinge), drilled and lightened. Lightening holes
+    also keep MIN_WEB_M from each `keep_out` circle (a part glued to the rib, not drilled).
 
     All pieces share `location`."""
     faces = (profile,) if hinge_x_m is None else split_at(profile, hinge_x_m)
@@ -123,7 +144,7 @@ def _rib_pieces(
     centres = [camber_point(airfoil, chord, f) for f in LIGHTENING_CHORD_FRACTIONS]
     parts: list[KitPart] = []
     for name, face, own in zip(names, faces, owned):
-        light = lightening_holes(face, own, centres)
+        light = lightening_holes(face, (*own, *keep_out), centres)
         parts.append(KitPart(name, family, drill(face, own + light, name), location))
     return tuple(parts)
 
@@ -179,15 +200,28 @@ def _wing_rib(
     profile = notched_profile(airfoil, chord, settings)
     member = spar_member_at(spar, y)
     holes = [_checked(profile, oblique_hole(wing, airfoil, SPAR_CHORD_STATION, y, mid, member.od_m, t, settings), [], label)]
-    if is_root:
-        pin_hole_m(spar.pin.rod_m, settings)  # the pin rod must be in stock
-        pin = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, mid, spar.pin.rod_m, t, settings)
-        holes.append(_checked(profile, pin, holes, label))
-    if y < servo_y:  # aileron servo leads run inboard from the servo bay
-        holes.append(_placed_hole(profile, airfoil, chord, WIRING_CHORD_FRACTIONS, WIRING_HOLE_DIAMETER_M, holes, label))
+    keep_out = _root_holes(profile, layout, airfoil, spar, settings, holes, label) if is_root else []
+    if y < servo_y:  # aileron servo leads run inboard from the servo bay, clear of the nut plate
+        holes.append(_placed_hole(profile, airfoil, chord, WIRING_CHORD_FRACTIONS, WIRING_HOLE_DIAMETER_M,
+                                  [*holes, *keep_out], label))
     hinge = AILERON_HINGE_FRACTION * chord if _in_span(y / wing.semi_span_m, AILERON_ETA) else None
     location = _rib_location(wing.x_le_root_m, y, wing.z_at(y), t, is_root)
-    return _rib_pieces(label, family, profile, chord, holes, hinge, airfoil, location)
+    return _rib_pieces(label, family, profile, chord, holes, hinge, airfoil, location, keep_out)
+
+
+def _root_holes(profile: bd.Face, layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan,
+                settings: FabricationSettings, holes: list[Hole], label: str) -> list[Hole]:
+    """Adds the root doubler's anti-rotation pin hole (R31) and wing bolt hole (R36) to `holes`, each with its web
+    checked; returns the nut plate's footprint, which the wiring and lightening holes keep clear of."""
+    wing, y, t = layout.wing, spar.joint_y_m, settings.sheet_for("doubler").thickness_m
+    mid = y + t / 2.0
+    pin_hole_m(spar.pin.rod_m, settings)  # the pin rod must be in stock
+    holes.append(_checked(profile, oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, mid, spar.pin.rod_m, t,
+                                                settings), holes, label))
+    holes.append(_checked(profile, oblique_hole(wing, airfoil, BOLT_CHORD_FRACTION, y, mid, M5_CLEARANCE_HOLE_M,
+                                                t, settings, clearance_m=0.0), holes, label))
+    centre = _nut_plate_centre(layout, airfoil, spar, settings)
+    return [Hole(centre.x_m, centre.y_m, NUT_PLATE_DIAMETER_M)]
 
 
 def line_lean(surface: SurfacePlanform, airfoil: AirfoilShape, fraction: float) -> float:
@@ -200,14 +234,17 @@ def line_lean(surface: SurfacePlanform, airfoil: AirfoilShape, fraction: float) 
 
 
 def oblique_hole(surface: SurfacePlanform, airfoil: AirfoilShape, fraction: float, station_m: float, mid_m: float,
-                 rod_od_m: float, thickness_m: float, settings: FabricationSettings) -> Hole:
+                 rod_od_m: float, thickness_m: float, settings: FabricationSettings,
+                 clearance_m: Optional[float] = None) -> Hole:
     """R19: rib-local hole for a rod on the surface's `fraction` line through a rib at `station_m` whose slab
-    mid-plane is at `mid_m`: centred where the line crosses the mid-plane, OD/cos + t tan + clearance across."""
+    mid-plane is at `mid_m`: centred where the line crosses the mid-plane, OD/cos + t tan + clearance across (the
+    settings' fit clearance unless `clearance_m` is given, e.g. 0 for a bolt's own clearance hole)."""
     dx, dv = camber_point(airfoil, surface.chord_at(mid_m), fraction)
     if surface.is_symmetric:  # the rib is placed at its station's dihedral height
         dv += surface.z_at(mid_m) - surface.z_at(station_m)
     lean = line_lean(surface, airfoil, fraction)
-    return Hole(dx, dv, oblique_diameter_m(rod_od_m, thickness_m, lean) + settings.fit_clearance_m)
+    clearance = settings.fit_clearance_m if clearance_m is None else clearance_m
+    return Hole(dx, dv, oblique_diameter_m(rod_od_m, thickness_m, lean) + clearance)
 
 
 def _checked(profile: bd.Face, hole: Hole, others: Sequence[Hole], label: str) -> Hole:
@@ -255,6 +292,33 @@ def _root_pin_boss(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan
     return (KitPart(label, "doubler", drill(ring, (hole,), label), location),)
 
 
+def _nut_plate_centre(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan,
+                      settings: FabricationSettings) -> Hole:
+    """Where the bolt line crosses the nut plate's slab [y + t, y + 2t] (outboard of the root doubler), rib-local."""
+    y, t = spar.joint_y_m, settings.sheet_for("doubler").thickness_m
+    return oblique_hole(layout.wing, airfoil, BOLT_CHORD_FRACTION, y, y + ROOT_BOSS_MID_SLABS * t,
+                        M5_CLEARANCE_HOLE_M, t, settings, clearance_m=0.0)
+
+
+def _nut_plate(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan,
+               settings: FabricationSettings) -> KitPart:
+    """R36 `NP-R`: the captive-nut plate on the root doubler's outboard face (slab [y + t, y + 2t], beside any pin
+    boss), inside the root profile and MIN_WEB_M clear of the spar, the pin and the pin boss."""
+    wing, y, label = layout.wing, spar.joint_y_m, NUT_PLATE_LABELS[1]
+    t = settings.sheet_for("doubler").thickness_m
+    mid, centre = y + ROOT_BOSS_MID_SLABS * t, _nut_plate_centre(layout, airfoil, spar, settings)
+    outline = nut_plate_outline(centre.x_m, centre.y_m, settings, label)
+    if outline.cut(notched_profile(airfoil, wing.chord_at(y), settings)).area > AREA_EPS_M2:
+        raise KitUnavailable(f"wing bolt: the nut plate {label} does not fit inside the root rib")
+    spar_rod = oblique_hole(wing, airfoil, SPAR_CHORD_STATION, y, mid, spar_member_at(spar, y).od_m, t, settings)
+    pin = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, mid, spar.pin.rod_m, t, settings)
+    ring = Hole(pin.x_m, pin.y_m, pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M) if spar.pin.root_boss else pin
+    disc = Hole(centre.x_m, centre.y_m, NUT_PLATE_DIAMETER_M)
+    check_clear_of_holes(disc, (spar_rod, ring), label, "the spar, the pin or its boss")
+    location = _rib_location(wing.x_le_root_m, y + t, wing.z_at(y), t, True)  # slab [y + t, y + 2t]
+    return KitPart(label, "doubler", outline, location)
+
+
 def _servo_plate(wing: SurfacePlanform, y: float) -> KitPart:
     """Flat plate in the chord plane of the first aileron bay, with a cut-out for the servo body."""
     half_c, half_s = SERVO_PLATE_CHORD_M / 2.0, SERVO_PLATE_SPAN_M / 2.0
@@ -268,13 +332,15 @@ def wing_ribs(
     layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
 ) -> tuple[KitPart, ...]:
     """Right-panel ribs `WR-01…` (+ aileron pieces `WR-kA`, servo plate `WR-SV`, pin boss `WR-PD` when needed),
-    then the left panel `WL-…`."""
+    then the left panel `WL-…`, then the R36 captive-nut plates `NP-R`, `NP-L`."""
     stations = wing_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
     servo_y = _servo_bay_y(stations, layout.wing)
     right = [p for i, y in enumerate(stations) for p in _wing_rib(i, y, servo_y, layout, airfoil, spar, settings)]
     right.append(_servo_plate(layout.wing, servo_y))
     right.extend(_root_pin_boss(layout, airfoil, spar, settings))
-    return tuple(right) + tuple(_mirrored(p, "WR-", "WL-", settings) for p in right)
+    nut = _nut_plate(layout, airfoil, spar, settings)
+    nuts = (nut, _mirrored(nut, NUT_PLATE_LABELS[1], NUT_PLATE_LABELS[-1], settings))
+    return tuple(right) + tuple(_mirrored(p, "WR-", "WL-", settings) for p in right) + nuts
 
 
 def _skin_over(layout: AircraftLayout, x0_m: float, x1_m: float) -> float:

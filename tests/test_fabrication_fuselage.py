@@ -143,11 +143,11 @@ def _mid_y(plate: KitPart, settings) -> float:
     return 0.5 * (box.min.Y + box.max.Y)
 
 
-def test_wing_mount_plates_carry_socket_and_pin_holes(g1_kit_inputs, fuselage):
+def test_wing_mount_plates_carry_socket_bolt_and_pin_holes(g1_kit_inputs, fuselage):
     layout, _, spar, settings = g1_kit_inputs
     for label in ("WM-L", "WM-R"):
         plate = ribs_by_label(fuselage)[label]
-        socket_d, pin_d = hole_diameters(plate.outline)  # fore to aft
+        socket_d, _, pin_d = hole_diameters(plate.outline)  # fore to aft: socket, wing bolt (R36), pin
         # OD + clearance, plus a small allowance for the rod crossing the plate at the dihedral / sweep angle
         nominal_socket = spar.socket.od_m + settings.fit_clearance_m
         nominal_pin = spar.pin.rod_m + settings.fit_clearance_m
@@ -168,7 +168,7 @@ def test_side_plate_holes_follow_the_dihedral_spar_axis(inputs, request):
     wing = layout.wing
     for plate in (p for p in _fuselage(kit_inputs) if p.label in ("WM-R", "WM-L")):
         y = _mid_y(plate, settings)
-        socket, pin = _plate_holes(plate)
+        socket, _, pin = _plate_holes(plate)  # the R36 wing bolt sits between them
         assert (socket.X, socket.Z) == pytest.approx(socket_axis_m(layout, y), abs=1e-9), plate.label
         assert (pin.X, pin.Z) == pytest.approx(socket_axis_m(layout, y, PIN_CHORD_FRACTION), abs=1e-9), plate.label
         assert socket.Z > wing.z_root_m + abs(y) * math.tan(math.radians(wing.dihedral_deg)) - 1e-12
@@ -319,12 +319,12 @@ def test_component_crossing_a_wing_box_plate_gets_an_opening(g1_kit_inputs):
     layout, _, spar, settings = g1_kit_inputs
     plate = ribs_by_label(_fuselage(g1_kit_inputs, components=()))["WM-R"]
     box = part_solid(plate, settings).bounding_box()
-    socket, pin = _plate_holes(plate)
-    x_mid, z_mid = 0.5 * (socket.X + pin.X), 0.5 * (box.min.Z + box.max.Z)
+    _, bolt, pin = _plate_holes(plate)
+    x_mid, z_mid = 0.5 * (bolt.X + pin.X), 0.5 * (box.min.Z + box.max.Z)
     lead = PlacedComponent("servo_lead", "box", 0.01, (0.01, 0.02, 0.004), (x_mid, 0.5 * (box.min.Y + box.max.Y), z_mid))
     parts = _fuselage(g1_kit_inputs, components=(lead,))
     cut = ribs_by_label(parts)["WM-R"]
-    assert len(cut.outline.inner_wires()) == 3  # socket, pin and the opening
+    assert len(cut.outline.inner_wires()) == 4  # socket, wing bolt, pin and the opening
     assert _common_volume(part_solid(cut, settings), lead.solid()) < 1e-12
 
 

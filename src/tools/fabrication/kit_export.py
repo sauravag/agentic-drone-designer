@@ -43,6 +43,7 @@ from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailab
 from src.tools.fabrication.kit_mass import GLUE_NAME, kit_mass_items, part_item
 from src.tools.fabrication.nesting import EPS_M, MM_PER_M, QUARTER_TURN_DEG, Placement, kerfed_part, nest, place_kerfed
 from src.tools.fabrication.wing_parts import ROOT_PIN_BOSS_LABEL
+from src.tools.fabrication.wing_retention import BOLT_CHORD_FRACTION
 
 __all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "LABEL_HEIGHT_M", "LABEL_MIN_HEIGHT_M", "LabelLayout",
            "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids", "export_kit", "kit_solids", "label_layout",
@@ -92,8 +93,16 @@ BOSS_ROLES: Final[dict[str, str]] = {
     ROOT_PIN_BOSS_LABEL: "pin boss, outboard face of the right root rib",
     LEFT_ROOT_PIN_BOSS_LABEL: "pin boss, outboard face of the left root rib",
 }
-FIXED_HARDWARE: Final[tuple[str, ...]] = ("2 nylon wing bolts M5", "2 captive-nut plates")
+WING_NUTS: Final[str] = "2 M5 nuts, one captive in each nut plate (`NP-R`, `NP-L`)"
 WING_CONNECTORS: Final[str] = "2 wing connectors"
+RETENTION_STEPS: Final[tuple[str, ...]] = (
+    "Glue `NP-R` to the outboard face of `WR-01` (and `NP-L` to `WL-01`) over the bolt hole, press an M5 nut into "
+    "its hexagon and fix it with a drop of epoxy: the nut is captive.",
+    "Drill the fuselage cover through the bolt holes of `WM-R` and `WM-L` once the cover is on.",
+    "Plug each wing's spar into its socket with the pin in its holes.",
+    "From inside the fuselage, put a washer on the bolt and drive it through `WM-R` (or `WM-L`), the cover and "
+    "`WR-01` (or `WL-01`) into the captive nut; tighten by hand, it is nylon.",
+)
 LINEAR_KINDS: Final[tuple[LinearKind, ...]] = ("stringer", "le", "te")
 
 
@@ -458,8 +467,14 @@ def _covering(kit: Kit, settings: FabricationSettings) -> list[str]:
 
 
 def _hardware(kit: Kit) -> list[str]:
+    bolt = kit.wing_bolt
+    bolts = f"2 nylon wing bolts M5 × {_to_mm(bolt.length_m):.0f} mm with washers (grip {_to_mm(bolt.grip_m):.1f} mm)"
     pins = f"2 × {round(_to_mm(kit.spar.pin.rod_m), 1):g} mm anti-rotation pins"
-    return [f"- {item}" for item in (*FIXED_HARDWARE, pins, WING_CONNECTORS)]
+    where = (f"Wing bolt (R36), one per side: spanwise on the wing's chord line at {BOLT_CHORD_FRACTION:.1%} chord, "
+             f"{_to_mm(bolt.aft_of_spar_m):.0f} mm aft of the spar axis at the root; it crosses `WM-R` at "
+             f"x = {_to_mm(bolt.plate_x_m):.0f} mm, z = {_to_mm(bolt.plate_z_m):.0f} mm (`WM-L` mirrored).")
+    steps = [f"{n}. {step}" for n, step in enumerate(RETENTION_STEPS, 1)]
+    return [*(f"- {item}" for item in (bolts, WING_NUTS, pins, WING_CONNECTORS)), "", where, "", *steps]
 
 
 def build_sheet_text(kit: Kit, settings: FabricationSettings, placements: Mapping[str, Sequence[Placement]]) -> str:

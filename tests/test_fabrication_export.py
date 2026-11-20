@@ -464,7 +464,8 @@ def test_g2_build_sheet_lists_the_pin_bosses_and_its_pin_size(g2_kit, g2_kit_fil
 
 def test_g1_hardware_lists_the_fixed_items_and_4_mm_pins(kit_files):
     hardware = _section(kit_files.build_sheet.read_text(), "Hardware")
-    for item in ("2 nylon wing bolts M5", "2 captive-nut plates", "2 × 4 mm anti-rotation pins", "2 wing connectors"):
+    for item in ("2 nylon wing bolts M5 ×", "2 M5 nuts, one captive in each nut plate", "2 × 4 mm anti-rotation pins",
+                 "2 wing connectors"):
         assert item in hardware
 
 
