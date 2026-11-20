@@ -11,14 +11,14 @@ from ezdxf import bbox as dxf_bbox
 
 from src.schemas.fabrication import DEFAULT_FABRICATION
 from src.tools.fabrication.kit import KitPart, KitUnavailable
-from src.tools.fabrication.kit_export import label_point, write_sheets
-from src.tools.fabrication.nesting import Placement, kerf_outline, nest, placed_outline
+from src.tools.fabrication import kit_export
+from src.tools.fabrication.kit_export import LABEL_HEIGHT_M, LABEL_MIN_HEIGHT_M, label_layout, write_sheets
+from src.tools.fabrication.nesting import MM_PER_M, Placement, kerf_outline, nest, placed_outline
 from tests.cad_helpers import hole_diameters
 from tests.test_fabrication_kit import _build
 
 S = DEFAULT_FABRICATION
 KERF_M = 0.00015
-MM_PER_M = 1000.0
 GAP_TOL_M = 1e-9
 G2_NEST_BUDGET_S = 30.0
 SLOT_W_M = 0.003
@@ -116,6 +116,17 @@ def test_part_too_big_for_the_bed_is_unavailable():
         nest([_plate("HUGE", 0.45, 0.45)], S)
 
 
+def test_short_parts_fill_the_strip_beside_a_tall_part():
+    parts = [_plate("TALL", 0.40, 0.30), _plate("S", 0.15, 0.10, quantity=3)]
+    placements = nest(parts, S)["Birch ply 3 mm"]
+    assert {p.sheet for p in placements} == {1}
+    _assert_on_bed_and_apart(placements)
+
+
+def test_g1_three_mm_parts_fit_two_sheets(kit):
+    assert max(p.sheet for p in nest(kit.parts, S)["Birch ply 3 mm"]) == 2
+
+
 def test_quantity_places_copies_and_overflows_to_more_sheets():
     placements = nest([_plate("Q", 0.25, 0.18, quantity=6)], S)["Birch ply 3 mm"]
     assert len(placements) == 6
@@ -144,6 +155,14 @@ def test_kerf_narrows_slots_by_exactly_one_kerf():
     assert slot.bounding_box().size.Y == pytest.approx(0.02 - KERF_M)
 
 
+def test_kerf_narrows_open_notches_by_exactly_one_kerf():
+    plate = (bd.Rectangle(0.1, 0.05) - bd.Pos(0, 0.025) * bd.Rectangle(SLOT_W_M, 0.02)).faces()[0]
+    k = kerf_outline(plate, KERF_M)
+    section = k.intersect(bd.Pos(0, 0.02) * bd.Rectangle(0.2, 1e-6).faces()[0])  # a thin band across the notch
+    xs = sorted((e.bounding_box().min.X, e.bounding_box().max.X) for e in section.faces())
+    assert len(xs) == 2 and xs[1][0] - xs[0][1] == pytest.approx(SLOT_W_M - KERF_M)
+
+
 def test_zero_kerf_leaves_the_outline_unchanged():
     f = plate_with_hole(0.1, 0.05, hole_d=0.01)
     assert kerf_outline(f, 0.0).area == pytest.approx(f.area)
@@ -168,7 +187,8 @@ def test_every_label_engraved_once(kit, tmp_path):
     texts = _texts(write_sheets(nest(kit.parts, S), S, tmp_path))
     assert len(texts) == sum(p.quantity for p in kit.parts)
     assert sorted(t.dxf.text for t in texts) == sorted(p.label for p in kit.parts for _ in range(p.quantity))
-    assert all(t.dxf.layer == "ENGRAVE" and t.dxf.height == pytest.approx(4.0) for t in texts)
+    assert all(t.dxf.layer == "ENGRAVE" for t in texts)
+    assert all(LABEL_MIN_HEIGHT_M * MM_PER_M - 1e-9 <= t.dxf.height <= LABEL_HEIGHT_M * MM_PER_M + 1e-9 for t in texts)
 
 
 def test_dxf_geometry_is_kerf_compensated_in_millimetres(tmp_path):
@@ -182,10 +202,61 @@ def test_dxf_geometry_is_kerf_compensated_in_millimetres(tmp_path):
     assert outer.extmin.x == pytest.approx(S.margin_m * MM_PER_M)
 
 
+def _assert_label_box_in_material(face: bd.Face, layout) -> None:
+    box = bd.Pos(layout.x_m, layout.y_m) * bd.Rot(0, 0, layout.rotation_deg) * bd.Rectangle(layout.width_m,
+                                                                                         layout.height_m)
+    common = box.faces()[0].intersect(face)
+    shapes = common if isinstance(common, list) else [common]
+    assert sum(sh.area for sh in shapes if sh is not None) == pytest.approx(box.area, rel=1e-6)
+
+
 def test_label_sits_inside_the_material_of_a_ring():
     ring = (bd.Circle(0.05) - bd.Circle(0.035)).faces()[0]
-    x, y, _ = label_point(ring)
-    assert ring.is_inside(bd.Vector(x, y, 0)) and bd.Vector(x, y).length > 0.035
+    layout = label_layout(ring, "BM-1")
+    assert layout.fits and layout.height_m == pytest.approx(LABEL_HEIGHT_M)
+    _assert_label_box_in_material(ring, layout)
+
+
+def test_label_shrinks_to_fit_a_small_part():
+    part = bd.Rectangle(0.025, 0.005).faces()[0]
+    layout = label_layout(part, "WR-07A")
+    assert layout.fits and LABEL_MIN_HEIGHT_M <= layout.height_m < LABEL_HEIGHT_M
+    _assert_label_box_in_material(part, layout)
+
+
+def test_label_keeps_clear_of_holes():
+    plate = (bd.Rectangle(0.03, 0.012) - bd.Circle(0.0045)).faces()[0]
+    layout = label_layout(plate, "P-1")
+    assert layout.fits
+    _assert_label_box_in_material(plate, layout)
+
+
+def test_label_too_long_for_any_height_is_engraved_at_the_floor():
+    layout = label_layout(bd.Rectangle(0.004, 0.003).faces()[0], "A-VERY-LONG-LABEL")
+    assert not layout.fits and layout.height_m == pytest.approx(LABEL_MIN_HEIGHT_M)
+
+
+def test_small_part_label_is_shrunk_in_the_dxf(tmp_path):
+    part = KitPart("WR-07A", "rib", bd.Rectangle(0.025, 0.005).faces()[0], bd.Location())
+    (text,) = _texts(write_sheets(nest([part], S), S, tmp_path))
+    assert LABEL_MIN_HEIGHT_M * MM_PER_M <= text.dxf.height < LABEL_HEIGHT_M * MM_PER_M
+
+
+def test_rewriting_removes_stale_sheets(tmp_path):
+    first = write_sheets(nest([_plate("Q", 0.25, 0.18, quantity=6)], S), S, tmp_path)
+    keep = tmp_path / "kit" / "sheets" / "notes.txt"
+    keep.write_text("not a sheet")
+    second = write_sheets(nest([_plate("Q", 0.25, 0.18)], S), S, tmp_path)
+    assert len(first) == 2 and len(second) == 1
+    assert sorted((tmp_path / "kit" / "sheets").glob("*.dxf")) == list(second) and keep.exists()
+
+
+def test_kerf_offset_is_computed_once_per_part(tmp_path, monkeypatch):
+    calls: list[str] = []
+    real = kit_export.kerf_outline
+    monkeypatch.setattr(kit_export, "kerf_outline", lambda face, kerf: calls.append("k") or real(face, kerf))
+    write_sheets(nest([_plate("Q", 0.05, 0.05, quantity=3)], S), S, tmp_path)
+    assert len(calls) == 1
 
 
 def test_dxf_writing_is_deterministic(kit, tmp_path):
@@ -198,17 +269,17 @@ def test_dxf_writing_is_deterministic(kit, tmp_path):
 
 
 def test_label_runs_along_the_longer_side_and_reads_level_on_round_parts():
-    assert label_point(bd.Rectangle(0.01, 0.1).faces()[0])[2] == pytest.approx(90.0)
-    assert label_point(bd.Rectangle(0.1, 0.01).faces()[0])[2] == pytest.approx(0.0)
-    assert label_point(bd.Circle(0.05).faces()[0])[2] == pytest.approx(0.0)
+    assert label_layout(bd.Rectangle(0.01, 0.1).faces()[0], "R").rotation_deg == pytest.approx(90.0)
+    assert label_layout(bd.Rectangle(0.1, 0.01).faces()[0], "R").rotation_deg == pytest.approx(0.0)
+    assert label_layout(bd.Circle(0.05).faces()[0], "R").rotation_deg == pytest.approx(0.0)
 
 
 def test_label_falls_back_to_the_centre_when_no_grid_point_is_in_the_material():
     strip_m = 0.0002
     ell = (bd.Pos(0.05, strip_m / 2) * bd.Rectangle(0.1, strip_m)
            + bd.Pos(strip_m / 2, 0.05) * bd.Rectangle(strip_m, 0.1)).faces()[0]
-    x, y, _ = label_point(ell)
-    assert (x, y) == pytest.approx((ell.center().X, ell.center().Y))
+    layout = label_layout(ell, "L")
+    assert not layout.fits and (layout.x_m, layout.y_m) == pytest.approx((ell.center().X, ell.center().Y))
 
 
 def test_curves_other_than_arcs_are_flattened_into_the_outline(tmp_path):

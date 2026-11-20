@@ -5,27 +5,32 @@
   kerf narrower, which (with the kerf the beam removes) gives the nominal slot. Convex outer corners become
   kerf/2 arcs (`Kind.ARC`), the true centre path of a round beam; it is also the offset OCCT computes reliably on
   every kit outline (`Kind.INTERSECTION` fails on some tail ribs and crutches).
-- `nest`: first-fit decreasing-height shelf packing, per sheet stock, on the kerf-compensated bounding boxes.
-  The usable bed is the bed less `margin_m` on every edge, and `margin_m` is also kept between parts. Each part
-  is laid at 0 deg or turned 90 deg about its local Z, whichever fits the usable bed with the lower height (0 deg
-  on a tie); a part with `quantity` n is placed n times. Deterministic: the same parts give the same sheets.
+- `nest`: MaxRects packing (bottom-left rule), per sheet stock, on the kerf-compensated bounding boxes, parts
+  taken tallest first. Unlike shelf packing it fills the strip beside a tall part (g1's 3 mm stock: 2 sheets,
+  not 3). The usable bed is the bed less `margin_m` on every edge, and `margin_m` is also kept between parts.
+  Each part is laid at 0 deg or turned 90 deg about its local Z: a part opening a sheet takes the orientation
+  that fits the usable bed with the lower height (0 deg on a tie); on a part-filled sheet either orientation may
+  take the free spot with the lowest top edge. A part with `quantity` n is placed n times. Deterministic: the
+  same parts give the same sheets.
 - `Placement.(x_m, y_m)` is the lower-left corner of the placed kerf-compensated outline's bounding box on the
   sheet (sheet origin at the bed's lower-left corner); `placed_outline` rebuilds that face.
 """
 
-from dataclasses import dataclass, replace
-from typing import Final, Sequence
+from dataclasses import dataclass
+from typing import Final, Optional, Sequence
 
 import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 
-__all__ = ["Placement", "kerf_outline", "nest", "placed_outline"]
+__all__ = ["MM_PER_M", "Placement", "kerf_outline", "nest", "place_kerfed", "placed_outline"]
 
-EPS_M: Final[float] = 1e-9  # float slack on bed and shelf fits
+EPS_M: Final[float] = 1e-9  # float slack on bed and free-rectangle fits
 QUARTER_TURN_DEG: Final[float] = 90.0
 MM_PER_M: Final[float] = 1000.0
+
+Rect = tuple[float, float, float, float]  # (x, y, width, height) on a sheet (m)
 
 
 @dataclass(frozen=True)
@@ -44,14 +49,6 @@ class _Item:
     w_m: float  # kerf-compensated footprint in the chosen orientation
     h_m: float
     rotated: bool
-
-
-@dataclass(frozen=True)
-class _Shelf:
-    sheet: int
-    y_m: float
-    h_m: float
-    x_next_m: float  # where the next part on this shelf starts
 
 
 def kerf_outline(face: bd.Face, kerf_m: float) -> bd.Face:
@@ -73,10 +70,14 @@ def _at_corner(face: bd.Face, x_m: float, y_m: float) -> bd.Face:
     return bd.Pos(x_m - box.min.X, y_m - box.min.Y, -box.min.Z) * face
 
 
+def place_kerfed(kerfed: bd.Face, placement: Placement) -> bd.Face:
+    """A part's kerf-compensated outline (from `kerf_outline`) moved to its placement, in sheet coordinates (m)."""
+    return _at_corner(_oriented(kerfed, placement.rotated), placement.x_m, placement.y_m)
+
+
 def placed_outline(placement: Placement, kerf_m: float) -> bd.Face:
     """The placement's kerf-compensated outline in sheet coordinates (m)."""
-    face = _oriented(kerf_outline(placement.part.outline, kerf_m), placement.rotated)
-    return _at_corner(face, placement.x_m, placement.y_m)
+    return place_kerfed(kerf_outline(placement.part.outline, kerf_m), placement)
 
 
 def _usable_bed(settings: FabricationSettings) -> tuple[float, float]:
@@ -113,38 +114,77 @@ def _items(parts: Sequence[KitPart], settings: FabricationSettings) -> list[_Ite
     return sorted(items, key=lambda i: (-i.h_m, -i.w_m, i.part.label, i.copy))
 
 
-def _new_shelf(item: _Item, shelves: Sequence[_Shelf], settings: FabricationSettings) -> _Shelf:
-    """A shelf for `item` above the last shelf of the first sheet with room, else on a fresh sheet."""
-    m, top_limit = settings.margin_m, settings.bed_height_m - settings.margin_m
-    sheets = sorted({s.sheet for s in shelves})
-    for sheet in sheets:
-        y_m = max(s.y_m + s.h_m for s in shelves if s.sheet == sheet) + m
-        if y_m + item.h_m <= top_limit + EPS_M:
-            return _Shelf(sheet, y_m, item.h_m, m)
-    return _Shelf(sheets[-1] + 1 if sheets else 1, m, item.h_m, m)
+def _overlaps(free: Rect, used: Rect) -> bool:
+    fx, fy, fw, fh = free
+    ux, uy, uw, uh = used
+    return ux < fx + fw - EPS_M and ux + uw > fx + EPS_M and uy < fy + fh - EPS_M and uy + uh > fy + EPS_M
 
 
-def _place(item: _Item, shelves: tuple[_Shelf, ...], settings: FabricationSettings
-           ) -> tuple[tuple[_Shelf, ...], Placement]:
-    """First shelf (by sheet, then height on the sheet) with room for `item`; else a new shelf."""
-    right_limit = settings.bed_width_m - settings.margin_m
-    ordered = sorted(shelves, key=lambda s: (s.sheet, s.y_m))
-    shelf = next((s for s in ordered if item.h_m <= s.h_m + EPS_M and s.x_next_m + item.w_m <= right_limit + EPS_M),
-                 None)
-    if shelf is None:
-        shelf = _new_shelf(item, shelves, settings)
-        ordered = [*ordered, shelf]
-    placement = Placement(item.part, shelf.sheet, shelf.x_next_m, shelf.y_m, item.rotated)
-    grown = replace(shelf, x_next_m=shelf.x_next_m + item.w_m + settings.margin_m)
-    return tuple(grown if s is shelf else s for s in ordered), placement
+def _split(free: Rect, used: Rect) -> list[Rect]:
+    """The maximal parts of `free` left uncovered by `used` (MaxRects split)."""
+    if not _overlaps(free, used):
+        return [free]
+    fx, fy, fw, fh = free
+    ux, uy, uw, uh = used
+    pieces = [(fx, fy, ux - fx, fh), (ux + uw, fy, fx + fw - ux - uw, fh),
+              (fx, fy, fw, uy - fy), (fx, uy + uh, fw, fy + fh - uy - uh)]
+    return [r for r in pieces if r[2] > EPS_M and r[3] > EPS_M]
+
+
+def _contains(outer: Rect, inner: Rect) -> bool:
+    return (inner[0] >= outer[0] - EPS_M and inner[1] >= outer[1] - EPS_M
+            and inner[0] + inner[2] <= outer[0] + outer[2] + EPS_M
+            and inner[1] + inner[3] <= outer[1] + outer[3] + EPS_M)
+
+
+def _occupy(free: tuple[Rect, ...], used: Rect) -> tuple[Rect, ...]:
+    """Free rectangles after placing `used`: split every overlapped one, then drop those inside another (of two
+    equal within EPS_M, the first is kept)."""
+    pieces = sorted(set(r for f in free for r in _split(f, used)))
+
+    def redundant(i: int, r: Rect) -> bool:
+        return any(j != i and _contains(o, r) and (j < i or not _contains(r, o)) for j, o in enumerate(pieces))
+
+    return tuple(r for i, r in enumerate(pieces) if not redundant(i, r))
+
+
+def _fresh_sheet(settings: FabricationSettings) -> tuple[Rect, ...]:
+    """The bed above and right of the first margin. Parts are inflated by `margin_m` (right and top), so this
+    keeps `margin_m` to every bed edge and between parts."""
+    m = settings.margin_m
+    return ((m, m, settings.bed_width_m - m, settings.bed_height_m - m),)
+
+
+def _best_spot(item: _Item, sheets: Sequence[tuple[Rect, ...]], m: float) -> Optional[tuple[int, Rect, bool]]:
+    """(sheet index, inflated footprint, rotated): the lowest top edge, then leftmost, on the earliest sheet;
+    the item's preferred orientation wins a tie."""
+    best: Optional[tuple[tuple, tuple[int, Rect, bool]]] = None
+    turns = ((item.w_m, item.h_m, item.rotated), (item.h_m, item.w_m, not item.rotated))
+    for index, free in enumerate(sheets):
+        for fx, fy, fw, fh in free:
+            for w_m, h_m, rotated in turns:
+                if w_m + m <= fw + EPS_M and h_m + m <= fh + EPS_M:
+                    key = (index, fy + h_m, fx, rotated != item.rotated)
+                    if best is None or key < best[0]:
+                        best = (key, (index, (fx, fy, w_m + m, h_m + m), rotated))
+        if best is not None:
+            return best[1]
+    return None
 
 
 def _pack(items: Sequence[_Item], settings: FabricationSettings) -> tuple[Placement, ...]:
-    shelves: tuple[_Shelf, ...] = ()
+    """MaxRects, bottom-left rule, over sheets opened as needed (first fit by sheet)."""
+    m = settings.margin_m
+    sheets: tuple[tuple[Rect, ...], ...] = ()
     placements: list[Placement] = []
     for item in items:
-        shelves, placement = _place(item, shelves, settings)
-        placements.append(placement)
+        spot = _best_spot(item, sheets, m)
+        if spot is None:
+            sheets = (*sheets, _fresh_sheet(settings))
+            spot = (len(sheets) - 1, (m, m, item.w_m + m, item.h_m + m), item.rotated)
+        index, used, rotated = spot
+        sheets = tuple(_occupy(free, used) if i == index else free for i, free in enumerate(sheets))
+        placements.append(Placement(item.part, index + 1, used[0], used[1], rotated))
     return tuple(placements)
 
 
