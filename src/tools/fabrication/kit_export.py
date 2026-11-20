@@ -11,7 +11,7 @@ sheet `nesting.nest` filled. Each placement's kerf-compensated outline is drawn 
   the roomiest grid point where it fits, along the part's longer side when it fits that way. A label that fits
   nowhere even at the floor is engraved at the floor anyway (engraving cuts nothing).
 - the kerf offset is computed once per part label, however many copies are placed; two different parts sharing a
-  label raise ValueError, and a failed offset raises KitUnavailable naming the part (as `nesting.nest` does).
+  label raise KitUnavailable, as does a failed offset (naming the part, as `nesting.nest` does).
 """
 
 import re
@@ -28,7 +28,7 @@ from ezdxf.layouts import Modelspace
 from OCP.BRepTools import BRepTools_WireExplorer
 
 from src.schemas.fabrication import FabricationSettings
-from src.tools.fabrication.kit import KitPart
+from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.nesting import EPS_M, MM_PER_M, QUARTER_TURN_DEG, Placement, kerfed_part, place_kerfed
 
 __all__ = ["LABEL_HEIGHT_M", "LABEL_MIN_HEIGHT_M", "LabelLayout", "label_layout", "write_sheets"]
@@ -239,7 +239,7 @@ def _parts_by_label(placements: Sequence[Placement]) -> dict[str, KitPart]:
     for placement in placements:
         known = parts.setdefault(placement.part.label, placement.part)
         if known is not placement.part and known != placement.part:
-            raise ValueError(f"two different kit parts share the label {placement.part.label!r}")
+            raise KitUnavailable(f"two different kit parts share the label {placement.part.label!r}")
     return parts
 
 

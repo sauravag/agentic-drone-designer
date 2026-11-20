@@ -22,7 +22,7 @@ from src.tools.fabrication.kit_pod import (
     seat_low,
 )
 from src.tools.fabrication.rib_outline import rect_face
-from src.tools.fabrication.tubes import MIN_WEB_M
+from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, plate_loads
 
 SETTINGS = DEFAULT_FABRICATION
 COVER_M = SETTINGS.fuselage_cover_thickness_m
@@ -41,7 +41,7 @@ def _layout(designs, case: str, diameter_m: float, station: float = DEFAULT_WING
 def _floor(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION) -> float:
     layout = _layout(designs, case, diameter_m, station)
     plan = kit_spar_plan(designs[case][0], layout, load_airfoil(layout.airfoil), SETTINGS)
-    return wing_box_floor_m(layout, plan, SETTINGS)
+    return wing_box_floor_m(layout, plan, SETTINGS, plate_loads(designs[case][0], SETTINGS))
 
 
 def _battery_top(designs, case: str, diameter_m: float) -> float:
@@ -107,7 +107,7 @@ def test_seat_low_never_raises_a_part_that_cannot_drop():
 def test_crutch_slots_survive_a_steep_tail_cone(designs):
     layout = _layout(designs, "g2", STEEP_CONE_DIAMETER_M)
     plan = kit_spar_plan(designs["g2"][0], layout, load_airfoil(layout.airfoil), SETTINGS)
-    crutch = next(p for p in fuselage_parts(layout, plan, (), SETTINGS, wing_shear_n=0.0) if p.label == "C-1")
+    crutch = next(p for p in fuselage_parts(layout, plan, (), SETTINGS, loads=NO_PLATE_LOADS) if p.label == "C-1")
     x0 = crutch.location.position.X
     for wire in crutch.outline.inner_wires():  # every tab slot keeps MIN_WEB_M to the edge at its aft face
         box = wire.bounding_box()

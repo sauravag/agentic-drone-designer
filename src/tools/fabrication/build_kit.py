@@ -6,8 +6,8 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
   of its outer member's actual end (R18 bonded overlap; that end may be trimmed inboard of the step, see below).
 - `SK-R`, `SK-L` socket tubes on each wing's spar axis from the centreline to the skin joint (R14). They, and the
   spar roots inside them, meet the other side's pair in a mitre at the centreline (`MITRE_LABELS`).
-- `PN-R`, `PN-L` 4 mm anti-rotation pins on the 70 % chord line, from the wing-box plate's inner face to
-  PIN_REACH_M outboard of the root doubler (R18).
+- `PN-R`, `PN-L` anti-rotation pins (`SparPlan.pin`: 4 mm, or larger per R31) on the 70 % chord line, from the
+  wing-box plate's inner face to PIN_REACH_M outboard of the root doubler (R18).
 - `TB-1`, `LB-R`, `LB-L` booms as `boom_parts` places them.
 - `TS-HR`, `TS-HL` horizontal-tail spars from the tail root (boom or fuselage skin, R20) and `TS-V` fin spar from
   the fin start (top of `TM-1`, or the skin), each out
@@ -17,8 +17,9 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
 Linear stock (balsa, `stringer_density_kg_m3`): `ST-1…` stringers in the former notches from the first former
 after the firewall to the aft face of the last former; `LE-…` / `TE-…` strips per wing panel and tail surface.
 Covering: film over both faces of the wing and tails (2 x planform), fuselage cover over the pod's lateral area.
-Structural checks (R24-R28): the spar is sized against bending and torsion (`kit_spar_torsion`), the tail boom is
-checked, the plates get socket bosses when bearing needs them, and the centreline mitre gets its overwrap
+Structural checks (R24-R32): the spar is sized against bending and torsion (`kit_spar_torsion`) and its pin for the
+root torque, the tail boom is checked, the plates get socket bosses when bearing or the downward web load needs them
+(and pin bosses when the pin needs them), and the centreline mitre gets its overwrap
 (`Kit.overwrap`), which must fit between the plates' (or bosses') inner faces. Part and tube labels are unique.
 """
 
@@ -73,15 +74,14 @@ from src.tools.fabrication.tubes import (
     depth_limit_m,
     hover_pitch_torque_nm,
     joint_y_m,
-    manoeuvre_dynamic_pressure_pa,
+    flight_dynamic_pressure_pa,
     plan_spar,
     size_overwrap,
+    plate_loads,
     tail_boom_check,
-    wing_shear_n,
 )
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
-    PIN_ROD_DIAMETER_M,
     fin_start_m,
     spar_depth_at,
     tail_ribs,
@@ -177,7 +177,7 @@ def _socket_and_pins(layout: AircraftLayout, spar: SparPlan, fuselage: Sequence[
     plate = next(p for p in fuselage if p.label == "WM-R")
     inner = plate.location.position.Y - settings.sheet_for("plate").thickness_m  # WM-R extrudes toward -y
     outer = spar.joint_y_m + settings.sheet_for("doubler").thickness_m + PIN_REACH_M
-    pin = TubeStock(od_m=PIN_ROD_DIAMETER_M, id_m=0.0)
+    pin = TubeStock(od_m=spar.pin.rod_m, id_m=0.0)  # R31: the rod the root torque needs
     end = socket_end_m(layout, spar)
     sockets = [_tube_on(f"SK-{name}", "socket", spar.socket, _wing_line(layout, side, SPAR_CHORD_STATION),
                         0.0, end) for side, name in SIDES]
@@ -291,10 +291,10 @@ def _covering(layout: AircraftLayout) -> tuple[CoverSurface, ...]:
 
 # -------------------------------------------------------------------------------------------- API ---
 def kit_spar_torsion(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> SparTorsion:
-    """R25 torque sources: the flight torque at the manoeuvre dynamic pressure (R30) with the default airfoil Cm0,
+    """R25 torque sources: the flight torque at the flight dynamic pressure (R30) with the default airfoil Cm0,
     and hover pitch control, one lift rotor at full thrust times the longer fore/aft arm from the spar at the boom
     station (none without lift booms)."""
-    wing, q = layout.wing, manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, settings)
+    wing, q = layout.wing, flight_dynamic_pressure_pa(sizing, settings)
 
     def flight(y: float) -> float:
         return aero_torque_nm(sizing.mtow_kg, wing.semi_span_m, wing.chord_at, q, y, settings)
@@ -311,13 +311,15 @@ def kit_spar_torsion(sizing: SizingOutput, layout: AircraftLayout, settings: Fab
 def kit_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
           settings: FabricationSettings) -> SparPlan:
     """Spar plan with the joint where the spar meets the skin at wing height (as the spar tests build it), sized
-    against bending and torsion."""
+    against bending and torsion, with its anti-rotation pin sized for the root torque at the pin's chordwise arm
+    from the spar axis at the joint (R31)."""
     radius = fuselage_radius_at(layout, socket_axis_m(layout, 0.0)[0])
     joint = joint_y_m(radius, WING_Z_FRACTION * layout.fuselage_diameter_m)
     boom_y = max((abs(b.y_m) for b in layout.vtol_booms), default=None)
     depth = spar_depth_at(layout.wing, airfoil, settings, root_doubler_m=joint)
+    arm = (PIN_CHORD_FRACTION - SPAR_CHORD_STATION) * layout.wing.chord_at(joint)
     return plan_spar(sizing.mtow_kg, layout.wing.semi_span_m, joint, depth, boom_y, settings,
-                     torsion=kit_spar_torsion(sizing, layout, settings))
+                     torsion=kit_spar_torsion(sizing, layout, settings), pin_arm_m=arm)
 
 
 def _plate_gap_m(fuselage: Sequence[KitPart], settings: FabricationSettings) -> float:
@@ -356,7 +358,7 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     _check_tail_boom(sizing, layout, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
     ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, settings))
-    fuselage = fuselage_parts(layout, spar, components, settings, wing_shear_n=wing_shear_n(sizing, settings))
+    fuselage = fuselage_parts(layout, spar, components, settings, loads=plate_loads(sizing, settings))
     overwrap = _overwrap(spar, fuselage, settings)
     trays = component_plates(components, layout, settings, spar=spar)
     booms, boom_tubes = boom_parts(layout, spar, settings, components=components,

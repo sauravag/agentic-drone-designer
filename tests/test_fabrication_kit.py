@@ -333,7 +333,7 @@ def test_inner_member_overlap_survives_a_trimmed_outer_end(g1_kit_inputs):
     step = station - settings.sheet_for("rib").thickness_m / 2.0 + 0.0002  # the rib's inner face is inboard of it
     outer, inner = TubeStock(od_m=0.012, id_m=0.010), TubeStock(od_m=0.010, id_m=0.008)
     plan = SparPlan((SparSegment(outer, joint, step), SparSegment(inner, step, semi)), spar.socket, joint, joint,
-                    spar.centre_moment_nm)
+                    spar.centre_moment_nm, spar.pin)
     by = {t.label: t for t in _spar_tubes(layout, plan, settings)}
     end = _tube_end(by["SP-R1"])
     assert end[1] < step - 1e-6  # trimmed

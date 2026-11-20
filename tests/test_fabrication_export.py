@@ -296,7 +296,7 @@ def test_curves_other_than_arcs_are_flattened_into_the_outline(tmp_path):
 def test_write_sheets_rejects_two_different_parts_with_one_label(tmp_path):
     a, b = _plate("P-1", 0.05, 0.05), _plate("P-1", 0.08, 0.05)
     placements = {"Birch ply 3 mm": (Placement(a, 1, 0.005, 0.005, False), Placement(b, 1, 0.1, 0.005, False))}
-    with pytest.raises(ValueError, match="P-1"):
+    with pytest.raises(KitUnavailable, match="P-1"):
         write_sheets(placements, S, tmp_path)
 
 

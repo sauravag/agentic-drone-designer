@@ -3,7 +3,9 @@
 Wing ribs start at the spar joint on the fuselage skin and repeat every `RIB_PITCH_M` to the tip. Each rib
 has the spar hole sized to the spar tube at its station, a wiring hole inboard of the aileron servo,
 lightening holes, and is split at the hinge inside the aileron span. The root rib is a 3 mm doubler with
-an anti-rotation pin hole. Tail ribs carry one stock tube spar wherever it fits the local depth.
+an anti-rotation pin hole (the R31 rod); when the pin needs one, a pin boss doubler `WR-PD` / `WL-PD`
+(an annulus PIN_BOSS_WIDTH_M wide round the pin hole, doubler stock) is glued to the root rib's outboard face.
+Tail ribs carry one stock tube spar wherever it fits the local depth.
 """
 
 import dataclasses
@@ -30,6 +32,7 @@ from src.tools.fabrication.rib_outline import (
     Hole,
     airfoil_face,
     camber_point,
+    circle_face,
     contains,
     drill,
     keeps_web,
@@ -46,7 +49,9 @@ TAIL_HINGE_FRACTION: Final[float] = 1.0 - TAIL_CONTROL_CHORD_FRACTION
 WIRING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.50, 0.45, 0.40)  # 50 % chord, forward if too thin
 WIRING_HOLE_DIAMETER_M: Final[float] = 0.008
 PIN_CHORD_FRACTION: Final[float] = 0.70
-PIN_ROD_DIAMETER_M: Final[float] = 0.004
+PIN_BOSS_WIDTH_M: Final[float] = 0.003  # R31 pin boss annulus radial width
+ROOT_PIN_BOSS_LABEL: Final[str] = "WR-PD"
+AREA_EPS_M2: Final[float] = 1e-10
 LIGHTENING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.38, 0.62)  # either side of the wiring hole
 SERVO_PLATE_CHORD_M: Final[float] = 0.040
 SERVO_PLATE_SPAN_M: Final[float] = 0.050
@@ -162,8 +167,8 @@ def _wing_rib(
     member = spar_member_at(spar, y)
     holes = [_checked(profile, oblique_hole(wing, airfoil, SPAR_CHORD_STATION, y, mid, member.od_m, t, settings), [], label)]
     if is_root:
-        pin_hole_m(settings)  # the pin rod must be in stock
-        pin = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, mid, PIN_ROD_DIAMETER_M, t, settings)
+        pin_hole_m(spar.pin.rod_m, settings)  # the pin rod must be in stock
+        pin = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, mid, spar.pin.rod_m, t, settings)
         holes.append(_checked(profile, pin, holes, label))
     if y < servo_y:  # aileron servo leads run inboard from the servo bay
         holes.append(_placed_hole(profile, airfoil, chord, WIRING_CHORD_FRACTIONS, WIRING_HOLE_DIAMETER_M, holes, label))
@@ -214,10 +219,27 @@ def _placed_hole(
     )
 
 
-def pin_hole_m(settings: FabricationSettings) -> float:
-    if not any(abs(r - PIN_ROD_DIAMETER_M) <= FIT_EPS_M for r in settings.rods_m):
-        raise KitUnavailable(f"no {PIN_ROD_DIAMETER_M * 1e3:.0f} mm rod in stock for the wing pin")
-    return PIN_ROD_DIAMETER_M + settings.fit_clearance_m
+def pin_hole_m(rod_m: float, settings: FabricationSettings) -> float:
+    """Nominal hole for the anti-rotation pin rod, which must be in stock."""
+    if not any(abs(r - rod_m) <= FIT_EPS_M for r in settings.rods_m):
+        raise KitUnavailable(f"no {rod_m * 1e3:.0f} mm rod in stock for the wing pin")
+    return rod_m + settings.fit_clearance_m
+
+
+def _root_pin_boss(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan,
+                   settings: FabricationSettings) -> tuple[KitPart, ...]:
+    """R31: when the root doubler alone cannot bear the pin load, a pin boss of doubler stock on its outboard face
+    (the next slab outboard), an annulus PIN_BOSS_WIDTH_M wide round the pin hole, inside the root profile."""
+    if not spar.pin.root_boss:
+        return ()
+    wing, y, label = layout.wing, spar.joint_y_m, ROOT_PIN_BOSS_LABEL
+    t = settings.sheet_for("doubler").thickness_m
+    hole = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, y + 1.5 * t, spar.pin.rod_m, t, settings)
+    ring = circle_face(Hole(hole.x_m, hole.y_m, hole.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
+    if ring.cut(notched_profile(airfoil, wing.chord_at(y), settings)).area > AREA_EPS_M2:
+        raise KitUnavailable(f"anti-rotation pin: the pin boss {label} does not fit inside the root rib")
+    location = _rib_location(wing.x_le_root_m, y + t, wing.z_at(y), t, True)  # slab [y + t, y + 2t]
+    return (KitPart(label, "doubler", drill(ring, (hole,), label), location),)
 
 
 def _servo_plate(wing: SurfacePlanform, y: float) -> KitPart:
@@ -232,11 +254,13 @@ def _servo_plate(wing: SurfacePlanform, y: float) -> KitPart:
 def wing_ribs(
     layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
 ) -> tuple[KitPart, ...]:
-    """Right-panel ribs `WR-01…` (+ aileron pieces `WR-kA`, servo plate `WR-SV`), then the left panel `WL-…`."""
+    """Right-panel ribs `WR-01…` (+ aileron pieces `WR-kA`, servo plate `WR-SV`, pin boss `WR-PD` when needed),
+    then the left panel `WL-…`."""
     stations = wing_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
     servo_y = _servo_bay_y(stations, layout.wing)
     right = [p for i, y in enumerate(stations) for p in _wing_rib(i, y, servo_y, layout, airfoil, spar, settings)]
     right.append(_servo_plate(layout.wing, servo_y))
+    right.extend(_root_pin_boss(layout, airfoil, spar, settings))
     return tuple(right) + tuple(_mirrored(p, "WR-", "WL-", settings) for p in right)
 
 

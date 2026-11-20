@@ -11,27 +11,43 @@ from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
 from src.tools.aero_cad.cad_packer import _structure_boxes
 from src.tools.aero_cad.layout import fuselage_radius_at
 from src.tools.fabrication.build_kit import kit_spar_plan, kit_spar_torsion
-from src.tools.fabrication.fuselage_parts import former_stations, fuselage_parts, socket_axis_m, wing_box_floor_m
+from src.tools.aero_cad import cad_packer
+from src.tools.aero_cad.structure import SPAR_CHORD_STATION
+from src.tools.fabrication.fuselage_parts import (
+    PIN_BOSS_LABELS,
+    former_stations,
+    fuselage_parts,
+    socket_axis_m,
+    wing_box_floor_m,
+)
 from src.tools.fabrication.kit import KitUnavailable
 from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg
 from src.tools.fabrication.kit_pod import crutch_rails_fit
 from src.tools.fabrication.tubes import (
     MIN_WEB_M,
+    NO_PLATE_LOADS,
+    PlateLoads,
     SparTorsion,
     aero_torque_nm,
     boom_tube,
+    flight_dynamic_pressure_pa,
     hover_pitch_torque_nm,
     interaction_ok,
     load_cases,
     manoeuvre_dynamic_pressure_pa,
     plan_spar,
+    plate_loads,
     size_overwrap,
+    size_pin,
     tail_boom_check,
     tail_boom_ratio,
     torsion_stress_pa,
     tube_ratio,
 )
 from src.tools.sizing.aero_model import air_properties
+from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION
+from tests.cad_helpers import _fitted_layout, _synthetic_oml
+from tests.test_aero_cad import _synthetic_aero
 from tests.test_fabrication_kit import _build
 
 SETTINGS = DEFAULT_FABRICATION
@@ -92,11 +108,13 @@ def test_aero_torque_integrates_tip_inboard():
 def test_torsion_steps_the_spar_up_through_the_same_selection_rule():
     bending_only = plan_spar(5.0, 1.4, 0.1, lambda y: 0.05, None, SETTINGS)
     twisted = SparTorsion(flight_torque_at=lambda y: 25.0, hover_torque_nm=0.0, hover_thrust_n=0.0)
-    with_torsion = plan_spar(5.0, 1.4, 0.1, lambda y: 0.05, None, SETTINGS, torsion=twisted)
+    with_torsion = plan_spar(5.0, 1.4, 0.1, lambda y: 0.05, None, SETTINGS, torsion=twisted, pin_arm_m=0.5)
     root = with_torsion.segments[0].tube
     assert root.od_m > bending_only.segments[0].tube.od_m
     cases = load_cases(5.0, 1.4, 0.1, None, twisted, SETTINGS)
     assert tube_ratio(root, cases, SETTINGS) <= 1.0
+    with pytest.raises(ValueError, match="pin_arm_m"):
+        plan_spar(5.0, 1.4, 0.1, lambda y: 0.05, None, SETTINGS, torsion=twisted)
 
 
 # ------------------------------------------------------------------------------------- overwrap ---
@@ -152,7 +170,8 @@ def test_wing_box_floor_sits_under_the_wrap(designs, g2_kit_inputs):
     layout, airfoil = g2_kit_inputs[0], g2_kit_inputs[1]
     spar = kit_spar_plan(designs["g2"][0], layout, airfoil, SETTINGS)
     wrap = size_overwrap(spar.centre_moment_nm, spar.socket, WIDE_GAP_M, SETTINGS)
-    assert wing_box_floor_m(layout, spar, SETTINGS) <= socket_axis_m(layout, 0.0)[1] - wrap.od_m / 2 + 1e-9
+    wrap_bottom = socket_axis_m(layout, 0.0)[1] - wrap.od_m / 2
+    assert wing_box_floor_m(layout, spar, SETTINGS, NO_PLATE_LOADS) <= wrap_bottom + 1e-9
 
 
 # -------------------------------------------------------------------------------------- torsion ---
@@ -203,9 +222,9 @@ def test_bearing_adds_socket_boss_doublers_only_when_needed(g1_kit_inputs):
     layout, _, spar, settings = g1_kit_inputs
     t = settings.sheet_for("plate").thickness_m
     plain_limit = settings.ply_bearing_allow_pa / settings.safety_factor * spar.socket.od_m * t
-    low = fuselage_parts(layout, spar, (), settings, wing_shear_n=0.5 * plain_limit)
+    low = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.5 * plain_limit, 0.0))
     assert not [p for p in low if p.label in ("WM-RD", "WM-LD")]
-    high = fuselage_parts(layout, spar, (), settings, wing_shear_n=1.5 * plain_limit)
+    high = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(1.5 * plain_limit, 0.0))
     bosses = {p.label: p for p in high if p.label in ("WM-RD", "WM-LD")}
     assert sorted(bosses) == ["WM-LD", "WM-RD"] and all(p.family == "plate" for p in bosses.values())
     plate = next(p for p in high if p.label == "WM-R")
@@ -213,7 +232,7 @@ def test_bearing_adds_socket_boss_doublers_only_when_needed(g1_kit_inputs):
     assert boss.location.position.Y == pytest.approx(plate.location.position.Y - t)  # on the plate's inner face
     assert len(boss.outline.inner_wires()) == 1
     with pytest.raises(KitUnavailable, match="bearing"):
-        fuselage_parts(layout, spar, (), settings, wing_shear_n=2.5 * plain_limit)
+        fuselage_parts(layout, spar, (), settings, loads=PlateLoads(2.5 * plain_limit, 0.0))
 
 
 # --------------------------------------------------------------------------------- crutch rails ---
@@ -239,9 +258,9 @@ def test_crutch_rail_below_minimum_is_unavailable(g1_kit_inputs):
     probe = _between_formers(layout, spar, settings)
     narrow = _with_rail(probe, layout, settings, 0.5 * (settings.crutch_rail_min_m + MIN_WEB_M))
     with pytest.raises(KitUnavailable, match="rail"):
-        fuselage_parts(layout, spar, (narrow,), settings, wing_shear_n=0.0)
+        fuselage_parts(layout, spar, (narrow,), settings, loads=NO_PLATE_LOADS)
     wide = _with_rail(probe, layout, settings, settings.crutch_rail_min_m + 0.004)
-    assert any(p.label == "C-1" for p in fuselage_parts(layout, spar, (wide,), settings, wing_shear_n=0.0))
+    assert any(p.label == "C-1" for p in fuselage_parts(layout, spar, (wide,), settings, loads=NO_PLATE_LOADS))
 
 
 def test_pod_sizing_checks_the_crutch_rails(g1_kit_inputs):
@@ -254,9 +273,103 @@ def test_pod_sizing_checks_the_crutch_rails(g1_kit_inputs):
 
 
 # ------------------------------------------------------------------------------------ the kits ---
-def test_g1_g2_still_build_kits_with_positive_margin(g1_kit, g2_kit):
-    for kit in (g1_kit, g2_kit):
-        assert kit.overwrap is not None
-        assert kit_mass_kg(kit, SETTINGS) > 0.0
-        assert not [p for p in kit.parts if p.label in ("WM-RD", "WM-LD")]  # light designs: plain plates bear it
-    assert g1_kit.overwrap.layers == 5 and g2_kit.overwrap.layers == 9
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_g1_g2_still_build_kits_with_positive_margin(case, designs, tmp_path):
+    sizing, bom = designs[case]
+    layout = _fitted_layout(sizing, bom)
+    result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(layout), layout,
+                                    _synthetic_oml(layout, tmp_path / "oml.step"))
+    assert result.kit is not None, result.kit_warning
+    assert cad_packer.SM_MIN <= result.static_margin <= cad_packer.SM_MAX and result.static_margin > 0.0
+    assert result.interference_count == 0
+    assert result.kit.overwrap.layers == {"g1": 5, "g2": 9}[case]
+    assert kit_mass_kg(result.kit, SETTINGS) > 0.0
+
+
+# ---------------------------------------------------------------------------- anti-rotation pin ---
+PLATE_T = SETTINGS.sheet_for("plate").thickness_m
+PIN_ALLOW = SETTINGS.ply_bearing_allow_pa / SETTINGS.safety_factor
+
+
+def test_light_pin_load_keeps_the_nominal_rod():
+    pin = size_pin(1.0, 0.1, SETTINGS)
+    assert pin.rod_m == pytest.approx(0.004) and not pin.plate_boss and not pin.root_boss
+    assert pin.load_n == pytest.approx(10.0)
+
+
+def test_pin_steps_up_a_rod_before_adding_bosses():
+    force = 0.95 * PIN_ALLOW * 0.005 * PLATE_T  # too much for 4 mm, enough for 5 mm
+    pin = size_pin(force * 0.1, 0.1, SETTINGS)
+    assert pin.rod_m == pytest.approx(0.005) and not pin.plate_boss and not pin.root_boss
+
+
+def test_pin_gets_bosses_when_no_rod_bears_it():
+    force = 1.8 * PIN_ALLOW * 0.005 * PLATE_T  # over the 5 mm rod plain, within it doubled
+    pin = size_pin(force * 0.1, 0.1, SETTINGS)
+    assert pin.rod_m == pytest.approx(0.004 if force <= 2 * PIN_ALLOW * 0.004 * PLATE_T else 0.005)
+    assert pin.plate_boss and pin.root_boss
+
+
+def test_pin_beyond_bosses_is_unavailable():
+    with pytest.raises(KitUnavailable, match="anti-rotation pin"):
+        size_pin(5.0 * PIN_ALLOW * 0.005 * PLATE_T * 0.1, 0.1, SETTINGS)
+
+
+def test_kit_spar_plan_sizes_the_pin_for_the_root_torque(designs, g2_kit_inputs):
+    sizing, (layout, airfoil) = designs["g2"][0], g2_kit_inputs[:2]
+    spar = kit_spar_plan(sizing, layout, airfoil, SETTINGS)
+    torsion = kit_spar_torsion(sizing, layout, SETTINGS)
+    torque = max(torsion.hover_torque_nm, torsion.flight_torque_at(spar.joint_y_m))
+    arm = (PIN_CHORD_FRACTION - SPAR_CHORD_STATION) * layout.wing.chord_at(spar.joint_y_m)
+    assert spar.pin.load_n == pytest.approx(torque / arm)
+    assert spar.pin == size_pin(torque, arm, SETTINGS)
+
+
+def test_g2_pin_is_a_bossed_5_mm_rod_and_g1_keeps_4_mm(g1_kit, g2_kit):
+    assert g1_kit.spar.pin.rod_m == pytest.approx(0.004) and not g1_kit.spar.pin.plate_boss
+    assert not [p for p in g1_kit.parts if p.label in (*PIN_BOSS_LABELS, "WR-PD", "WL-PD")]
+    pin = g2_kit.spar.pin
+    assert pin.rod_m == pytest.approx(0.005) and pin.plate_boss and pin.root_boss
+    labels = {p.label: p for p in g2_kit.parts}
+    for label in (*PIN_BOSS_LABELS, "WR-PD", "WL-PD"):
+        assert label in labels and len(labels[label].outline.inner_wires()) == 1
+    assert [t.tube.od_m for t in g2_kit.tubes if t.role == "pin"] == pytest.approx([0.005, 0.005])
+
+
+# ------------------------------------------------------------------------- downward socket web ---
+def test_downward_load_on_the_socket_web_adds_the_socket_bosses(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    web_limit = PIN_ALLOW * 2 * MIN_WEB_M * PLATE_T
+    plain = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 0.9 * web_limit))
+    assert not [p for p in plain if p.label in ("WM-RD", "WM-LD")]
+    bossed = fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 1.1 * web_limit))
+    assert {"WM-RD", "WM-LD"} <= {p.label for p in bossed}
+    with pytest.raises(KitUnavailable, match="downward"):
+        fuselage_parts(layout, spar, (), settings, loads=PlateLoads(0.0, 100.0 * web_limit))
+
+
+def test_wing_box_floor_counts_the_socket_bosses(g1_kit_inputs):
+    layout, _, spar, settings = g1_kit_inputs
+    web_limit = PIN_ALLOW * 2 * MIN_WEB_M * PLATE_T
+    bossed = PlateLoads(0.0, 1.1 * web_limit)
+    parts = fuselage_parts(layout, spar, (), settings, loads=bossed)
+    boss = next(p for p in parts if p.label == "WM-RD")
+    bottom = boss.outline.bounding_box().min.Y  # local Y is aircraft z
+    assert wing_box_floor_m(layout, spar, settings, bossed) <= bottom + 1e-9
+    assert wing_box_floor_m(layout, spar, settings, bossed) < wing_box_floor_m(layout, spar, settings, NO_PLATE_LOADS)
+
+
+def test_plate_loads_are_the_wing_shear_and_the_limit_lift(designs):
+    sizing = designs["g2"][0]
+    loads = plate_loads(sizing, SETTINGS)
+    assert loads.down_n == pytest.approx(SETTINGS.n_limit * sizing.mtow_kg * 9.80665 / 2)
+    assert loads.shear_n == pytest.approx(max(loads.down_n, 2 * sizing.vtol_thrust_per_motor_n))
+
+
+def test_flight_dynamic_pressure_never_below_the_loiter_speed(designs):
+    sizing = designs["g1"][0]
+    slow_stall = sizing.model_copy(update={"v_stall_ms": 1.0})
+    rho = air_properties(0.0)[0]
+    assert flight_dynamic_pressure_pa(slow_stall, SETTINGS) == pytest.approx(0.5 * rho * sizing.v_loiter_ms**2)
+    assert flight_dynamic_pressure_pa(sizing, SETTINGS) == pytest.approx(
+        max(manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, SETTINGS), 0.5 * rho * sizing.v_loiter_ms**2))

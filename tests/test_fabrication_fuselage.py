@@ -21,8 +21,8 @@ from src.tools.fabrication.fuselage_parts import (
     socket_axis_m,
 )
 from src.tools.fabrication.rib_outline import rect_face
-from src.tools.fabrication.tubes import MIN_WEB_M, boom_tube
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, PIN_ROD_DIAMETER_M
+from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, boom_tube
+from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
 
 TOL_M = 1e-6
@@ -49,7 +49,7 @@ def _test_battery(layout, length_m: float = 0.10, width_frac: float = 0.5) -> Pl
 def _fuselage(inputs, components=None):
     layout, _, spar, settings = inputs
     placed = (_test_battery(layout),) if components is None else components
-    return fuselage_parts(layout, spar, placed, settings, wing_shear_n=0.0)
+    return fuselage_parts(layout, spar, placed, settings, loads=NO_PLATE_LOADS)
 
 
 @pytest.fixture(scope="module")
@@ -149,7 +149,8 @@ def test_wing_mount_plates_carry_socket_and_pin_holes(g1_kit_inputs, fuselage):
         plate = ribs_by_label(fuselage)[label]
         socket_d, pin_d = hole_diameters(plate.outline)  # fore to aft
         # OD + clearance, plus a small allowance for the rod crossing the plate at the dihedral / sweep angle
-        nominal_socket, nominal_pin = spar.socket.od_m + settings.fit_clearance_m, PIN_ROD_DIAMETER_M + settings.fit_clearance_m
+        nominal_socket = spar.socket.od_m + settings.fit_clearance_m
+        nominal_pin = spar.pin.rod_m + settings.fit_clearance_m
         assert nominal_socket < socket_d < nominal_socket + OBLIQUE_ALLOWANCE_M
         assert nominal_pin < pin_d < nominal_pin + OBLIQUE_ALLOWANCE_M
         box = part_solid(plate, settings).bounding_box()
@@ -165,7 +166,7 @@ def test_side_plate_holes_follow_the_dihedral_spar_axis(inputs, request):
     kit_inputs = request.getfixturevalue(inputs)
     layout, settings = kit_inputs[0], kit_inputs[3]
     wing = layout.wing
-    for plate in (p for p in _fuselage(kit_inputs) if p.label.startswith("WM-")):
+    for plate in (p for p in _fuselage(kit_inputs) if p.label in ("WM-R", "WM-L")):
         y = _mid_y(plate, settings)
         socket, pin = _plate_holes(plate)
         assert (socket.X, socket.Z) == pytest.approx(socket_axis_m(layout, y), abs=1e-9), plate.label
@@ -271,7 +272,7 @@ def test_boom_mounts_closer_than_30mm_are_unavailable(g1_kit_inputs):
     layout, airfoil, spar, settings = g1_kit_inputs
     late = dataclasses.replace(layout.tail_boom, x_start_m=0.96 * layout.fuselage_length_m)
     with pytest.raises(KitUnavailable, match="BM-"):
-        fuselage_parts(dataclasses.replace(layout, tail_boom=late), spar, (), settings, wing_shear_n=0.0)
+        fuselage_parts(dataclasses.replace(layout, tail_boom=late), spar, (), settings, loads=NO_PLATE_LOADS)
 
 
 def _real_components(designs, case: str, layout) -> tuple[PlacedComponent, ...]:
@@ -377,15 +378,15 @@ def _rod(start: bd.Vector, end: bd.Vector, diameter_m: float) -> bd.Solid:
 
 
 def _pin_rods(layout, spar, parts, settings) -> list[tuple[str, bd.Solid]]:
-    """The 4 mm anti-rotation pins on each wing's 70 % chord line, from the plate's inner face to the skin joint."""
+    """The anti-rotation pins on each wing's 70 % chord line, from the plate's inner face to the skin joint."""
     rods = []
-    for plate in (p for p in parts if p.label.startswith("WM-")):
+    for plate in (p for p in parts if p.label in ("WM-R", "WM-L")):
         box = part_solid(plate, settings).bounding_box()
         side = 1.0 if plate.label == "WM-R" else -1.0
         inner = min(abs(box.min.Y), abs(box.max.Y))
         ends = [bd.Vector(socket_axis_m(layout, y, PIN_CHORD_FRACTION)[0], side * y,
                           socket_axis_m(layout, y, PIN_CHORD_FRACTION)[1]) for y in (inner, spar.joint_y_m)]
-        rods.append((f"pin {plate.label}", _rod(*ends, PIN_ROD_DIAMETER_M)))
+        rods.append((f"pin {plate.label}", _rod(*ends, spar.pin.rod_m)))
     return rods
 
 
@@ -417,7 +418,7 @@ def test_crutch_stops_at_the_boom_root(g1_kit_inputs):
     t = settings.sheet_for("former").thickness_m
     last = max(x for x in former_stations(layout, spar, settings) if x < layout.tail_boom.x_start_m)
     boom = dataclasses.replace(layout.tail_boom, x_start_m=last + t + 0.005)
-    parts = fuselage_parts(dataclasses.replace(layout, tail_boom=boom), spar, (), settings, wing_shear_n=0.0)
+    parts = fuselage_parts(dataclasses.replace(layout, tail_boom=boom), spar, (), settings, loads=NO_PLATE_LOADS)
     crutch = part_solid(ribs_by_label(parts)["C-1"], settings).bounding_box()
     assert crutch.max.X <= boom.x_start_m + 1e-9
 

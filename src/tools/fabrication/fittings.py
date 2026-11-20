@@ -45,7 +45,7 @@ from src.tools.fabrication.fuselage_parts import (
 from src.tools.fabrication.kit import Box2, KitPart
 from src.tools.fabrication.rib_outline import rect_face
 from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, PIN_ROD_DIAMETER_M
+from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION
 
 __all__ = ["boom_parts", "component_plates", "cruise_motor_plate", "join_notes", "split_to_bed"]
 
@@ -121,7 +121,7 @@ def _wing_rods(layout: AircraftLayout, spar: SparPlan) -> list[tuple[str, bd.Sol
     rods = []
     for side in (1.0, -1.0):
         for name, fraction, diameter in (("socket", None, spar.socket.od_m),
-                                         ("pin", PIN_CHORD_FRACTION, PIN_ROD_DIAMETER_M)):
+                                         ("pin", PIN_CHORD_FRACTION, spar.pin.rod_m)):
             ends = []
             for y in (0.0, spar.joint_y_m):
                 x, z = socket_axis_m(layout, y) if fraction is None else socket_axis_m(layout, y, fraction)

@@ -59,14 +59,16 @@ from src.tools.fabrication.rib_outline import (
 )
 from src.tools.fabrication.tubes import (
     BISECTION_ITERATIONS,
+    BOSS_THICKNESS_FACTOR,
     FIT_EPS_M,
     MIN_WEB_M,
     KitUnavailable,
+    PlateLoads,
     SparPlan,
     boom_tube,
     overwrap_layers,
 )
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, pin_hole_m
+from src.tools.fabrication.wing_parts import PIN_BOSS_WIDTH_M, PIN_CHORD_FRACTION, pin_hole_m
 
 FORMER_PITCH_M: Final[float] = 0.12
 FIRST_FORMER_FRACTION: Final[float] = 0.10  # of fuselage length
@@ -91,7 +93,8 @@ WEB_TEXT: Final[str] = f"{MIN_WEB_M * 1e3:.0f} mm"
 SOCKET_BOSS_WIDTH_M: Final[float] = 0.006  # R27 boss annulus radial width (stays inside the socket-station formers)
 RAIL_PROBE_INSET_M: Final[float] = 1e-4  # crutch rails are measured just inside each opening's fore and aft ends
 SPAN_REACH_M: Final[float] = 10.0  # probe lines run this far either side of any part
-BOSS_LABELS: Final[dict[int, str]] = {1: "WM-RD", -1: "WM-LD"}
+BOSS_LABELS: Final[dict[int, str]] = {1: "WM-RD", -1: "WM-LD"}  # socket bosses
+PIN_BOSS_LABELS: Final[tuple[str, str]] = ("WM-RPD", "WM-LPD")  # plate-side pin bosses (right, left)
 
 Cut = tuple[str, bd.Face]  # (what passes through, cutter in the part's local XY)
 
@@ -364,7 +367,8 @@ def _plate_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSe
     for the rod's oblique crossing plus the fit clearance."""
     t, clearance = settings.sheet_for("plate").thickness_m, settings.fit_clearance_m
     socket_d = _oblique_diameter_m(layout, SPAR_CHORD_STATION, spar.socket.od_m, t) + clearance
-    pin_d = _oblique_diameter_m(layout, PIN_CHORD_FRACTION, pin_hole_m(settings) - clearance, t) + clearance
+    pin_nominal = pin_hole_m(spar.pin.rod_m, settings) - clearance
+    pin_d = _oblique_diameter_m(layout, PIN_CHORD_FRACTION, pin_nominal, t) + clearance
     return (Hole(*socket_axis_m(layout, y_m), socket_d),
             Hole(*socket_axis_m(layout, y_m, PIN_CHORD_FRACTION), pin_d))
 
@@ -408,13 +412,19 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
                   y_outer - t_plate, y_outer, (socket, pin))
 
 
-def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> float:
-    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge or the underside
-    of the socket tubes' centreline overwrap (R24, at its wrapped OD), where they sit lowest (the dihedral lifts them
-    outboard). Raises `KitUnavailable` when no overwrap within the layer cap carries the centreline moment."""
+def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
+                     loads: PlateLoads) -> float:
+    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge, the socket bosses'
+    bottom when `loads` need them (R32), or the underside of the socket tubes' centreline overwrap (R24, at its
+    wrapped OD), where they sit lowest (the dihedral lifts them outboard). Pin bosses stay within the plates. Raises
+    `KitUnavailable` when no overwrap within the layer cap carries the centreline moment, or no boss suffices."""
     wrap_m = overwrap_layers(spar.centre_moment_nm, spar.socket, settings) * settings.overwrap_layer_thickness_m
-    socket_z = socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m
-    return min(_mount(layout, spar, settings).z_m[0], socket_z)
+    mount = _mount(layout, spar, settings)
+    floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m]
+    if socket_bosses_needed(spar, settings, loads):
+        hole = _inner_face_holes(layout, spar, settings, mount)[0]
+        floors.append(hole.y_m - hole.diameter_m / 2.0 - SOCKET_BOSS_WIDTH_M)
+    return min(floors)
 
 
 def _plate_component_cuts(frame: _Frame, side: int) -> list[Cut]:
@@ -445,31 +455,61 @@ def _mount_plate(frame: _Frame, side: int) -> KitPart:
     return KitPart(label, "plate", outline, _plane_location((0.0, origin_y, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
 
 
-def _bearing_stress_pa(load_n: float, od_m: float, thickness_m: float) -> float:
-    """Bearing stress of a socket of `od_m` on a plate edge of `thickness_m`: F / (OD t)."""
-    return load_n / (od_m * thickness_m)
+def _stress_pa(load_n: float, area_m2: float) -> float:
+    return load_n / area_m2
 
 
-def _socket_bosses(frame: _Frame, spar: SparPlan, wing_shear_n: float) -> list[KitPart]:
-    """R27: no parts when the plain plate bears the wing's shear on the socket; else a boss doubler of plate stock
-    (an annulus SOCKET_BOSS_WIDTH_M wide round the socket hole) on each plate's inner face, which must then suffice."""
-    settings, m = frame.settings, frame.mount
+def socket_bosses_needed(spar: SparPlan, settings: FabricationSettings, loads: PlateLoads) -> bool:
+    """Whether the wing-box plates need socket bosses: R27 bearing F_shear / (OD t), and R32 shear-out of the
+    MIN_WEB_M web under the socket by the downward load, F_down / (2 w t), each against ply_bearing_allow_pa / FS.
+    With a boss the bearing thickness doubles and the web gains the boss's SOCKET_BOSS_WIDTH_M below the hole;
+    raises `KitUnavailable` when even that fails."""
     t, od = settings.sheet_for("plate").thickness_m, spar.socket.od_m
     allow = settings.ply_bearing_allow_pa / settings.safety_factor
-    if _bearing_stress_pa(wing_shear_n, od, t) <= allow:
-        return []
-    doubled = _bearing_stress_pa(wing_shear_n, od, 2.0 * t)
-    if doubled > allow:
-        raise KitUnavailable(
-            f"socket bearing: {wing_shear_n:.0f} N on the {od * 1e3:.0f} mm socket overloads the wing-box plate even "
-            f"with a boss doubler ({doubled / 1e6:.1f} MPa > {allow / 1e6:.1f} MPa)"
-        )
-    hole = _plate_holes(frame.layout, spar, settings, m.y_inner_m - t / 2.0)[0]
-    ring = circle_face(Hole(hole.x_m, hole.y_m, hole.diameter_m + 2.0 * SOCKET_BOSS_WIDTH_M))
+    bearing, web = _stress_pa(loads.shear_n, od * t), _stress_pa(loads.down_n, 2.0 * MIN_WEB_M * t)
+    if bearing <= allow and web <= allow:
+        return False
+    bossed_bearing = _stress_pa(loads.shear_n, od * BOSS_THICKNESS_FACTOR * t)
+    bossed_web = _stress_pa(loads.down_n, 2.0 * (MIN_WEB_M + SOCKET_BOSS_WIDTH_M) * t)
+    for name, stress in (("socket bearing", bossed_bearing), ("socket bearing (downward, web under the socket)",
+                                                              bossed_web)):
+        if stress > allow:
+            raise KitUnavailable(f"{name}: {stress / 1e6:.1f} MPa on the wing-box plate even with a boss doubler "
+                                 f"(allowable {allow / 1e6:.1f} MPa)")
+    return True
+
+
+def _inner_face_holes(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
+                      mount: _Mount) -> tuple[Hole, Hole]:
+    """Socket and pin holes where the lines cross a boss slab on the plate's inner face."""
+    t = settings.sheet_for("plate").thickness_m
+    return _plate_holes(layout, spar, settings, mount.y_inner_m - t / 2.0)
+
+
+def _bosses(frame: _Frame, hole: Hole, width_m: float, labels: dict[int, str],
+            clip: Optional[bd.Face]) -> list[KitPart]:
+    """A boss doubler of plate stock on each plate's inner face: an annulus `width_m` wide round `hole`, clipped to
+    `clip` when given (the plate body, so it adds no height)."""
+    t, m = frame.settings.sheet_for("plate").thickness_m, frame.mount
+    ring = circle_face(Hole(hole.x_m, hole.y_m, hole.diameter_m + 2.0 * width_m))
+    if clip is not None:
+        ring = _single_face(_common(ring, clip), labels[1])
     origins = {1: m.y_inner_m, -1: -m.y_inner_m + t}  # both extrude toward -y, onto the plate's inner face
     return [KitPart(label, "plate", drill(ring, (hole,), label),
                     _plane_location((0.0, origins[side], 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
-            for side, label in sorted(BOSS_LABELS.items())]
+            for side, label in sorted(labels.items())]
+
+
+def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads) -> list[KitPart]:
+    """R27/R32 socket bosses (full annuli) and R31 pin bosses (clipped to the plate body), each only when needed."""
+    socket, pin = _inner_face_holes(frame.layout, spar, frame.settings, frame.mount)
+    m = frame.mount
+    parts = _bosses(frame, socket, SOCKET_BOSS_WIDTH_M, BOSS_LABELS, None) \
+        if socket_bosses_needed(spar, frame.settings, loads) else []
+    if spar.pin.plate_boss:
+        body = rect_face(m.x_min_m, m.z_m[0], m.x_max_m, m.z_m[1])
+        parts += _bosses(frame, pin, PIN_BOSS_WIDTH_M, dict(zip((1, -1), PIN_BOSS_LABELS)), body)
+    return parts
 
 
 # ---------------------------------------------------------------------------------- half-formers ---
@@ -650,11 +690,11 @@ def _crutch(frame: _Frame) -> KitPart:
 # ------------------------------------------------------------------------------------------ API ---
 def fuselage_parts(
     layout: AircraftLayout, spar: SparPlan, components: Sequence[PlacedComponent], settings: FabricationSettings,
-    *, wing_shear_n: float,
+    *, loads: PlateLoads,
 ) -> tuple[KitPart, ...]:
     """Crutch `C-1`, half-formers `F-nnU`/`F-nnL`, firewall `FW-1a`/`FW-1b`, wing-box plates `WM-L`/`WM-R` (plus
-    socket bosses `WM-LD`/`WM-RD` when the plates alone cannot bear `wing_shear_n`, R27) and boom mounts
-    `BM-1`/`BM-2`.
+    socket bosses `WM-LD`/`WM-RD` when the plates alone cannot bear `loads`, R27/R32, and pin bosses `WM-LPD`/`WM-RPD`
+    when the pin needs them, R31) and boom mounts `BM-1`/`BM-2`.
 
     Every component crossing a former, the crutch or a plate gets an opening there; with no components the
     formers carry only lightening holes (plus stringer notches and the wing-box slots).
@@ -668,4 +708,4 @@ def fuselage_parts(
     )
     formers = _half_formers(frame)  # first, so a too-big component is reported against the former it breaks
     return (_crutch(frame), *formers, *_firewall(frame), _mount_plate(frame, -1), _mount_plate(frame, 1),
-            *_socket_bosses(frame, spar, wing_shear_n), *_boom_mount_parts(frame))
+            *_wing_box_bosses(frame, spar, loads), *_boom_mount_parts(frame))

@@ -20,8 +20,8 @@ from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import seed_database
-from src.tools.fabrication.tubes import SparPlan, joint_y_m, plan_spar
-from src.tools.fabrication.wing_parts import spar_depth_at
+from src.tools.fabrication.build_kit import kit_spar_plan
+from src.tools.fabrication.tubes import SparPlan
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
 from tests.cad_helpers import _fitted_layout
 from tests.reference_designs import CASES
@@ -65,11 +65,7 @@ def _kit_inputs(designs: dict, case: str) -> KitInputs:
     sizing, bom = designs[case]
     layout = _fitted_layout(sizing, bom)
     airfoil = load_airfoil(layout.airfoil)
-    wing = layout.wing
-    joint = joint_y_m(layout.fuselage_diameter_m / 2.0, wing.z_root_m)
-    boom_y = max(abs(b.y_m) for b in layout.vtol_booms) if layout.vtol_booms else None
-    depth = spar_depth_at(wing, airfoil, DEFAULT_FABRICATION, root_doubler_m=joint)
-    spar = plan_spar(sizing.mtow_kg, wing.semi_span_m, joint, depth, boom_y, DEFAULT_FABRICATION)
+    spar = kit_spar_plan(sizing, layout, airfoil, DEFAULT_FABRICATION)  # as build_kit plans it (torsion, pin)
     return layout, airfoil, spar, DEFAULT_FABRICATION
 
 

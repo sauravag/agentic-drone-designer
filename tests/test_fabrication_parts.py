@@ -12,7 +12,7 @@ from src.tools.aero_cad.layout import AILERON_ETA, TAIL_AIRFOIL_NAME, TAIL_CONTR
 from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.schemas.fabrication import TubeStock
-from src.tools.fabrication.tubes import MIN_WEB_M
+from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS
 from src.tools.fabrication.wing_parts import (
     AILERON_HINGE_FRACTION,
     PIN_CHORD_FRACTION,
@@ -476,7 +476,7 @@ def test_split_crutch_stays_clear_of_every_fuselage_part(case, designs, request)
     """Both crutches exceed the 590 mm usable bed; g1's joint is hemmed in by the battery opening and a former slot,
     so its doubler gets the shorter lap."""
     layout, _, spar, settings = request.getfixturevalue(f"{case}_kit_inputs")
-    parts = fuselage_parts(layout, spar, _real_components(designs, case, layout), settings, wing_shear_n=0.0)
+    parts = fuselage_parts(layout, spar, _real_components(designs, case, layout), settings, loads=NO_PLATE_LOADS)
     crutch = ribs_by_label(parts)["C-1"]
     split = split_to_bed(crutch, settings)
     assert len(_pieces(split)) >= 2
@@ -547,7 +547,7 @@ def test_one_tray_per_internal_component_directly_under_it(g1_kit_inputs, design
 def test_trays_intersect_no_fuselage_part_tube_or_component(case, designs, request):
     layout, _, spar, settings = request.getfixturevalue(f"{case}_kit_inputs")
     placed = (*_real_components(designs, case, layout), _avionics(layout))
-    parts = fuselage_parts(layout, spar, placed, settings, wing_shear_n=0.0)
+    parts = fuselage_parts(layout, spar, placed, settings, loads=NO_PLATE_LOADS)
     trays = component_plates(placed, layout, settings, spar)
     extras = _socket_tubes(layout, spar) + _pin_rods(layout, spar, parts, settings) + [_boom_solid(layout, settings)]
     extras += [(c.name, c.solid()) for c in placed]
@@ -604,7 +604,7 @@ def test_cruise_motor_plate_is_glued_to_the_firewall_front(g1_kit_inputs, design
     assert box.max.X == pytest.approx(station, abs=1e-9)  # aft face on the firewall's front face
     assert box.max.Y - box.min.Y >= motor.size_m[1] + 2 * MIN_WEB_M - 1e-9
     _assert_motor_pattern(plate)
-    parts = fuselage_parts(layout, spar, placed, settings, wing_shear_n=0.0)
+    parts = fuselage_parts(layout, spar, placed, settings, loads=NO_PLATE_LOADS)
     _assert_no_intersections([(p.label, part_solid(p, settings)) for p in (*parts, plate)]
                              + [(c.name, c.solid()) for c in placed])
 
@@ -821,7 +821,7 @@ def test_a_root_tube_that_only_fits_a_thin_rib_is_never_planned(g1_kit_inputs):
     tube = TubeStock(od_m=od, id_m=0.5 * od)
     rod = TubeStock(od_m=0.003, id_m=0.0)
     plan = SparPlan((SparSegment(tube, joint, joint + 0.001), SparSegment(rod, joint + 0.001, wing.semi_span_m)),
-                    spar.socket, joint, joint, spar.centre_moment_nm)
+                    spar.socket, joint, joint, spar.centre_moment_nm, spar.pin)
     with pytest.raises(KitUnavailable, match="WR-01"):
         wing_ribs(layout, airfoil, plan, settings)
     only = settings.model_copy(update={"tubes": (tube,)})

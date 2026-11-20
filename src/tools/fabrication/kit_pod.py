@@ -6,7 +6,8 @@ avionics tray therefore sit as low as their former openings allow (`seat_low`). 
 tubes fill the upper pod at the wing; for Group 1-2 designs (the ones that get a kit) the pod is widened until the
 seated battery passes beneath them with STRUCTURE_CLEARANCE_M to spare, so it can sit at the CG under the wing.
 Every slider also leaves crutch side rails of at least crutch_rail_min_m beside its crutch opening (R28,
-`crutch_rails_fit`), and the wing box's floor includes the centreline overwrap at its wrapped OD (R24).
+`crutch_rails_fit`), and the wing box's floor includes the centreline overwrap at its wrapped OD (R24) and the
+socket bosses when the plate loads need them (R32).
 Group 3+ designs keep the COTS-fit diameter. One diameter flows through the whole pipeline (OpenVSP included).
 """
 
@@ -30,7 +31,7 @@ from src.tools.aero_cad.layout import (
 )
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, kit_spar_plan
 from src.tools.fabrication.fuselage_parts import wing_box_floor_m
-from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable
+from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, plate_loads
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def _wing_box_floor_m(sizing: SizingOutput, bom: SelectedBOM, diameter_m: float,
         layout = layout_from_sizing(sizing, station, diameter_m, length)
         try:
             spar = kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), settings)
-            floors.append(wing_box_floor_m(layout, spar, settings))
+            floors.append(wing_box_floor_m(layout, spar, settings, plate_loads(sizing, settings)))
         except KitUnavailable:
             continue
     return min(floors) if floors else None

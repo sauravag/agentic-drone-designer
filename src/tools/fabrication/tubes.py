@@ -7,8 +7,12 @@ FS * sqrt((sigma / sigma_allow)^2 + (tau / tau_allow)^2) <= 1 (R25), which with 
   spar, integrated from the tip inboard, at the manoeuvre dynamic pressure, R30);
 - hover (quadplane): the boom reaction moment with the pitch-control torque of one rotor at full thrust and its
   fore/aft partner at zero, carried inboard of the boom clamp.
-Also here: the centreline overwrap that carries the socket mitre (R24/R29), the tail-boom check (R26) and the wing
-shear each wing-box plate bears (R27). All values SI. Must not import from the schemas' consumers.
+Also here: the centreline overwrap that carries the socket mitre (R24/R29), the tail-boom check (R26), the loads each
+wing-box plate bears (R27/R32) and the anti-rotation pin that reacts the spar's root torque (R31). All values SI.
+Must not import from the schemas' consumers.
+
+Limitation (R30): flight loads use q at max(V_A, the loiter speed). SizingOutput carries no cruise or dash speed,
+so a design flown faster than V_A = V_stall sqrt(n_limit) has its flight torsion and tail loads under-estimated.
 """
 
 import math
@@ -44,6 +48,8 @@ TORQUE_INTEGRATION_STEPS: Final[int] = 400  # midpoint rule, tip to station
 TAIL_CL_MAX: Final[float] = 1.0  # tail surface (NACA 0010, low Re, finite span) maximum lift coefficient
 WRAP_LAP_DIAMETERS: Final[float] = 2.0  # the overwrap laps at least 2 socket OD onto each side
 WRAP_SIDES: Final[int] = 2  # the wrap laps both socket tubes
+NOMINAL_PIN_ROD_M: Final[float] = 0.004  # anti-rotation pin rod before R31 steps it up
+BOSS_THICKNESS_FACTOR: Final[float] = 2.0  # a boss doubler doubles the bearing thickness
 
 
 class KitUnavailable(Exception):
@@ -64,6 +70,31 @@ class SparPlan:
     joint_y_m: float
     insertion_m: float
     centre_moment_nm: float  # socket moment at the centreline (worse of flight and hover): sizes the overwrap
+    pin: "PinPlan"  # anti-rotation pin sized for the root torque (R31)
+
+
+@dataclass(frozen=True)
+class PinPlan:
+    """Anti-rotation pin (R31): rod diameter, the bearing load it carries (root torque / pin arm), and whether the
+    wing-box plate and the wing root doubler need pin boss doublers."""
+
+    rod_m: float
+    load_n: float
+    plate_boss: bool
+    root_boss: bool
+
+
+@dataclass(frozen=True)
+class PlateLoads:
+    """Loads a wing-box plate carries at the socket: the wing's shear in bearing (R27) and the downward load on the
+    web under the socket (R32)."""
+
+    shear_n: float
+    down_n: float
+
+
+NO_PLATE_LOADS: Final[PlateLoads] = PlateLoads(shear_n=0.0, down_n=0.0)  # geometry-only callers
+NOMINAL_PIN: Final[PinPlan] = PinPlan(rod_m=NOMINAL_PIN_ROD_M, load_n=0.0, plate_boss=False, root_boss=False)
 
 
 @dataclass(frozen=True)
@@ -147,6 +178,13 @@ def manoeuvre_dynamic_pressure_pa(v_stall_ms: float, settings: FabricationSettin
     """q_max at the manoeuvre speed V_A = V_stall sqrt(n_limit), the full-deflection-at-CL_max case (R30)."""
     v_a = v_stall_ms * math.sqrt(settings.n_limit)
     return DYNAMIC_PRESSURE_FACTOR * SEA_LEVEL_DENSITY_KG_M3 * v_a**2
+
+
+def flight_dynamic_pressure_pa(sizing: SizingOutput, settings: FabricationSettings) -> float:
+    """q_max for flight torsion and tail loads: at V_A (R30), or at the loiter speed if that is faster (module
+    docstring: SizingOutput has no cruise or dash speed)."""
+    loiter = DYNAMIC_PRESSURE_FACTOR * SEA_LEVEL_DENSITY_KG_M3 * sizing.v_loiter_ms**2
+    return max(manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, settings), loiter)
 
 
 def aero_torque_nm(mtow_kg: float, semi_span_m: float, chord_at: Callable[[float], float], q_pa: float, y_m: float,
@@ -235,7 +273,7 @@ def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: Fabr
     boom = layout.tail_boom
     if boom is None:
         return 0.0, 0.0
-    per_area = settings.n_limit * manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, settings) * TAIL_CL_MAX
+    per_area = settings.n_limit * flight_dynamic_pressure_pa(sizing, settings) * TAIL_CL_MAX
     h_force, v_force = per_area * sizing.horizontal_tail_area_m2, per_area * sizing.vertical_tail_area_m2
     arm = max(layout.htail.x_ac_m, layout.vtail.x_ac_m) - boom.x_start_m
     height = layout.vtail.z_root_m + layout.vtail.y_mac_m - boom.z_m
@@ -266,6 +304,43 @@ def wing_shear_n(sizing: SizingOutput, settings: FabricationSettings) -> float:
     at full thrust, whichever is larger."""
     flight = settings.n_limit * sizing.mtow_kg * G0 * HALF_WING_FRACTION
     return max(flight, HOVER_ARMS * sizing.vtol_thrust_per_motor_n)
+
+
+def plate_loads(sizing: SizingOutput, settings: FabricationSettings) -> PlateLoads:
+    """R27 shear, and the R32 downward load (hard landing or negative g) of magnitude n MTOW g / 2."""
+    down = settings.n_limit * sizing.mtow_kg * G0 * HALF_WING_FRACTION
+    return PlateLoads(shear_n=wing_shear_n(sizing, settings), down_n=down)
+
+
+def _bears(force_n: float, rod_m: float, thickness_m: float, settings: FabricationSettings) -> bool:
+    return force_n / (rod_m * thickness_m) <= settings.ply_bearing_allow_pa / settings.safety_factor * (1.0 + RATIO_EPS)
+
+
+def size_pin(torque_nm: float, arm_m: float, settings: FabricationSettings) -> PinPlan:
+    """R31: the pin reacts the spar's root torque at `arm_m` from the spar axis, F = T / arm (`pin_for_load`)."""
+    return pin_for_load(abs(torque_nm) / arm_m, settings)
+
+
+def pin_for_load(force: float, settings: FabricationSettings) -> PinPlan:
+    """R31 bearing sigma_b = F / (d t) <= ply_bearing_allow_pa / FS in the wing-box plate and in the wing root
+    doubler. Ladder: the smallest stock rod from NOMINAL_PIN_ROD_M up that bears F plainly; else the smallest that
+    bears it with pin bosses doubling the thickness on whichever side needs one; else KitUnavailable."""
+    t_plate, t_root = settings.sheet_for("plate").thickness_m, settings.sheet_for("doubler").thickness_m
+    rods = sorted(r for r in settings.rods_m if r >= NOMINAL_PIN_ROD_M - FIT_EPS_M)
+    if not rods:
+        raise KitUnavailable(f"anti-rotation pin: no rod of at least {NOMINAL_PIN_ROD_M * 1e3:.0f} mm in stock")
+    for rod in rods:
+        if _bears(force, rod, t_plate, settings) and _bears(force, rod, t_root, settings):
+            return PinPlan(rod_m=rod, load_n=force, plate_boss=False, root_boss=False)
+    k = BOSS_THICKNESS_FACTOR
+    for rod in rods:
+        if _bears(force, rod, k * t_plate, settings) and _bears(force, rod, k * t_root, settings):
+            return PinPlan(rod_m=rod, load_n=force, plate_boss=not _bears(force, rod, t_plate, settings),
+                           root_boss=not _bears(force, rod, t_root, settings))
+    raise KitUnavailable(
+        f"anti-rotation pin: {force:.0f} N from the spar's root torque overloads even a {rods[-1] * 1e3:.0f} mm rod "
+        f"with boss doublers"
+    )
 
 
 def overwrap_stress_pa(moment_nm: float, socket_od_m: float, layers: int, layer_thickness_m: float) -> float:
@@ -365,33 +440,13 @@ def depth_limit_m(depth_at: Callable[[float], float], od_m: float, inboard_m: fl
     return lo
 
 
-def plan_spar(
-    mtow_kg: float,
-    semi_span_m: float,
-    joint_y_m: float,
-    depth_at: Callable[[float], float],
-    boom_y_m: Optional[float],
-    settings: FabricationSettings,
-    torsion: Optional[SparTorsion] = None,
-) -> SparPlan:
-    """Size a telescoping tube spar from the fuselage joint to the tip, plus its socket. Each member is the tube
-    that passes every load case (`load_cases`, with `torsion` when given) at its inboard end, where moment and torque
-    are greatest; that also covers the boom clamp."""
-    if boom_y_m is not None and boom_y_m < 0.0:
-        raise ValueError(f"boom_y_m must be a distance from the centreline, got {boom_y_m}")
-
-    def cases(y: float) -> tuple[LoadCase, ...]:
-        return load_cases(mtow_kg, semi_span_m, y, boom_y_m, torsion, settings)
-
-    root_depth, root_cases = depth_at(joint_y_m), cases(joint_y_m)
-    root = next((t for t in settings.tubes
-                 if t.od_m <= root_depth + FIT_EPS_M and _passes(t, root_cases, settings)), None)
-    if root is None:
-        raise _unavailable_at(joint_y_m)
-
+def _members(root: TubeStock, joint_m: float, semi_span_m: float, depth_at: Callable[[float], float],
+             cases: Callable[[float], tuple[LoadCase, ...]], settings: FabricationSettings) -> tuple[SparSegment, ...]:
+    """Telescoping members from the joint to the tip: step down wherever the depth stops admitting the current tube,
+    to the tube that passes the load cases at the step."""
     segments: list[SparSegment] = []
-    current, start = root, joint_y_m
-    for y in _stations(joint_y_m, semi_span_m)[1:]:
+    current, start = root, joint_m
+    for y in _stations(joint_m, semi_span_m)[1:]:
         while depth_at(y) < current.od_m - FIT_EPS_M:
             y_step = depth_limit_m(depth_at, current.od_m, start, y)
             if y_step <= start + FIT_EPS_M:
@@ -402,10 +457,43 @@ def plan_spar(
             segments.append(SparSegment(current, start, y_step))
             current, start = smaller, y_step
     segments.append(SparSegment(current, start, semi_span_m))
+    return tuple(segments)
 
+
+def plan_spar(
+    mtow_kg: float,
+    semi_span_m: float,
+    joint_y_m: float,
+    depth_at: Callable[[float], float],
+    boom_y_m: Optional[float],
+    settings: FabricationSettings,
+    torsion: Optional[SparTorsion] = None,
+    pin_arm_m: Optional[float] = None,
+) -> SparPlan:
+    """Size a telescoping tube spar from the fuselage joint to the tip, plus its socket and anti-rotation pin. Each
+    member is the tube that passes every load case (`load_cases`, with `torsion` when given) at its inboard end,
+    where moment and torque are greatest; that also covers the boom clamp. The pin carries the root torque at
+    `pin_arm_m` (R31), which `torsion` requires; with no torsion there is no torque and the pin is NOMINAL_PIN."""
+    if boom_y_m is not None and boom_y_m < 0.0:
+        raise ValueError(f"boom_y_m must be a distance from the centreline, got {boom_y_m}")
+    if torsion is not None and pin_arm_m is None:
+        raise ValueError("pin_arm_m is required with torsion: the anti-rotation pin reacts the root torque")
+
+    def cases(y: float) -> tuple[LoadCase, ...]:
+        return load_cases(mtow_kg, semi_span_m, y, boom_y_m, torsion, settings)
+
+    root_depth, root_cases = depth_at(joint_y_m), cases(joint_y_m)
+    # No torsion, no torque: the nominal rod, whose stock is checked where its holes are cut (`pin_hole_m`).
+    pin = NOMINAL_PIN if pin_arm_m is None else pin_for_load(max(t for _, t in root_cases) / pin_arm_m, settings)
+    root = next((t for t in settings.tubes
+                 if t.od_m <= root_depth + FIT_EPS_M and _passes(t, root_cases, settings)), None)
+    if root is None:
+        raise _unavailable_at(joint_y_m)
+
+    segments = _members(root, joint_y_m, semi_span_m, depth_at, cases, settings)
     # The socket carries the bending moment "as above" (flight vs the balanced hover reaction) at the centreline.
     centre_moment = max(m for m, _ in load_cases(mtow_kg, semi_span_m, ROOT_SPAN_M, boom_y_m, None, settings))
     socket = _pick_socket(root, centre_moment, settings)
     _check_insertion(joint_y_m, root, settings)
     # The socket spans the fuselage only; each spar root plugs in from the skin to the centreline.
-    return SparPlan(tuple(segments), socket, joint_y_m, joint_y_m, centre_moment)
+    return SparPlan(segments, socket, joint_y_m, joint_y_m, centre_moment, pin)
