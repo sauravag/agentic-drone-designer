@@ -369,6 +369,7 @@ def _render(view: AgentRunView) -> None:
         STATUS_TEXT.get(view.status, view.status))
     st.caption(f"Run `{view.run_id}` · files in `{view.out_dir}`")
     design_loop.render_assumptions_used(view)
+    design_loop.render_kit_settings_note(view)
     for note in view.warnings:
         st.warning(note)
     if view.assumptions:

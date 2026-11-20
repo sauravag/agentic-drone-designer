@@ -21,7 +21,7 @@ from src.agent.nodes import MAX_ITERATIONS, AgentContext, run_status, run_warnin
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.changes import ChangeSet, apply_changes
 from src.schemas.components import SelectedBOM
-from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings, changed_fields
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, DesignState, FCSArtifacts, RunLineage, SizingOutput
 
@@ -150,10 +150,13 @@ def run(outputs_root: Path, db_path: Path, with_aero_cad: Optional[bool], with_s
 
 def rerun(view: AgentRunView, change: ChangeSet, source: Literal["option", "chat", "manual"], outputs_root: Path,
           db_path: Path, with_aero_cad: Optional[bool], with_sitl: Optional[bool],
-          progress: Callable[[str], None], max_iterations: int = MAX_ITERATIONS) -> AgentRunView:
+          progress: Callable[[str], None], max_iterations: int = MAX_ITERATIONS,
+          fabrication: Optional[FabricationSettings] = None) -> AgentRunView:
     """Apply `change` to the view's design and run the structured path again, linked to the parent run.
 
-    The critic starts from default knobs (the change's knobs, if any, are the only overrides). Raises
+    R37: the run uses `fabrication` (the settings panel's validated settings; the parent's when omitted), and the
+    lineage records which kit settings differ from the parent's. The critic starts from default knobs (the
+    change's knobs, if any, are the only overrides). Raises
     NoChangeError when nothing would differ, ValueError for a view without requirements, pydantic
     ValidationError / ValueError for out-of-bounds values, and pipeline.PipelineError for a missing toolchain."""
     if view.requirements is None or view.run_id is None:
@@ -162,8 +165,10 @@ def rerun(view: AgentRunView, change: ChangeSet, source: Literal["option", "chat
         raise NoChangeError(f"'{inline(change.label)}' does not change anything in this design")
     req, assumptions, knobs = apply_changes(view.requirements, view.design_assumptions, change)
     args = _context_args(outputs_root, db_path, with_aero_cad, with_sitl, progress, max_iterations)
-    lineage = RunLineage(parent_run_id=view.run_id, change_set=change, change_source=source)
-    return _run_agent(args, "", req, knobs, assumptions, lineage, make_llm(), view.fabrication)
+    settings = view.fabrication if fabrication is None else fabrication
+    lineage = RunLineage(parent_run_id=view.run_id, change_set=change, change_source=source,
+                         fabrication_changes=changed_fields(view.fabrication, settings))
+    return _run_agent(args, "", req, knobs, assumptions, lineage, make_llm(), settings)
 
 
 def explore(view: AgentRunView, db_path: Path) -> tuple[ExploreOption, ...]:

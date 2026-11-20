@@ -172,3 +172,8 @@ class FabricationSettings(BaseModel):
 
 
 DEFAULT_FABRICATION: Final[FabricationSettings] = FabricationSettings()
+
+
+def changed_fields(before: FabricationSettings, after: FabricationSettings) -> tuple[str, ...]:
+    """Names of the settings that differ between `before` and `after`, in field order."""
+    return tuple(name for name in FabricationSettings.model_fields if getattr(before, name) != getattr(after, name))

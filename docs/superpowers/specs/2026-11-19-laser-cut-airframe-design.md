@@ -271,6 +271,9 @@ New settings (defaults, all adjustable):
 
 - An expander "Laser kit settings" next to the assumptions panel, editing `FabricationSettings` (bed, kerf,
   sheets, tube list as an editable table).
+- A re-run (option, chat or manual change) uses the panel's current validated settings (R37); invalid values
+  block it as they block a fresh run. When they differ from the parent run's, the lineage records the changed
+  fields and the results say so.
 - The Files tab lists the kit DXFs and the build sheet; the zip already includes every run file.
 - Results show kit mass, sheet count per stock and any kit warning.
 

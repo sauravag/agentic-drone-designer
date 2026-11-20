@@ -18,6 +18,7 @@ from src.agent.providers import LLMConfigError
 from src.agent.report import defang, inline
 from src.schemas.changes import (FIELD_LABELS, LABEL_MAX_LEN, AssumptionChanges, ChangeSet, KnobChanges,
                                  RequirementChanges)
+from src.schemas.fabrication import FabricationSettings
 from src.schemas.payload_catalog import payload_choices, payload_label, payload_spec
 from src.ui import agent_service, fabrication_panel
 from src.ui.agent_service import AgentRunView, NoChangeError
@@ -51,9 +52,9 @@ def record_run(view: AgentRunView) -> None:
     st.session_state[PENDING_KEY] = None
     if view.run_id is not None:
         st.session_state[RUNS_KEY] = [*st.session_state.get(RUNS_KEY, []), view]
-    # A re-run keeps its parent's kit settings, so the panel follows. Error and clarification views never ran with
-    # settings (they carry the default), so they must not overwrite the designer's. Rerun now: the queued settings
-    # are applied before the designer can edit (or reset) anything.
+    # The panel follows the shown design's kit settings (a re-run's are the panel's own, R37). Error and
+    # clarification views never ran with settings (they carry the default), so they must not overwrite the
+    # designer's. Rerun now: the queued settings are applied before the designer can edit (or reset) anything.
     if view.has_design and fabrication_panel.restore(view.fabrication):
         st.rerun()
 
@@ -269,13 +270,27 @@ def _edited_change(change: ChangeSet) -> ChangeSet:
     return edited.model_copy(update={"label": label})
 
 
+def _kit_settings_or_stop(view: AgentRunView) -> Optional[FabricationSettings]:
+    """R37: the panel's validated kit settings for a re-run (the parent's exact settings when the panel shows the
+    same values); None, with every problem shown, when a panel value is invalid."""
+    current, errors = fabrication_panel.current_fabrication()
+    if current is None:
+        for message in errors:  # already worded "Laser kit: <field>: <problem>"
+            st.error(message)
+        return None
+    return view.fabrication if fabrication_panel.same_as_shown(current, view.fabrication) else current
+
+
 def _rerun(view: AgentRunView, change: ChangeSet, source: Source, outputs_root: Path, db_path: Path) -> None:
+    fabrication = _kit_settings_or_stop(view)
+    if fabrication is None:
+        return
     do_aero: bool = st.session_state["with_aero_cad"]
     with st.status("Re-running with the change…", expanded=True) as status:
         try:
             new_view = agent_service.rerun(view, _edited_change(change), source, outputs_root, db_path,
                                            with_aero_cad=do_aero, with_sitl=do_aero and st.session_state["with_sitl"],
-                                           progress=status.write)
+                                           progress=status.write, fabrication=fabrication)
         except (NoChangeError, ValueError, pipeline.PipelineError, LLMConfigError) as exc:
             # ValueError also covers pydantic's out-of-bounds ValidationError
             status.update(label="Re-run not started", state="error")
@@ -328,6 +343,15 @@ def render_history() -> None:
             text_col, button_col = st.columns(HISTORY_COLUMNS)
             text_col.markdown(f"`{view.run_id}` · {view.status.replace('_', ' ')} · {_change_label(view)}")
             button_col.button("Open", key=f"open_run_{view.run_id}", on_click=_open, args=(view,))
+
+
+def render_kit_settings_note(view: AgentRunView) -> None:
+    """R37: say when a re-run used kit settings edited in the panel rather than its parent's."""
+    changed = () if view.lineage is None else view.lineage.fabrication_changes
+    if changed:
+        names = ", ".join(fabrication_panel.field_label(name) for name in changed)
+        st.info(f"This re-run used edited laser kit settings, not those of run `{view.lineage.parent_run_id}`: "
+                f"{names}.")
 
 
 def render_assumptions_used(view: AgentRunView) -> None:

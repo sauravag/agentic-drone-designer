@@ -10,7 +10,7 @@ import pytest
 from src import pipeline
 from src.agent.graph import initial_state
 from src.agent.providers import LLMConfigError
-from src.schemas.state import DesignState
+from src.schemas.state import DesignState, RunLineage
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui import agent_service
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
@@ -217,3 +217,32 @@ def test_rerun_keeps_the_parent_settings(tmp_path: Path, no_key: None) -> None:
     second = agent_service.rerun(first, change, "manual", tmp_path / "o", tmp_path / "c.db", False, False, lambda _: None)
     assert second.fabrication == CUSTOM_FABRICATION
     assert FabricationSettings.model_validate_json((second.out_dir / "fabrication.json").read_text()) == CUSTOM_FABRICATION
+
+
+def test_rerun_with_edited_settings_uses_them_and_records_the_change(tmp_path: Path, no_key: None) -> None:
+    """R37: a re-run uses the panel's settings; the lineage names the fields that differ from the parent's."""
+    first = _run(tmp_path, requirements=G1_ELECTRIC_FW)
+    change = ChangeSet(label="longer", requirements=RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25),
+                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    second = agent_service.rerun(first, change, "manual", tmp_path / "o", tmp_path / "c.db", False, False,
+                                 lambda _: None, fabrication=CUSTOM_FABRICATION)
+    assert second.fabrication == CUSTOM_FABRICATION
+    assert second.lineage.fabrication_changes == ("bed_width_m", "bed_height_m")
+    assert FabricationSettings.model_validate_json((second.out_dir / "fabrication.json").read_text()) == CUSTOM_FABRICATION
+    summary = json.loads((second.out_dir / "run_summary.json").read_text())
+    assert summary["lineage"]["fabrication_changes"] == ["bed_width_m", "bed_height_m"]
+
+
+def test_rerun_with_the_parents_settings_records_no_change(tmp_path: Path, no_key: None) -> None:
+    first = _run(tmp_path, requirements=G1_ELECTRIC_FW, fabrication=CUSTOM_FABRICATION)
+    change = ChangeSet(label="longer", requirements=RequirementChanges(endurance_hours=G1_ELECTRIC_FW.endurance_hours + 0.25),
+                       assumptions=AssumptionChanges(), knobs=KnobChanges())
+    second = agent_service.rerun(first, change, "manual", tmp_path / "o", tmp_path / "c.db", False, False,
+                                 lambda _: None, fabrication=CUSTOM_FABRICATION)
+    assert second.lineage.fabrication_changes == ()
+
+
+def test_old_lineage_records_load_without_fabrication_changes() -> None:
+    lineage = RunLineage.model_validate({"parent_run_id": "r", "change_source": "chat", "change_set": {
+        "label": "x", "requirements": {}, "assumptions": {}, "knobs": {}}})
+    assert lineage.fabrication_changes == ()

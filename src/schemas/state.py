@@ -132,6 +132,7 @@ class RunLineage(_Frozen):
     parent_run_id: str
     change_set: ChangeSet
     change_source: Literal["option", "chat", "manual"]
+    fabrication_changes: tuple[str, ...] = ()  # R37: kit settings that differ from the parent's (field names)
 
 
 class DesignState(TypedDict):

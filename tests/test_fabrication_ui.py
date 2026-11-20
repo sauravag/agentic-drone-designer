@@ -375,3 +375,79 @@ def test_a_cleared_number_input_is_a_field_error_not_a_crash() -> None:
 
 def test_default_tubes_carry_no_float_dust() -> None:
     assert all(round(t.od_m, 9) == t.od_m and round(t.id_m, 9) == t.id_m for t in DEFAULT_FABRICATION.tubes)
+
+
+# ---------------------------------------------------------------- re-runs (R37) ---
+def _view_with_an_option(tmp_path: Path) -> Any:
+    change = {"label": "shorter", "requirements": {"endurance_hours": 0.5}, "assumptions": {}, "knobs": {}}
+    result = {"closes": True, "mtow_kg": 4.0, "dod_group": 1, "propulsion": "electric", "battery_mass_kg": 0.8,
+              "fuel_mass_kg": 0.0, "reason": ""}
+    option = {"lever": "endurance", "change": change, "result": result, "relative_change": 0.0, "closes": True,
+              "mtow_saved_kg": None, "group_drop": False}
+    return agent_service.AgentRunView("not_converged", run_id="r1", out_dir=tmp_path, requirements=G1_ELECTRIC_FW,
+                                      explorer_mode="closure", options=(option,))
+
+
+def _app_at_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[dict[str, Any]]]:
+    """The app showing a run with one option loaded in the review panel; agent_service.rerun records its calls."""
+    at = _app(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent_service, "run", lambda *a, **k: _view_with_an_option(tmp_path))
+    at.button(key="submit_prompt").click()
+    at.run()
+    at.button(key="select_option_0").click()
+    at.run()
+    calls: list[dict[str, Any]] = []
+
+    def fake_rerun(*args: object, **kwargs: object) -> Any:
+        calls.append(dict(kwargs))
+        return agent_service.AgentRunView("error", message="stop")
+
+    monkeypatch.setattr(agent_service, "rerun", fake_rerun)
+    return at, calls
+
+
+def test_a_rerun_uses_the_panels_edited_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at, calls = _app_at_review(tmp_path, monkeypatch)
+    at.number_input(key="fab_bed_width_m").set_value(CUSTOM_BED_MM)
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    assert len(calls) == 1 and calls[0]["fabrication"].bed_width_m == pytest.approx(CUSTOM_BED_MM / 1e3)
+
+
+def test_invalid_panel_settings_block_a_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at, calls = _app_at_review(tmp_path, monkeypatch)
+    at.number_input(key="fab_bed_width_m").set_value(0.0)
+    at.button(key="rerun").click()
+    at.run()
+    assert not at.exception
+    assert calls == []
+    assert any("Laser kit" in e.value and "Bed width" in e.value for e in at.error)
+    assert at.session_state["pending_change"] is not None  # the panel stays open to fix the value
+
+
+def test_a_rerun_with_edited_settings_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.schemas.changes import ChangeSet
+    from src.schemas.state import RunLineage
+
+    change = ChangeSet.model_validate({"label": "shorter", "requirements": {"endurance_hours": 0.5},
+                                       "assumptions": {}, "knobs": {}})
+    lineage = RunLineage(parent_run_id="r1", change_set=change, change_source="option",
+                         fabrication_changes=("bed_width_m", "tubes"))
+    edited = DEFAULT_FABRICATION.model_copy(update={"bed_width_m": 0.8})
+    at = _app(tmp_path, monkeypatch)
+    _record_runs(monkeypatch, [_converged("r2", edited, lineage=lineage)])
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not at.exception
+    assert any("edited laser kit settings" in i.value and "Bed width (mm)" in i.value and "Tubes" in i.value
+               for i in at.info)
+
+
+def test_a_rerun_with_the_parents_settings_says_nothing_about_them(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _app(tmp_path, monkeypatch)
+    _record_runs(monkeypatch, [_converged("r2", DEFAULT_FABRICATION)])
+    at.button(key="submit_prompt").click()
+    at.run()
+    assert not any("edited laser kit settings" in i.value for i in at.info)

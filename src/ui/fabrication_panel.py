@@ -85,6 +85,18 @@ def _label(name: str) -> str:
     return text
 
 
+def field_label(name: str) -> str:
+    """How the panel names a setting: its input's label, or the table it is edited in."""
+    if name in TABLE_FIELDS:
+        return f"{TABLE_NOUNS[name]}s"
+    return _label(name)
+
+
+def same_as_shown(a: FabricationSettings, b: FabricationSettings) -> bool:
+    """The two settings show the same values in the panel (display rounding ignored)."""
+    return _as_shown(a) == _as_shown(b)
+
+
 def _words(name: str) -> str:
     """A field name as plain words (unit suffix dropped), for the cross-field messages the model words itself."""
     return re.sub(r"_(pa|m|kg_m2|kg_m3|g_m2)$", "", name).replace("_", " ")
