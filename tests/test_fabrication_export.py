@@ -11,7 +11,7 @@ from ezdxf import bbox as dxf_bbox
 
 from src.schemas.fabrication import DEFAULT_FABRICATION
 from src.tools.fabrication.kit import KitPart, KitUnavailable
-from src.tools.fabrication import kit_export
+from src.tools.fabrication import nesting
 from src.tools.fabrication.kit_export import LABEL_HEIGHT_M, LABEL_MIN_HEIGHT_M, label_layout, write_sheets
 from src.tools.fabrication.nesting import MM_PER_M, Placement, kerf_outline, nest, placed_outline
 from tests.cad_helpers import hole_diameters
@@ -253,9 +253,10 @@ def test_rewriting_removes_stale_sheets(tmp_path):
 
 def test_kerf_offset_is_computed_once_per_part(tmp_path, monkeypatch):
     calls: list[str] = []
-    real = kit_export.kerf_outline
-    monkeypatch.setattr(kit_export, "kerf_outline", lambda face, kerf: calls.append("k") or real(face, kerf))
-    write_sheets(nest([_plate("Q", 0.05, 0.05, quantity=3)], S), S, tmp_path)
+    placements = nest([_plate("Q", 0.05, 0.05, quantity=3)], S)
+    real = nesting.kerf_outline
+    monkeypatch.setattr(nesting, "kerf_outline", lambda face, kerf: calls.append("k") or real(face, kerf))
+    write_sheets(placements, S, tmp_path)
     assert len(calls) == 1
 
 
@@ -289,3 +290,30 @@ def test_curves_other_than_arcs_are_flattened_into_the_outline(tmp_path):
     assert poly.closed and len(poly) > 4
     outer = dxf_bbox.extents([poly])
     assert outer.size.x == pytest.approx(80.15, abs=0.05) and outer.size.y == pytest.approx(40.15, abs=0.05)
+
+
+# ------------------------------------------------------------------------- label and kerf guards ---
+def test_write_sheets_rejects_two_different_parts_with_one_label(tmp_path):
+    a, b = _plate("P-1", 0.05, 0.05), _plate("P-1", 0.08, 0.05)
+    placements = {"Birch ply 3 mm": (Placement(a, 1, 0.005, 0.005, False), Placement(b, 1, 0.1, 0.005, False))}
+    with pytest.raises(ValueError, match="P-1"):
+        write_sheets(placements, S, tmp_path)
+
+
+def test_write_sheets_reports_a_kerf_failure_like_nest(tmp_path, monkeypatch):
+    part = _plate("P-2", 0.05, 0.05)
+    placements = nest([part], S)
+
+    def broken(face, kerf_m):
+        raise ValueError("offset failed")
+
+    monkeypatch.setattr("src.tools.fabrication.nesting.kerf_outline", broken)
+    with pytest.raises(KitUnavailable, match="P-2"):
+        write_sheets(placements, S, tmp_path)
+
+
+def test_build_kit_rejects_duplicate_labels():
+    from src.tools.fabrication.build_kit import _assert_unique_labels
+
+    with pytest.raises(KitUnavailable, match="P-3"):
+        _assert_unique_labels([_plate("P-3", 0.05, 0.05), _plate("P-3", 0.05, 0.05)], [])

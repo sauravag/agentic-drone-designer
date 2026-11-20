@@ -282,7 +282,8 @@ def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(case, request):
     cover = SETTINGS.fuselage_cover_kg_m2 * kit.fuselage_cover_area_m2
     assert by["fuselage_cover"].mass_kg == pytest.approx(cover, rel=1e-9)
     named = {p.label for p in kit.parts} | {t.label for t in kit.tubes} | {s.label for s in kit.linear}
-    assert set(by) - named == {"glue_hardware", "fuselage_cover", "film_wing", "film_htail", "film_vtail"}
+    assert set(by) - named == {"glue_hardware", "fuselage_cover", "film_wing", "film_htail", "film_vtail", "OW-1"}
+    assert by["OW-1"].mass_kg == pytest.approx(kit.overwrap.mass_kg, rel=1e-12)  # R24: its own mass, glue-free
 
 
 def test_film_sits_on_the_wing_planform_centroid(g1_kit, g1_kit_inputs):
@@ -331,7 +332,8 @@ def test_inner_member_overlap_survives_a_trimmed_outer_end(g1_kit_inputs):
     station = wing_rib_stations(joint, semi)[2]
     step = station - settings.sheet_for("rib").thickness_m / 2.0 + 0.0002  # the rib's inner face is inboard of it
     outer, inner = TubeStock(od_m=0.012, id_m=0.010), TubeStock(od_m=0.010, id_m=0.008)
-    plan = SparPlan((SparSegment(outer, joint, step), SparSegment(inner, step, semi)), spar.socket, joint, joint)
+    plan = SparPlan((SparSegment(outer, joint, step), SparSegment(inner, step, semi)), spar.socket, joint, joint,
+                    spar.centre_moment_nm)
     by = {t.label: t for t in _spar_tubes(layout, plan, settings)}
     end = _tube_end(by["SP-R1"])
     assert end[1] < step - 1e-6  # trimmed

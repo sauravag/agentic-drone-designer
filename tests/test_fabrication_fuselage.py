@@ -49,7 +49,7 @@ def _test_battery(layout, length_m: float = 0.10, width_frac: float = 0.5) -> Pl
 def _fuselage(inputs, components=None):
     layout, _, spar, settings = inputs
     placed = (_test_battery(layout),) if components is None else components
-    return fuselage_parts(layout, spar, placed, settings)
+    return fuselage_parts(layout, spar, placed, settings, wing_shear_n=0.0)
 
 
 @pytest.fixture(scope="module")
@@ -271,7 +271,7 @@ def test_boom_mounts_closer_than_30mm_are_unavailable(g1_kit_inputs):
     layout, airfoil, spar, settings = g1_kit_inputs
     late = dataclasses.replace(layout.tail_boom, x_start_m=0.96 * layout.fuselage_length_m)
     with pytest.raises(KitUnavailable, match="BM-"):
-        fuselage_parts(dataclasses.replace(layout, tail_boom=late), spar, (), settings)
+        fuselage_parts(dataclasses.replace(layout, tail_boom=late), spar, (), settings, wing_shear_n=0.0)
 
 
 def _real_components(designs, case: str, layout) -> tuple[PlacedComponent, ...]:
@@ -417,7 +417,7 @@ def test_crutch_stops_at_the_boom_root(g1_kit_inputs):
     t = settings.sheet_for("former").thickness_m
     last = max(x for x in former_stations(layout, spar, settings) if x < layout.tail_boom.x_start_m)
     boom = dataclasses.replace(layout.tail_boom, x_start_m=last + t + 0.005)
-    parts = fuselage_parts(dataclasses.replace(layout, tail_boom=boom), spar, (), settings)
+    parts = fuselage_parts(dataclasses.replace(layout, tail_boom=boom), spar, (), settings, wing_shear_n=0.0)
     crutch = part_solid(ribs_by_label(parts)["C-1"], settings).bounding_box()
     assert crutch.max.X <= boom.x_start_m + 1e-9
 

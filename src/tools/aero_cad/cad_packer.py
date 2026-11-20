@@ -45,7 +45,7 @@ from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure,
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
 from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart
 from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
-from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit_formers, seat_low
+from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
 
@@ -126,7 +126,7 @@ def _clear_of_structure(item: PlacedComponent, boxes: Sequence[Box3]) -> bool:
 
 @dataclass(frozen=True)
 class _KitRules:
-    """Slot rules when the airframe is a kit: structure boxes to clear, former openings to fit (R23)."""
+    """Slot rules when the airframe is a kit: structure boxes to clear, former openings and crutch rails to fit (R23, R28)."""
 
     boxes: tuple[Box3, ...]
     settings: FabricationSettings
@@ -135,12 +135,12 @@ class _KitRules:
 def _is_clear(item: PlacedComponent, obstacles: Sequence[PlacedComponent], layout: AircraftLayout,
               kit: Optional[_KitRules] = None) -> bool:
     """x-clear of every other component; with a kit, also clear of its structure and inside its former openings
-    (which replaces the shell model's radial margin), else inside that margin."""
+    with crutch rails to spare (R28; this replaces the shell model's radial margin), else inside that margin."""
     gap = COMPONENT_GAP_M
     clear_x: bool = all(item.x_max + gap <= o.x_min or item.x_min >= o.x_max + gap for o in obstacles)
     if kit is None:
         return clear_x and parts.fits_radially(item, layout)
-    return clear_x and _clear_of_structure(item, kit.boxes) and fits_kit_formers(item, layout, kit.settings)
+    return clear_x and _clear_of_structure(item, kit.boxes) and fits_kit(item, layout, kit.settings)
 
 
 def _center_bounds(item: PlacedComponent, layout: AircraftLayout) -> tuple[float, float]:
@@ -285,10 +285,12 @@ def _tube_box(tube: TubePart) -> Box3:
 
 
 def _structure_boxes(kit: Kit, settings: FabricationSettings) -> tuple[Box3, ...]:
-    """Kit structure no component may cross: socket tubes, wing-box plates, firewall and boom-mount bulkheads
-    (formers, crutch and trays take openings or belong to components)."""
+    """Kit structure no component may cross: socket tubes and their centreline overwrap (at its wrapped OD),
+    wing-box plates and socket bosses, firewall and boom-mount bulkheads (formers, crutch and trays take openings or
+    belong to components)."""
     plates = [_part_box(p, settings) for p in kit.parts if p.label.startswith(STRUCTURE_PART_PREFIXES)]
-    return (*plates, *(_tube_box(t) for t in kit.tubes if t.role in STRUCTURE_TUBE_ROLES))
+    tubes = [t for t in kit.tubes if t.role in STRUCTURE_TUBE_ROLES]
+    return (*plates, *(_tube_box(t) for t in (*tubes, *kit.overwrap_halves())))
 
 
 def _kit_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,

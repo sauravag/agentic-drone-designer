@@ -35,7 +35,13 @@ from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent, boom_obstacles, overlap_volume_m3
 from src.tools.aero_cad.layout import AircraftLayout, fuselage_radius_at
 from src.tools.fabrication.boom_parts import boom_parts, motor_plate_diameter_m, motor_plate_outline
-from src.tools.fabrication.fuselage_parts import firewall_station, profile_corners, socket_axis_m, station_location
+from src.tools.fabrication.fuselage_parts import (
+    firewall_station,
+    material_spans,
+    profile_corners,
+    socket_axis_m,
+    station_location,
+)
 from src.tools.fabrication.kit import Box2, KitPart
 from src.tools.fabrication.rib_outline import rect_face
 from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan
@@ -74,10 +80,6 @@ def _pieces_of(shape: object) -> list[bd.Shape]:
 
 def _faces(shape: object) -> list[bd.Face]:
     return [f for piece in _pieces_of(shape) for f in piece.faces()]
-
-
-def _edges(shape: object) -> list[bd.Edge]:
-    return [e for piece in _pieces_of(shape) for e in piece.edges()]
 
 
 def _rod(start: bd.Vector, end: bd.Vector, diameter_m: float) -> bd.Solid:
@@ -255,16 +257,6 @@ def _doubler_lap(face: bd.Face, x_m: float, span: tuple[float, float]) -> Option
     return lap if lap >= DOUBLER_MIN_LAP_M else None
 
 
-def _material_spans(face: bd.Face, x_m: float) -> list[tuple[float, float]]:
-    """Every stretch of material on the line local x = x_m, in y order."""
-    edges = _edges(face.intersect(bd.Edge.make_line((x_m, -REACH_M, 0.0), (x_m, REACH_M, 0.0))))
-    spans: list[tuple[float, float]] = []
-    for e in edges:
-        a, b = e.start_point().Y, e.end_point().Y
-        spans.append((min(a, b), max(a, b)))
-    return sorted(spans)
-
-
 def _inside(box: bd.BoundBox, opening: Box2) -> bool:
     x0, y0, x1, y1 = opening
     e = SPAN_EPS_M
@@ -303,7 +295,7 @@ def _joint_is_clear(face: bd.Face, joint: _Joint, openings: Sequence[Box2]) -> b
 def _joint_at(face: bd.Face, x_m: float) -> Optional[_Joint]:
     """A joint on the line x = x_m with one dovetail per rail, or None when a rail has no doubler room."""
     rails: list[_Rail] = []
-    for lo, hi in _material_spans(face, x_m):
+    for lo, hi in material_spans(face, x_m):
         lap = _doubler_lap(face, x_m, (lo, hi))
         if lap is None:
             return None

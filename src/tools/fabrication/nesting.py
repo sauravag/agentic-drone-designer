@@ -24,7 +24,7 @@ import build123d as bd
 from src.schemas.fabrication import FabricationSettings
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 
-__all__ = ["MM_PER_M", "Placement", "kerf_outline", "nest", "place_kerfed", "placed_outline"]
+__all__ = ["MM_PER_M", "Placement", "kerf_outline", "kerfed_part", "nest", "place_kerfed", "placed_outline"]
 
 EPS_M: Final[float] = 1e-9  # float slack on bed and free-rectangle fits
 QUARTER_TURN_DEG: Final[float] = 90.0
@@ -84,7 +84,8 @@ def _usable_bed(settings: FabricationSettings) -> tuple[float, float]:
     return settings.bed_width_m - 2.0 * settings.margin_m, settings.bed_height_m - 2.0 * settings.margin_m
 
 
-def _kerfed(part: KitPart, kerf_m: float) -> bd.Face:
+def kerfed_part(part: KitPart, kerf_m: float) -> bd.Face:
+    """The part's kerf-compensated outline; a failed offset raises KitUnavailable naming the part."""
     try:
         return kerf_outline(part.outline, kerf_m)
     except (RuntimeError, ValueError) as exc:
@@ -93,7 +94,7 @@ def _kerfed(part: KitPart, kerf_m: float) -> bd.Face:
 
 def _orientation(part: KitPart, settings: FabricationSettings) -> tuple[float, float, bool]:
     """(width, height, rotated) of the kerf-compensated part: the fitting orientation with the lower height."""
-    size = _kerfed(part, settings.kerf_m).bounding_box().size
+    size = kerfed_part(part, settings.kerf_m).bounding_box().size
     usable_w, usable_h = _usable_bed(settings)
     options = ((size.X, size.Y, False), (size.Y, size.X, True))
     fitting = [o for o in options if o[0] <= usable_w + EPS_M and o[1] <= usable_h + EPS_M]

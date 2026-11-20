@@ -107,7 +107,7 @@ def test_seat_low_never_raises_a_part_that_cannot_drop():
 def test_crutch_slots_survive_a_steep_tail_cone(designs):
     layout = _layout(designs, "g2", STEEP_CONE_DIAMETER_M)
     plan = kit_spar_plan(designs["g2"][0], layout, load_airfoil(layout.airfoil), SETTINGS)
-    crutch = next(p for p in fuselage_parts(layout, plan, (), SETTINGS) if p.label == "C-1")
+    crutch = next(p for p in fuselage_parts(layout, plan, (), SETTINGS, wing_shear_n=0.0) if p.label == "C-1")
     x0 = crutch.location.position.X
     for wire in crutch.outline.inner_wires():  # every tab slot keeps MIN_WEB_M to the edge at its aft face
         box = wire.bounding_box()

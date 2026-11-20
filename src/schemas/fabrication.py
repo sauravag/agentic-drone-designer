@@ -49,6 +49,11 @@ class TubeStock(BaseModel):
         """Second moment of area about a diameter (m^4)."""
         return math.pi / 64.0 * (self.od_m**4 - self.id_m**4)
 
+    @property
+    def polar_moment_m4(self) -> float:
+        """Polar second moment of area J = pi (OD^4 - ID^4) / 32 (m^4)."""
+        return math.pi / 32.0 * (self.od_m**4 - self.id_m**4)
+
 
 def _tubes_from_mm(pairs: tuple[tuple[float, float], ...]) -> tuple[TubeStock, ...]:
     return tuple(TubeStock(od_m=od * MM, id_m=idm * MM) for od, idm in pairs)
@@ -111,6 +116,20 @@ class FabricationSettings(BaseModel):
         description="Minimum spar insertion into the fuselage socket (skin to centreline), in root-tube diameters.",
     )
     fit_clearance_m: float = Field(0.0002, ge=0.0, description="Slot / hole clearance for press fits (m).")
+    carbon_shear_allow_pa: float = Field(
+        60e6, gt=0.0, description="Allowable in-plane shear of roll-wrapped carbon tube (Pa), for spar torsion."
+    )
+    ply_bearing_allow_pa: float = Field(15e6, gt=0.0, description="Allowable birch-ply edge bearing stress (Pa).")
+    overwrap_layer_thickness_m: float = Field(
+        0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m), 200 g/m^2 cloth."
+    )
+    overwrap_allow_pa: float = Field(250e6, gt=0.0, description="Allowable stress of hand-laid 0/90 cloth (Pa).")
+    overwrap_density_kg_m3: float = Field(1500.0, gt=0.0, description="Cured overwrap density (kg/m^3).")
+    overwrap_max_layers: int = Field(12, ge=1, description="Most cloth layers a centreline overwrap may have (R29).")
+    epoxy_lap_shear_pa: float = Field(15e6, gt=0.0, description="Epoxy lap-shear strength (Pa); sizes the wrap lap.")
+    crutch_rail_min_m: float = Field(
+        0.008, gt=0.0, description="Minimum crutch side-rail width beside a component opening (m)."
+    )
 
     @model_validator(mode="after")
     def _validate_family_coverage(self) -> "FabricationSettings":

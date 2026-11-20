@@ -17,9 +17,13 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
 Linear stock (balsa, `stringer_density_kg_m3`): `ST-1…` stringers in the former notches from the first former
 after the firewall to the aft face of the last former; `LE-…` / `TE-…` strips per wing panel and tail surface.
 Covering: film over both faces of the wing and tails (2 x planform), fuselage cover over the pod's lateral area.
+Structural checks (R24-R28): the spar is sized against bending and torsion (`kit_spar_torsion`), the tail boom is
+checked, the plates get socket bosses when bearing needs them, and the centreline mitre gets its overwrap
+(`Kit.overwrap`), which must fit between the plates' (or bosses') inner faces. Part and tube labels are unique.
 """
 
 import math
+from collections import Counter
 from typing import Callable, Final, Optional, Sequence
 
 import build123d as bd
@@ -39,6 +43,7 @@ from src.tools.aero_cad.layout import (
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.fittings import boom_parts, component_plates, cruise_motor_plate, join_notes, split_to_bed
 from src.tools.fabrication.fuselage_parts import (
+    BOSS_LABELS,
     FULL_TURN_DEG,
     STRINGER_COUNT,
     STRINGER_START_DEG,
@@ -53,12 +58,27 @@ from src.tools.fabrication.kit import (
     KitUnavailable,
     LinearKind,
     LinearStock,
+    Overwrap,
     TubePart,
     TubeRole,
     Vec3,
 )
 from src.tools.fabrication.rib_outline import camber_point, keeps_web, notched_profile
-from src.tools.fabrication.tubes import FIT_EPS_M, SparPlan, depth_limit_m, joint_y_m, plan_spar
+from src.tools.fabrication.tubes import (
+    FIT_EPS_M,
+    SparPlan,
+    SparTorsion,
+    aero_torque_nm,
+    boom_tube,
+    depth_limit_m,
+    hover_pitch_torque_nm,
+    joint_y_m,
+    manoeuvre_dynamic_pressure_pa,
+    plan_spar,
+    size_overwrap,
+    tail_boom_check,
+    wing_shear_n,
+)
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
     PIN_ROD_DIAMETER_M,
@@ -270,14 +290,57 @@ def _covering(layout: AircraftLayout) -> tuple[CoverSurface, ...]:
 
 
 # -------------------------------------------------------------------------------------------- API ---
+def kit_spar_torsion(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> SparTorsion:
+    """R25 torque sources: the flight torque at the manoeuvre dynamic pressure (R30) with the default airfoil Cm0,
+    and hover pitch control, one lift rotor at full thrust times the longer fore/aft arm from the spar at the boom
+    station (none without lift booms)."""
+    wing, q = layout.wing, manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, settings)
+
+    def flight(y: float) -> float:
+        return aero_torque_nm(sizing.mtow_kg, wing.semi_span_m, wing.chord_at, q, y, settings)
+
+    boom_y = max((abs(b.y_m) for b in layout.vtol_booms), default=None)
+    if boom_y is None:
+        return SparTorsion(flight, hover_torque_nm=0.0, hover_thrust_n=0.0)
+    spar_x = socket_axis_m(layout, boom_y)[0]
+    arm = max(abs(x - spar_x) for x, _, _ in layout.rotor_positions)
+    thrust = sizing.vtol_thrust_per_motor_n
+    return SparTorsion(flight, hover_torque_nm=hover_pitch_torque_nm(thrust, arm), hover_thrust_n=thrust)
+
+
 def kit_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
           settings: FabricationSettings) -> SparPlan:
-    """Spar plan with the joint where the spar meets the skin at wing height (as the spar tests build it)."""
+    """Spar plan with the joint where the spar meets the skin at wing height (as the spar tests build it), sized
+    against bending and torsion."""
     radius = fuselage_radius_at(layout, socket_axis_m(layout, 0.0)[0])
     joint = joint_y_m(radius, WING_Z_FRACTION * layout.fuselage_diameter_m)
     boom_y = max((abs(b.y_m) for b in layout.vtol_booms), default=None)
     depth = spar_depth_at(layout.wing, airfoil, settings, root_doubler_m=joint)
-    return plan_spar(sizing.mtow_kg, layout.wing.semi_span_m, joint, depth, boom_y, settings)
+    return plan_spar(sizing.mtow_kg, layout.wing.semi_span_m, joint, depth, boom_y, settings,
+                     torsion=kit_spar_torsion(sizing, layout, settings))
+
+
+def _plate_gap_m(fuselage: Sequence[KitPart], settings: FabricationSettings) -> float:
+    """Clear width between the wing-box plates' innermost faces (the socket bosses' when fitted)."""
+    t = settings.sheet_for("plate").thickness_m  # plates and bosses extrude toward -y from their origin
+    return 2.0 * min(p.location.position.Y - t for p in fuselage if p.label in ("WM-R", BOSS_LABELS[1]))
+
+
+def _overwrap(spar: SparPlan, fuselage: Sequence[KitPart], settings: FabricationSettings) -> Overwrap:
+    return size_overwrap(spar.centre_moment_nm, spar.socket, _plate_gap_m(fuselage, settings), settings)
+
+
+def _assert_unique_labels(parts: Sequence[KitPart], tubes: Sequence[TubePart]) -> None:
+    """Labels identify parts on the sheets, in the build sheet and in the DXF kerf cache: never two alike."""
+    counts = Counter([*(p.label for p in parts), *(t.label for t in tubes)])
+    duplicates = sorted(label for label, n in counts.items() if n > 1)
+    if duplicates:
+        raise KitUnavailable(f"duplicate kit labels: {', '.join(duplicates)}")
+
+
+def _check_tail_boom(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> None:
+    if layout.tail_boom is not None:
+        tail_boom_check(boom_tube(layout.tail_boom.diameter_m, settings), sizing, layout, settings)
 
 
 def _split_all(parts: Sequence[KitPart], settings: FabricationSettings) -> tuple[KitPart, ...]:
@@ -290,9 +353,11 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     if sizing.dod_group > MAX_DOD_GROUP:
         raise KitUnavailable("laser-cut construction covers Group 1–2 designs only")
     spar = kit_spar_plan(sizing, layout, airfoil, settings)
+    _check_tail_boom(sizing, layout, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
     ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, settings))
-    fuselage = fuselage_parts(layout, spar, components, settings)
+    fuselage = fuselage_parts(layout, spar, components, settings, wing_shear_n=wing_shear_n(sizing, settings))
+    overwrap = _overwrap(spar, fuselage, settings)
     trays = component_plates(components, layout, settings, spar=spar)
     booms, boom_tubes = boom_parts(layout, spar, settings, components=components,
                                    lift_thrust_n=sizing.vtol_thrust_per_motor_n)
@@ -302,5 +367,6 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
              *boom_tubes, *_tail_spars(layout, tail, settings))
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
-    covering = _covering(layout)
-    return Kit(parts=parts, tubes=tubes, linear=linear, covering=covering, spar=spar, joins=join_notes(parts))
+    _assert_unique_labels(parts, tubes)
+    return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout), spar=spar,
+               joins=join_notes(parts), overwrap=overwrap)

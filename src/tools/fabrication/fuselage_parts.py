@@ -17,13 +17,17 @@
   out. Each carries its wing's socket tube (coaxial with that wing's spar, so following the dihedral; the two
   meet at the centreline) and the anti-rotation pin. They stop MIN_WEB_M under the socket hole, so components
   on the axis pass underneath. Local X -> x, local Y -> z; WM-R extrudes toward -y from its outer face, WM-L is
-  its mirror.
+  its mirror. When the plain plate cannot bear its wing's shear on the socket (R27: sigma_b = F / (OD t) <=
+  ply_bearing_allow_pa / FS), a socket-boss doubler `WM-RD` / `WM-LD` (an annulus SOCKET_BOSS_WIDTH_M wide, cut
+  from plate stock) is glued round the socket hole on each plate's inner face; none is cut when the plate suffices.
 - Boom mounts `BM-1`, `BM-2`: 3 mm bulkheads in the tail cone carrying the stock tail-boom tube, one just aft of
   the boom root, one as far aft as a MIN_WEB_M rim around the boom hole allows (at least 30 mm apart).
 
 Every component whose box crosses a former, the crutch or a plate gets an opening (or a notch where it breaks
 through the outline); openings, slots and notches keep a MIN_WEB_M web, and anything that would break a part
-raises `KitUnavailable`. Slots are cut at the mating stock's nominal thickness; kerf is applied at DXF export.
+raises `KitUnavailable`. Every crutch side rail beside a component opening keeps at least `crutch_rail_min_m`
+(R28: the rails carry fuselage bending). Slots are cut at the mating stock's nominal thickness; kerf is applied at
+DXF export.
 """
 
 import math
@@ -53,7 +57,15 @@ from src.tools.fabrication.rib_outline import (
     oblique_diameter_m,
     rect_face,
 )
-from src.tools.fabrication.tubes import BISECTION_ITERATIONS, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
+from src.tools.fabrication.tubes import (
+    BISECTION_ITERATIONS,
+    FIT_EPS_M,
+    MIN_WEB_M,
+    KitUnavailable,
+    SparPlan,
+    boom_tube,
+    overwrap_layers,
+)
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, pin_hole_m
 
 FORMER_PITCH_M: Final[float] = 0.12
@@ -76,6 +88,10 @@ REACH_FACTOR: Final[float] = 2.0  # half-plane cutters extend this many radii
 UP: Final[int] = 1
 DOWN: Final[int] = -1
 WEB_TEXT: Final[str] = f"{MIN_WEB_M * 1e3:.0f} mm"
+SOCKET_BOSS_WIDTH_M: Final[float] = 0.006  # R27 boss annulus radial width (stays inside the socket-station formers)
+RAIL_PROBE_INSET_M: Final[float] = 1e-4  # crutch rails are measured just inside each opening's fore and aft ends
+SPAN_REACH_M: Final[float] = 10.0  # probe lines run this far either side of any part
+BOSS_LABELS: Final[dict[int, str]] = {1: "WM-RD", -1: "WM-LD"}
 
 Cut = tuple[str, bd.Face]  # (what passes through, cutter in the part's local XY)
 
@@ -393,9 +409,11 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
 
 
 def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> float:
-    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge or the socket
-    tubes' underside at the centreline, where they sit lowest (the dihedral lifts them outboard)."""
-    socket_z = socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0
+    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge or the underside
+    of the socket tubes' centreline overwrap (R24, at its wrapped OD), where they sit lowest (the dihedral lifts them
+    outboard). Raises `KitUnavailable` when no overwrap within the layer cap carries the centreline moment."""
+    wrap_m = overwrap_layers(spar.centre_moment_nm, spar.socket, settings) * settings.overwrap_layer_thickness_m
+    socket_z = socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m
     return min(_mount(layout, spar, settings).z_m[0], socket_z)
 
 
@@ -425,6 +443,33 @@ def _mount_plate(frame: _Frame, side: int) -> KitPart:
     outline = drill(outline, m.holes, label)
     origin_y = m.y_outer_m if side > 0 else -m.y_inner_m  # both extrude toward -y
     return KitPart(label, "plate", outline, _plane_location((0.0, origin_y, 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
+
+
+def _bearing_stress_pa(load_n: float, od_m: float, thickness_m: float) -> float:
+    """Bearing stress of a socket of `od_m` on a plate edge of `thickness_m`: F / (OD t)."""
+    return load_n / (od_m * thickness_m)
+
+
+def _socket_bosses(frame: _Frame, spar: SparPlan, wing_shear_n: float) -> list[KitPart]:
+    """R27: no parts when the plain plate bears the wing's shear on the socket; else a boss doubler of plate stock
+    (an annulus SOCKET_BOSS_WIDTH_M wide round the socket hole) on each plate's inner face, which must then suffice."""
+    settings, m = frame.settings, frame.mount
+    t, od = settings.sheet_for("plate").thickness_m, spar.socket.od_m
+    allow = settings.ply_bearing_allow_pa / settings.safety_factor
+    if _bearing_stress_pa(wing_shear_n, od, t) <= allow:
+        return []
+    doubled = _bearing_stress_pa(wing_shear_n, od, 2.0 * t)
+    if doubled > allow:
+        raise KitUnavailable(
+            f"socket bearing: {wing_shear_n:.0f} N on the {od * 1e3:.0f} mm socket overloads the wing-box plate even "
+            f"with a boss doubler ({doubled / 1e6:.1f} MPa > {allow / 1e6:.1f} MPa)"
+        )
+    hole = _plate_holes(frame.layout, spar, settings, m.y_inner_m - t / 2.0)[0]
+    ring = circle_face(Hole(hole.x_m, hole.y_m, hole.diameter_m + 2.0 * SOCKET_BOSS_WIDTH_M))
+    origins = {1: m.y_inner_m, -1: -m.y_inner_m + t}  # both extrude toward -y, onto the plate's inner face
+    return [KitPart(label, "plate", drill(ring, (hole,), label),
+                    _plane_location((0.0, origins[side], 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
+            for side, label in sorted(BOSS_LABELS.items())]
 
 
 # ---------------------------------------------------------------------------------- half-formers ---
@@ -566,9 +611,32 @@ def _crutch_body(frame: _Frame, outline: bd.Face, openings: Sequence[Cut]) -> bd
     return body
 
 
+def material_spans(face: bd.Face, x_m: float) -> list[tuple[float, float]]:
+    """Every stretch of material on the line local x = x_m, in y order."""
+    hit = face.intersect(bd.Edge.make_line((x_m, -SPAN_REACH_M, 0.0), (x_m, SPAN_REACH_M, 0.0)))
+    pieces = hit if isinstance(hit, list) else ([] if hit is None else [hit])
+    ends = [(e.start_point().Y, e.end_point().Y) for piece in pieces for e in piece.edges()]
+    return sorted((min(a, b), max(a, b)) for a, b in ends)
+
+
+def _check_rails(frame: _Frame, body: bd.Face, openings: Sequence[Cut]) -> None:
+    """R28: every stretch of crutch beside a component opening (probed at the opening's ends and at the profile
+    corners between them, where the piecewise-linear width is least) is at least crutch_rail_min_m wide."""
+    least = frame.settings.crutch_rail_min_m
+    for name, cut in openings:
+        box = cut.bounding_box()
+        lo, hi = box.min.X + RAIL_PROBE_INSET_M, box.max.X - RAIL_PROBE_INSET_M
+        for x in (lo, hi, *profile_corners(frame.layout, lo, hi)):
+            narrow = [b - a for a, b in material_spans(body, x) if b - a < least - FIT_EPS_M]
+            if narrow:
+                raise KitUnavailable(f"C-1: a side rail beside the {name} is {min(narrow) * 1e3:.1f} mm wide, under "
+                                     f"the {least * 1e3:.0f} mm crutch rail minimum")
+
+
 def _crutch(frame: _Frame) -> KitPart:
     openings, slots = _crutch_openings(frame), _crutch_slots(frame)
     body = _crutch_body(frame, _crutch_outline(frame), openings)
+    _check_rails(frame, body, openings)
     result = body.cut(*(face for _, face in slots))
     for name, face in slots:
         _assert_web(result, face, [face], None, f"C-1: the slot for {name} leaves less than {WEB_TEXT} of crutch")
@@ -581,10 +649,12 @@ def _crutch(frame: _Frame) -> KitPart:
 
 # ------------------------------------------------------------------------------------------ API ---
 def fuselage_parts(
-    layout: AircraftLayout, spar: SparPlan, components: Sequence[PlacedComponent], settings: FabricationSettings
+    layout: AircraftLayout, spar: SparPlan, components: Sequence[PlacedComponent], settings: FabricationSettings,
+    *, wing_shear_n: float,
 ) -> tuple[KitPart, ...]:
-    """Crutch `C-1`, half-formers `F-nnU`/`F-nnL`, firewall `FW-1a`/`FW-1b`, wing-box plates `WM-L`/`WM-R` and
-    boom mounts `BM-1`/`BM-2`.
+    """Crutch `C-1`, half-formers `F-nnU`/`F-nnL`, firewall `FW-1a`/`FW-1b`, wing-box plates `WM-L`/`WM-R` (plus
+    socket bosses `WM-LD`/`WM-RD` when the plates alone cannot bear `wing_shear_n`, R27) and boom mounts
+    `BM-1`/`BM-2`.
 
     Every component crossing a former, the crutch or a plate gets an opening there; with no components the
     formers carry only lightening holes (plus stringer notches and the wing-box slots).
@@ -598,4 +668,4 @@ def fuselage_parts(
     )
     formers = _half_formers(frame)  # first, so a too-big component is reported against the former it breaks
     return (_crutch(frame), *formers, *_firewall(frame), _mount_plate(frame, -1), _mount_plate(frame, 1),
-            *_boom_mount_parts(frame))
+            *_socket_bosses(frame, spar, wing_shear_n), *_boom_mount_parts(frame))

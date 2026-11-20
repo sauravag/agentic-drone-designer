@@ -5,6 +5,8 @@ crosses, and keeps a MIN_WEB_M web (plus room for the stringer notches) inside t
 avionics tray therefore sit as low as their former openings allow (`seat_low`). The wing-box plates and socket
 tubes fill the upper pod at the wing; for Group 1-2 designs (the ones that get a kit) the pod is widened until the
 seated battery passes beneath them with STRUCTURE_CLEARANCE_M to spare, so it can sit at the CG under the wing.
+Every slider also leaves crutch side rails of at least crutch_rail_min_m beside its crutch opening (R28,
+`crutch_rails_fit`), and the wing box's floor includes the centreline overwrap at its wrapped OD (R24).
 Group 3+ designs keep the COTS-fit diameter. One diameter flows through the whole pipeline (OpenVSP included).
 """
 
@@ -75,6 +77,21 @@ def fits_kit_formers(item: PlacedComponent, layout: AircraftLayout, settings: Fa
     return corner <= _opening_radius_m(radius, settings) + FIT_EPS_M
 
 
+def crutch_rails_fit(item: PlacedComponent, layout: AircraftLayout, settings: FabricationSettings) -> bool:
+    """The crutch opening of an internal item (its footprint + half the component gap each side) leaves side rails
+    of at least crutch_rail_min_m to the crutch edge (the skin less the cover) at both ends of the opening (R28)."""
+    gap = COMPONENT_GAP_M / 2.0
+    edge = min(fuselage_radius_at(layout, item.x_min - gap), fuselage_radius_at(layout, item.x_max + gap))
+    edge -= settings.fuselage_cover_thickness_m
+    half_width = (item.size_m[1] + COMPONENT_GAP_M) / 2.0
+    return edge - abs(item.center_m[1]) - half_width >= settings.crutch_rail_min_m - FIT_EPS_M
+
+
+def fits_kit(item: PlacedComponent, layout: AircraftLayout, settings: FabricationSettings) -> bool:
+    """Both kit rules for a slider: its former openings keep their webs and its crutch rails keep their width."""
+    return fits_kit_formers(item, layout, settings) and crutch_rails_fit(item, layout, settings)
+
+
 def _wing_box_floor_m(sizing: SizingOutput, bom: SelectedBOM, diameter_m: float,
                      settings: FabricationSettings) -> Optional[float]:
     """Lowest wing-box floor over every wing station the balance search may pick (stations where no wing box can be
@@ -92,13 +109,14 @@ def _wing_box_floor_m(sizing: SizingOutput, bom: SelectedBOM, diameter_m: float,
 
 
 def pod_fits_kit(sizing: SizingOutput, bom: SelectedBOM, diameter_m: float, settings: FabricationSettings) -> bool:
-    """Every seated slider opens in the formers of the constant section and the seated battery passes under the
-    wing box with STRUCTURE_CLEARANCE_M, at the worst wing station the balance search may choose."""
+    """Every seated slider opens in the formers of the constant section with crutch rails to spare, and the seated
+    battery passes under the wing box (its overwrap included) with STRUCTURE_CLEARANCE_M, at the worst wing station
+    the balance search may choose."""
     length = components.required_fuselage_length_m(sizing, bom, diameter_m)
     layout = layout_from_sizing(sizing, DEFAULT_WING_STATION, diameter_m, length)
     seated = [seat_low(s, diameter_m, settings) for s in components.sliders(sizing, bom)]
     middle = 0.5 * layout.fuselage_length_m
-    if not all(fits_kit_formers(s.at_x(middle), layout, settings) for s in seated):
+    if not all(fits_kit(s.at_x(middle), layout, settings) for s in seated):
         return False
     floor = _wing_box_floor_m(sizing, bom, diameter_m, settings)
     battery = seated[0]

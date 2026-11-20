@@ -7,8 +7,9 @@
 - Each `TubePart`: a hollow cylinder (annulus area x length x carbon density) along its own axis.
 - Each `LinearStock`: a slender rod (section x length x density).
 - Each `CoverSurface`: a uniform shell over its surface carrying areal density x covered area.
-- `glue_hardware`: glue_fraction x the structure (parts, tubes, linear stock; not covering), distributed like the
-  structure (its CG, and the same fraction of its inertia).
+- `OW-1`: the centreline overwrap (its own mass, not carbon density), one hollow cylinder per socket half.
+- `glue_hardware`: glue_fraction x the structure (parts, tubes, linear stock; not covering, nor the wet-laid overwrap,
+  which is its own resin), distributed like the structure (its CG, and the same fraction of its inertia).
 """
 
 from typing import Final, Sequence
@@ -20,7 +21,7 @@ from src.schemas.fabrication import FabricationSettings
 from src.schemas.state import SizingOutput
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.layout import AircraftLayout
-from src.tools.fabrication.kit import CoverSurface, Kit, KitPart, LinearStock, TubePart
+from src.tools.fabrication.kit import OVERWRAP_LABEL, CoverSurface, Kit, KitPart, LinearStock, TubePart
 from src.tools.sizing.mass_model import GEAR_FRACTION
 
 GLUE_NAME: Final[str] = "glue_hardware"
@@ -84,6 +85,15 @@ def _cover(cover: CoverSurface, settings: FabricationSettings) -> mp.MassItem:
     return mp.shell_item(cover.label, cover.surface, kg_m2 * cover.area_m2 / cover.surface.area)
 
 
+def overwrap_item(kit: Kit) -> mp.MassItem:
+    """`OW-1`: the overwrap mass split evenly over its halves (`Kit.overwrap_halves`), combined."""
+    halves = kit.overwrap_halves()
+    share = kit.overwrap.mass_kg / len(halves)
+    pieces = [tube_item(OVERWRAP_LABEL, share, h.start_m, h.axis, h.length_m, h.tube.od_m, h.tube.id_m) for h in halves]
+    whole = mp.combine(pieces)
+    return mp.MassItem(OVERWRAP_LABEL, whole.mass_kg, whole.cg_m, whole.inertia_kgm2)
+
+
 def _glue(structure: Sequence[mp.MassItem], settings: FabricationSettings) -> mp.MassItem:
     whole = mp.combine(structure)
     f = settings.glue_fraction
@@ -91,12 +101,12 @@ def _glue(structure: Sequence[mp.MassItem], settings: FabricationSettings) -> mp
 
 
 def kit_mass_items(kit: Kit, settings: FabricationSettings) -> list[mp.MassItem]:
-    """Parts, tubes, linear stock, covering, then glue/hardware (module docstring)."""
+    """Parts, tubes, linear stock, the overwrap, covering, then glue/hardware (module docstring)."""
     structure = [part_item(p, settings) for p in kit.parts]
     structure += [_tube(t, settings) for t in kit.tubes]
     structure += [_strip(s) for s in kit.linear]
     covering = [_cover(c, settings) for c in kit.covering]
-    return structure + covering + [_glue(structure, settings)]
+    return structure + [overwrap_item(kit)] + covering + [_glue(structure, settings)]
 
 
 def kit_mass_kg(kit: Kit, settings: FabricationSettings) -> float:

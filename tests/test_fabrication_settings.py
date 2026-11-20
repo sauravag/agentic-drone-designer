@@ -61,3 +61,20 @@ def test_minimum_insertion_defaults_to_three_spar_diameters() -> None:
     assert not hasattr(DEFAULT_FABRICATION, "insertion_fraction")
     with pytest.raises(ValidationError, match="min_insertion_diameters"):
         FabricationSettings(min_insertion_diameters=0.0)
+
+
+def test_structural_check_defaults_match_the_spec() -> None:
+    s = FabricationSettings()
+    assert s.carbon_shear_allow_pa == 60e6
+    assert s.ply_bearing_allow_pa == 15e6
+    assert s.overwrap_layer_thickness_m == 0.25e-3
+    assert s.overwrap_allow_pa == 250e6
+    assert s.overwrap_density_kg_m3 == 1500.0
+    assert s.overwrap_max_layers == 12  # R29
+    assert s.epoxy_lap_shear_pa == 15e6
+    assert s.crutch_rail_min_m == 0.008
+
+
+def test_polar_moment_of_a_tube() -> None:
+    tube = TubeStock(od_m=0.025, id_m=0.023)
+    assert tube.polar_moment_m4 == pytest.approx(2.0 * tube.second_moment_m4)

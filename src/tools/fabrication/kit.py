@@ -19,18 +19,20 @@ Frame convention (Tasks 3-9 rely on it):
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 import build123d as bd
 
 from src.schemas.fabrication import PartFamily, TubeStock
-from src.tools.fabrication.tubes import KitUnavailable, SparPlan
+from src.tools.fabrication.tubes import KitUnavailable, Overwrap, SparPlan
 
-__all__ = ["Box2", "CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "TubePart", "Vec3"]
+__all__ = ["Box2", "CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "OVERWRAP_LABEL", "Overwrap",
+           "TubePart", "Vec3"]
 
 Vec3 = tuple[float, float, float]
 Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local XY
-TubeRole = Literal["spar", "socket", "tail_boom", "tail_spar", "lift_boom", "pin"]
+TubeRole = Literal["spar", "socket", "tail_boom", "tail_spar", "lift_boom", "pin", "overwrap"]
+OVERWRAP_LABEL: Final[str] = "OW-1"
 LinearKind = Literal["stringer", "le", "te"]
 CoverKind = Literal["film", "fuselage"]
 
@@ -90,6 +92,15 @@ class Kit:
     covering: tuple[CoverSurface, ...]  # film and fuselage cover: area and where it lies (mass placement)
     spar: SparPlan
     joins: tuple[str, ...]  # human-readable, e.g. "C-1a + C-1b at x = 0.512 m"
+    overwrap: Overwrap  # carbon cloth over the centreline socket mitre (R24)
+
+    def overwrap_halves(self) -> tuple[TubePart, ...]:
+        """The overwrap as one tube per socket (wrapped OD over the socket OD), each lapping its socket from the
+        centreline: where it lies, for mass placement and as a packing obstacle."""
+        wrap = self.overwrap
+        bore = TubeStock(od_m=wrap.od_m, id_m=wrap.od_m - 2.0 * wrap.layers * wrap.layer_thickness_m)
+        return tuple(TubePart(OVERWRAP_LABEL, "overwrap", bore, wrap.lap_m, t.start_m, t.axis)
+                     for t in self.tubes if t.role == "socket")
 
     def _covered_m2(self, kind: CoverKind) -> float:
         return sum(c.area_m2 for c in self.covering if c.kind == kind)

@@ -1,8 +1,14 @@
-"""Stock-tube spar and socket sizing for the laser-cut airframe kit.
+"""Stock-tube spar and socket sizing, and the tube structural checks, for the laser-cut airframe kit.
 
-Picks carbon tubes from stock so the spar survives the larger of the flight (elliptic lift)
-and hover (boom reaction) bending moments, stepping down telescopically where the wing thins.
-All values SI. Must not import from the schemas' consumers.
+Picks carbon tubes from stock so the spar survives every load case at each station, stepping down telescopically
+where the wing thins. A load case is a (bending moment, torque) pair; a tube passes when the interaction
+FS * sqrt((sigma / sigma_allow)^2 + (tau / tau_allow)^2) <= 1 (R25), which with no torque is the plain bending rule:
+- flight: the exact elliptic moment (R4) with the wing's aerodynamic torque (Cm0 plus the lift's offset from the
+  spar, integrated from the tip inboard, at the manoeuvre dynamic pressure, R30);
+- hover (quadplane): the boom reaction moment with the pitch-control torque of one rotor at full thrust and its
+  fore/aft partner at zero, carried inboard of the boom clamp.
+Also here: the centreline overwrap that carries the socket mitre (R24/R29), the tail-boom check (R26) and the wing
+shear each wing-box plate bears (R27). All values SI. Must not import from the schemas' consumers.
 """
 
 import math
@@ -10,22 +16,34 @@ from dataclasses import dataclass
 from typing import Callable, Final, Optional
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
-from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M
-from src.tools.aero_cad.structure import RIB_PITCH_M
+from src.schemas.state import SizingOutput
+from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M, QUARTER_CHORD, AircraftLayout
+from src.tools.aero_cad.structure import RIB_PITCH_M, SPAR_CHORD_STATION
+from src.tools.sizing.aero_model import air_properties
 from src.units import G0
 
 MIN_WEB_M: Final[float] = 0.002  # wood left above and below the spar tube
 FIT_EPS_M: Final[float] = 1e-9  # float tolerance on diameter comparisons
+RATIO_EPS: Final[float] = 1e-9  # float tolerance on the interaction ratio's limit of 1
 HALF_WING_FRACTION: Final[float] = 0.5  # one wing carries half the weight
 ELLIPTIC_MOMENT_FACTOR: Final[float] = 2.0 / (3.0 * math.pi)  # prefactor of the exact elliptic moment
 ELLIPTIC_SQUARE_OFFSET: Final[float] = 2.0
 ELLIPTIC_ACOS_FACTOR: Final[float] = 3.0
+ELLIPTIC_LIFT_FACTOR: Final[float] = 4.0 / math.pi  # L'(y) = (4 P / pi b) sqrt(1 - xi^2) integrates to P
 BISECTION_ITERATIONS: Final[int] = 50
 HOVER_ARMS: Final[int] = 2  # two booms' thrust reacts through the spar per side
 HOVER_SHARE: Final[float] = 0.25  # each motor carries a quarter of the weight
 ROOT_SPAN_M: Final[float] = 0.0
 BOOM_DEFLECTION_FRACTION: Final[float] = 0.01  # R22: lift-boom tip deflection limit, fraction of its arm
 CANTILEVER_DEFLECTION_FACTOR: Final[float] = 3.0  # tip load: delta = P L^3 / (3 E I)
+DYNAMIC_PRESSURE_FACTOR: Final[float] = 0.5  # q = rho V^2 / 2
+SEA_LEVEL_DENSITY_KG_M3: Final[float] = air_properties(0.0)[0]  # SizingOutput.v_stall_ms is a sea-level speed
+AIRFOIL_CM0_DEFAULT: Final[float] = -0.10  # no airfoil Cm0 in SizingOutput: conservative for cambered UAV sections
+AC_CHORD_FRACTION: Final[float] = QUARTER_CHORD  # aerodynamic centre of the section
+TORQUE_INTEGRATION_STEPS: Final[int] = 400  # midpoint rule, tip to station
+TAIL_CL_MAX: Final[float] = 1.0  # tail surface (NACA 0010, low Re, finite span) maximum lift coefficient
+WRAP_LAP_DIAMETERS: Final[float] = 2.0  # the overwrap laps at least 2 socket OD onto each side
+WRAP_SIDES: Final[int] = 2  # the wrap laps both socket tubes
 
 
 class KitUnavailable(Exception):
@@ -45,8 +63,35 @@ class SparPlan:
     socket: TubeStock
     joint_y_m: float
     insertion_m: float
+    centre_moment_nm: float  # socket moment at the centreline (worse of flight and hover): sizes the overwrap
 
 
+@dataclass(frozen=True)
+class SparTorsion:
+    """Spar torque sources (R25): the flight torque at a span station, and the hover pitch-control torque carried
+    inboard of the boom clamp with the single full-thrust rotor that causes it."""
+
+    flight_torque_at: Callable[[float], float]
+    hover_torque_nm: float
+    hover_thrust_n: float
+
+
+@dataclass(frozen=True)
+class Overwrap:
+    """Wet-laid carbon cloth over the centreline socket mitre (R24): `layers` x `layer_thickness_m` on the socket
+    OD, lapping `lap_m` onto each socket tube; `od_m` is the wrapped outer diameter."""
+
+    layers: int
+    layer_thickness_m: float
+    lap_m: float
+    od_m: float
+    mass_kg: float
+
+
+LoadCase = tuple[float, float]  # (bending moment N m, torque N m)
+
+
+# ------------------------------------------------------------------------------------- stresses ---
 def elliptic_moment_nm(mtow_kg: float, n: float, semi_span_m: float, y_m: float) -> float:
     """Bending moment at span station y (from the centreline) for an elliptic lift distribution.
 
@@ -63,11 +108,83 @@ def hover_moment_nm(mtow_kg: float, arm_m: float) -> float:
     return HOVER_ARMS * (mtow_kg * G0 * HOVER_SHARE) * max(arm_m, 0.0)
 
 
+def hover_pitch_torque_nm(thrust_n: float, arm_m: float) -> float:
+    """Spar torque when one lift rotor gives `thrust_n` at a fore/aft `arm_m` from the spar and its partner none."""
+    return thrust_n * abs(arm_m)
+
+
 def bending_stress_pa(tube: TubeStock, moment_nm: float) -> float:
     """Outer-fibre bending stress of a tube under a moment."""
     return moment_nm * (tube.od_m / 2.0) / tube.second_moment_m4
 
 
+def torsion_stress_pa(tube: TubeStock, torque_nm: float) -> float:
+    """Outer-fibre shear stress of a tube under a torque: tau = T (OD / 2) / J."""
+    return abs(torque_nm) * (tube.od_m / 2.0) / tube.polar_moment_m4
+
+
+def interaction_ratio(sigma_pa: float, tau_pa: float, settings: FabricationSettings) -> float:
+    """FS sqrt((sigma / sigma_allow)^2 + (tau / tau_allow)^2): at most 1 passes (R25)."""
+    return settings.safety_factor * math.hypot(sigma_pa / settings.sigma_allow_pa,
+                                               tau_pa / settings.carbon_shear_allow_pa)
+
+
+def interaction_ok(sigma_pa: float, tau_pa: float, settings: FabricationSettings) -> bool:
+    return interaction_ratio(sigma_pa, tau_pa, settings) <= 1.0 + RATIO_EPS
+
+
+def tube_ratio(tube: TubeStock, cases: tuple[LoadCase, ...], settings: FabricationSettings) -> float:
+    """Governing interaction ratio of a tube over its load cases."""
+    return max(interaction_ratio(bending_stress_pa(tube, m), torsion_stress_pa(tube, t), settings) for m, t in cases)
+
+
+def _passes(tube: TubeStock, cases: tuple[LoadCase, ...], settings: FabricationSettings) -> bool:
+    return tube_ratio(tube, cases, settings) <= 1.0 + RATIO_EPS
+
+
+# -------------------------------------------------------------------------------- flight torque ---
+def manoeuvre_dynamic_pressure_pa(v_stall_ms: float, settings: FabricationSettings) -> float:
+    """q_max at the manoeuvre speed V_A = V_stall sqrt(n_limit), the full-deflection-at-CL_max case (R30)."""
+    v_a = v_stall_ms * math.sqrt(settings.n_limit)
+    return DYNAMIC_PRESSURE_FACTOR * SEA_LEVEL_DENSITY_KG_M3 * v_a**2
+
+
+def aero_torque_nm(mtow_kg: float, semi_span_m: float, chord_at: Callable[[float], float], q_pa: float, y_m: float,
+                   settings: FabricationSettings, cm0: float = AIRFOIL_CM0_DEFAULT,
+                   spar_fraction: float = SPAR_CHORD_STATION) -> float:
+    """Wing torque about the spar at station y, integrated from the tip inboard: q c^2 |Cm0| per unit span plus the
+    limit lift's offset from the spar, n L'(s) |x_spar - x_ac| c (elliptic L'). The two are added as magnitudes
+    (conservative: their signs depend on the section and the spar station)."""
+    if y_m >= semi_span_m:
+        return 0.0
+    half_lift = settings.n_limit * mtow_kg * G0 * HALF_WING_FRACTION
+    offset, step = abs(spar_fraction - AC_CHORD_FRACTION), (semi_span_m - y_m) / TORQUE_INTEGRATION_STEPS
+    total = 0.0
+    for k in range(TORQUE_INTEGRATION_STEPS):
+        s = y_m + (k + 0.5) * step
+        c = chord_at(s)
+        lift = ELLIPTIC_LIFT_FACTOR * half_lift / semi_span_m * math.sqrt(max(1.0 - (s / semi_span_m) ** 2, 0.0))
+        total += (q_pa * c * c * abs(cm0) + lift * offset * c) * step
+    return total
+
+
+def load_cases(mtow_kg: float, semi_span_m: float, y_m: float, boom_y_m: Optional[float],
+               torsion: Optional[SparTorsion], settings: FabricationSettings) -> tuple[LoadCase, ...]:
+    """(moment, torque) cases at station y: flight, then hover when there are lift booms. In hover the moment is the
+    larger of the balanced reaction (two rotors at MTOW g / 4) and the single full-thrust rotor; the pitch torque
+    acts inboard of the boom clamp."""
+    flight_torque = 0.0 if torsion is None else torsion.flight_torque_at(y_m)
+    flight = (elliptic_moment_nm(mtow_kg, settings.n_limit, semi_span_m, y_m), flight_torque)
+    if boom_y_m is None:
+        return (flight,)
+    arm = boom_y_m - y_m
+    thrust = 0.0 if torsion is None else torsion.hover_thrust_n
+    moment = max(hover_moment_nm(mtow_kg, arm), thrust * max(arm, 0.0))
+    inboard = torsion is not None and y_m <= boom_y_m + FIT_EPS_M
+    return flight, (moment, torsion.hover_torque_nm if inboard else 0.0)
+
+
+# ---------------------------------------------------------------------------------------- booms ---
 def joint_y_m(fuselage_radius_m: float, wing_z_m: float) -> float:
     """Span station where the wing spar meets the fuselage skin."""
     return math.sqrt(max(fuselage_radius_m**2 - wing_z_m**2, 0.0))
@@ -100,7 +217,7 @@ def lift_boom_tube(thrust_n: float, arm_m: float, max_diameter_m: float, setting
     cap_m = max(max_diameter_m, MIN_BOOM_DIAMETER_M) + FIT_EPS_M
     limit_m = BOOM_DEFLECTION_FRACTION * max(arm_m, 0.0)
     fits = sorted((t for t in settings.tubes if floor_m <= t.od_m <= cap_m), key=lambda t: (t.od_m, t.area_m2))
-    tube = next((t for t in fits if _passes(t, moment, settings)
+    tube = next((t for t in fits if _passes(t, ((moment, 0.0),), settings)
                  and cantilever_deflection_m(t, thrust_n, arm_m, settings) <= limit_m), None)
     if tube is None:
         raise KitUnavailable(
@@ -110,26 +227,87 @@ def lift_boom_tube(thrust_n: float, arm_m: float, max_diameter_m: float, setting
     return tube
 
 
+def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> LoadCase:
+    """(moment, torque) on the tail boom (R26): n_limit q_max S CL_max on each tail (q_max at V_A, R30); the
+    horizontal and vertical forces' resultant bends the boom over the arm from its root (where the cone first holds
+    it, conservative) to the tails' aerodynamic centre, and the fin force twists it at its centre-of-pressure height
+    (the fin MAC station) above the boom axis. (0, 0) when the tail sits on the fuselage."""
+    boom = layout.tail_boom
+    if boom is None:
+        return 0.0, 0.0
+    per_area = settings.n_limit * manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, settings) * TAIL_CL_MAX
+    h_force, v_force = per_area * sizing.horizontal_tail_area_m2, per_area * sizing.vertical_tail_area_m2
+    arm = max(layout.htail.x_ac_m, layout.vtail.x_ac_m) - boom.x_start_m
+    height = layout.vtail.z_root_m + layout.vtail.y_mac_m - boom.z_m
+    return math.hypot(h_force, v_force) * max(arm, 0.0), v_force * max(height, 0.0)
+
+
+def tail_boom_ratio(tube: TubeStock, sizing: SizingOutput, layout: AircraftLayout,
+                    settings: FabricationSettings) -> float:
+    return tube_ratio(tube, (tail_boom_loads(sizing, layout, settings),), settings)
+
+
+def tail_boom_check(tube: TubeStock, sizing: SizingOutput, layout: AircraftLayout,
+                    settings: FabricationSettings) -> None:
+    """Raises KitUnavailable when the stock tail boom (R13: the largest tube within the layout diameter) fails the
+    tail loads' bending + torsion interaction."""
+    ratio = tail_boom_ratio(tube, sizing, layout, settings)
+    if ratio > 1.0 + RATIO_EPS:
+        moment, torque = tail_boom_loads(sizing, layout, settings)
+        raise KitUnavailable(
+            f"tail boom {tube.od_m * 1e3:.0f}x{tube.id_m * 1e3:.0f} mm is too weak for the tail loads "
+            f"({moment:.0f} N·m bending, {torque:.0f} N·m torsion; interaction {ratio:.2f} > 1)"
+        )
+
+
+# --------------------------------------------------------------------------------------- wing box ---
+def wing_shear_n(sizing: SizingOutput, settings: FabricationSettings) -> float:
+    """Shear each wing-box plate bears (R27): the wing's limit lift n MTOW g / 2, or in hover its two lift rotors
+    at full thrust, whichever is larger."""
+    flight = settings.n_limit * sizing.mtow_kg * G0 * HALF_WING_FRACTION
+    return max(flight, HOVER_ARMS * sizing.vtol_thrust_per_motor_n)
+
+
+def overwrap_stress_pa(moment_nm: float, socket_od_m: float, layers: int, layer_thickness_m: float) -> float:
+    """Bending stress of the wrap alone, a thin tube of `layers` x thickness on the socket OD: M c / I_wrap."""
+    outer = socket_od_m + 2.0 * layers * layer_thickness_m
+    second = math.pi / 64.0 * (outer**4 - socket_od_m**4)
+    return moment_nm * (outer / 2.0) / second
+
+
+def overwrap_layers(moment_nm: float, socket: TubeStock, settings: FabricationSettings) -> int:
+    """Fewest cloth layers (<= overwrap_max_layers) whose wrap carries the centreline moment within
+    overwrap_allow_pa / safety_factor."""
+    allow, t = settings.overwrap_allow_pa / settings.safety_factor, settings.overwrap_layer_thickness_m
+    for n in range(1, settings.overwrap_max_layers + 1):
+        if overwrap_stress_pa(moment_nm, socket.od_m, n, t) <= allow * (1.0 + RATIO_EPS):
+            return n
+    raise KitUnavailable(
+        f"the centreline overwrap needs more than {settings.overwrap_max_layers} layers of {t * 1e3:.2f} mm cloth "
+        f"to carry {moment_nm:.0f} N·m on the {socket.od_m * 1e3:.0f} mm socket"
+    )
+
+
+def size_overwrap(moment_nm: float, socket: TubeStock, plate_gap_m: float,
+                  settings: FabricationSettings) -> Overwrap:
+    """The centreline overwrap (R24): fewest layers by bending, lap per side max(2 OD, sigma n t FS / tau_epoxy),
+    the whole wrap (2 laps) between the wing-box plates' inner faces; mass pi (OD + n t) n t 2L rho."""
+    n, t, od = overwrap_layers(moment_nm, socket, settings), settings.overwrap_layer_thickness_m, socket.od_m
+    sigma = overwrap_stress_pa(moment_nm, od, n, t)
+    lap = max(WRAP_LAP_DIAMETERS * od, sigma * n * t * settings.safety_factor / settings.epoxy_lap_shear_pa)
+    if WRAP_SIDES * lap > plate_gap_m + FIT_EPS_M:
+        raise KitUnavailable(
+            f"the centreline overwrap ({WRAP_SIDES * lap * 1e3:.0f} mm long) does not fit between the wing-box "
+            f"plates ({plate_gap_m * 1e3:.0f} mm apart)"
+        )
+    mass = math.pi * (od + n * t) * n * t * WRAP_SIDES * lap * settings.overwrap_density_kg_m3
+    return Overwrap(layers=n, layer_thickness_m=t, lap_m=lap, od_m=od + 2.0 * n * t, mass_kg=mass)
+
+
+# ------------------------------------------------------------------------------------------ spar ---
 def usable_depth_m(local_thickness_m: float, settings: FabricationSettings) -> float:
     """Room for a spar tube once the top and bottom webs and the hole's fit clearance are reserved."""
     return local_thickness_m - 2.0 * MIN_WEB_M - settings.fit_clearance_m
-
-
-def _allowable_pa(settings: FabricationSettings) -> float:
-    return settings.sigma_allow_pa / settings.safety_factor
-
-
-def _moment_at(
-    mtow_kg: float, semi_span_m: float, y_m: float, boom_y_m: Optional[float], settings: FabricationSettings
-) -> float:
-    """Governing moment at station y: flight (elliptic) vs hover (boom reaction)."""
-    flight = elliptic_moment_nm(mtow_kg, settings.n_limit, semi_span_m, y_m)
-    hover = 0.0 if boom_y_m is None else hover_moment_nm(mtow_kg, boom_y_m - y_m)
-    return max(flight, hover)
-
-
-def _passes(tube: TubeStock, moment_nm: float, settings: FabricationSettings) -> bool:
-    return bending_stress_pa(tube, moment_nm) <= _allowable_pa(settings)
 
 
 def _unavailable_at(y_m: float) -> KitUnavailable:
@@ -144,13 +322,13 @@ def _stations(joint_m: float, semi_span_m: float) -> list[float]:
 
 
 def _step_down(
-    current: TubeStock, depth_m: float, moment_nm: float, settings: FabricationSettings
+    current: TubeStock, depth_m: float, cases: tuple[LoadCase, ...], settings: FabricationSettings
 ) -> Optional[TubeStock]:
-    """Largest stock tube or rod that slides inside `current`, fits the depth and carries the moment."""
+    """Largest stock tube or rod that slides inside `current`, fits the depth and carries the load cases."""
     rods = tuple(TubeStock(od_m=r, id_m=0.0) for r in settings.rods_m)
     for tube in sorted(settings.tubes + rods, key=lambda t: (t.od_m, t.id_m), reverse=True):
         nests = tube.od_m <= current.id_m + FIT_EPS_M and current.id_m - tube.od_m <= settings.fit_clearance_m + FIT_EPS_M
-        if nests and tube.od_m <= depth_m + FIT_EPS_M and _passes(tube, moment_nm, settings):
+        if nests and tube.od_m <= depth_m + FIT_EPS_M and _passes(tube, cases, settings):
             return tube
     return None
 
@@ -158,7 +336,7 @@ def _step_down(
 def _pick_socket(root: TubeStock, moment_nm: float, settings: FabricationSettings) -> TubeStock:
     for tube in settings.tubes:
         sleeves = tube.id_m >= root.od_m - FIT_EPS_M and tube.id_m - root.od_m <= settings.fit_clearance_m + FIT_EPS_M
-        if sleeves and _passes(tube, moment_nm, settings):
+        if sleeves and _passes(tube, ((moment_nm, 0.0),), settings):
             return tube
     raise KitUnavailable(
         f"no stock tube can sleeve the {root.od_m * 1e3:.0f} mm spar tube as a fuselage socket"
@@ -194,16 +372,20 @@ def plan_spar(
     depth_at: Callable[[float], float],
     boom_y_m: Optional[float],
     settings: FabricationSettings,
+    torsion: Optional[SparTorsion] = None,
 ) -> SparPlan:
-    """Size a telescoping tube spar from the fuselage joint to the tip, plus its socket."""
+    """Size a telescoping tube spar from the fuselage joint to the tip, plus its socket. Each member is the tube
+    that passes every load case (`load_cases`, with `torsion` when given) at its inboard end, where moment and torque
+    are greatest; that also covers the boom clamp."""
     if boom_y_m is not None and boom_y_m < 0.0:
         raise ValueError(f"boom_y_m must be a distance from the centreline, got {boom_y_m}")
-    root_moment = _moment_at(mtow_kg, semi_span_m, joint_y_m, boom_y_m, settings)
-    root_depth = depth_at(joint_y_m)
-    root = next(
-        (t for t in settings.tubes if t.od_m <= root_depth + FIT_EPS_M and _passes(t, root_moment, settings)),
-        None,
-    )
+
+    def cases(y: float) -> tuple[LoadCase, ...]:
+        return load_cases(mtow_kg, semi_span_m, y, boom_y_m, torsion, settings)
+
+    root_depth, root_cases = depth_at(joint_y_m), cases(joint_y_m)
+    root = next((t for t in settings.tubes
+                 if t.od_m <= root_depth + FIT_EPS_M and _passes(t, root_cases, settings)), None)
     if root is None:
         raise _unavailable_at(joint_y_m)
 
@@ -214,16 +396,16 @@ def plan_spar(
             y_step = depth_limit_m(depth_at, current.od_m, start, y)
             if y_step <= start + FIT_EPS_M:
                 raise _unavailable_at(y)
-            moment = _moment_at(mtow_kg, semi_span_m, y_step, boom_y_m, settings)
-            smaller = _step_down(current, depth_at(y_step), moment, settings)
+            smaller = _step_down(current, depth_at(y_step), cases(y_step), settings)
             if smaller is None:
                 raise _unavailable_at(y)
             segments.append(SparSegment(current, start, y_step))
             current, start = smaller, y_step
     segments.append(SparSegment(current, start, semi_span_m))
 
-    centre_moment = _moment_at(mtow_kg, semi_span_m, 0.0, boom_y_m, settings)
+    # The socket carries the bending moment "as above" (flight vs the balanced hover reaction) at the centreline.
+    centre_moment = max(m for m, _ in load_cases(mtow_kg, semi_span_m, ROOT_SPAN_M, boom_y_m, None, settings))
     socket = _pick_socket(root, centre_moment, settings)
     _check_insertion(joint_y_m, root, settings)
     # The socket spans the fuselage only; each spar root plugs in from the skin to the centreline.
-    return SparPlan(tuple(segments), socket, joint_y_m, joint_y_m)
+    return SparPlan(tuple(segments), socket, joint_y_m, joint_y_m, centre_moment)

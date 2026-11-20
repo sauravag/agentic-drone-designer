@@ -10,7 +10,8 @@ sheet `nesting.nest` filled. Each placement's kerf-compensated outline is drawn 
   LABEL_MIN_HEIGHT_M until its estimated extent fits in the material clear of the outline and holes, centred at
   the roomiest grid point where it fits, along the part's longer side when it fits that way. A label that fits
   nowhere even at the floor is engraved at the floor anyway (engraving cuts nothing).
-- the kerf offset is computed once per part label, however many copies are placed.
+- the kerf offset is computed once per part label, however many copies are placed; two different parts sharing a
+  label raise ValueError, and a failed offset raises KitUnavailable naming the part (as `nesting.nest` does).
 """
 
 import re
@@ -27,7 +28,8 @@ from ezdxf.layouts import Modelspace
 from OCP.BRepTools import BRepTools_WireExplorer
 
 from src.schemas.fabrication import FabricationSettings
-from src.tools.fabrication.nesting import EPS_M, MM_PER_M, QUARTER_TURN_DEG, Placement, kerf_outline, place_kerfed
+from src.tools.fabrication.kit import KitPart
+from src.tools.fabrication.nesting import EPS_M, MM_PER_M, QUARTER_TURN_DEG, Placement, kerfed_part, place_kerfed
 
 __all__ = ["LABEL_HEIGHT_M", "LABEL_MIN_HEIGHT_M", "LabelLayout", "label_layout", "write_sheets"]
 
@@ -231,6 +233,16 @@ def _write_sheet(placements: Sequence[Placement], kerfed: Mapping[str, bd.Face],
     return path
 
 
+def _parts_by_label(placements: Sequence[Placement]) -> dict[str, KitPart]:
+    """Each label's part (copies share one); the kerf cache is keyed by label, so a label must name one part."""
+    parts: dict[str, KitPart] = {}
+    for placement in placements:
+        known = parts.setdefault(placement.part.label, placement.part)
+        if known is not placement.part and known != placement.part:
+            raise ValueError(f"two different kit parts share the label {placement.part.label!r}")
+    return parts
+
+
 def write_sheets(placements: Mapping[str, Sequence[Placement]], settings: FabricationSettings,
                  out_dir: Path) -> tuple[Path, ...]:
     """One DXF per nested sheet under `out_dir/kit/sheets/`; returns the paths in stock, then sheet order.
@@ -239,9 +251,8 @@ def write_sheets(placements: Mapping[str, Sequence[Placement]], settings: Fabric
     sheet_dir.mkdir(parents=True, exist_ok=True)
     for stale in sorted(sheet_dir.glob("*.dxf")):
         stale.unlink()
-    all_placements = [p for stock_placements in placements.values() for p in stock_placements]
-    parts = {p.part.label: p.part for p in all_placements}
-    kerfed = {label: kerf_outline(part.outline, settings.kerf_m) for label, part in parts.items()}
+    parts = _parts_by_label([p for stock_placements in placements.values() for p in stock_placements])
+    kerfed = {label: kerfed_part(part, settings.kerf_m) for label, part in parts.items()}
     paths: list[Path] = []
     for stock, stock_placements in placements.items():
         for n in sorted({p.sheet for p in stock_placements}):
