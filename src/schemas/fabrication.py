@@ -16,6 +16,7 @@ ALL_FAMILIES: Final[tuple[str, ...]] = (
 
 MM: Final[float] = 1e-3
 BIRCH_DENSITY_KG_M3: Final[float] = 680.0
+G_PER_KG: Final[float] = 1000.0
 
 
 class SheetStock(BaseModel):
@@ -126,6 +127,9 @@ class FabricationSettings(BaseModel):
     overwrap_layer_thickness_m: float = Field(
         0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m), 200 g/m^2 cloth."
     )
+    overwrap_cloth_g_m2: float = Field(
+        200.0, gt=0.0, description="Areal weight of the dry carbon cloth one overwrap layer is laid from (g/m^2)."
+    )
     overwrap_allow_pa: float = Field(250e6, gt=0.0, description="Allowable stress of hand-laid 0/90 cloth (Pa).")
     overwrap_density_kg_m3: float = Field(1500.0, gt=0.0, description="Cured overwrap density (kg/m^3).")
     overwrap_max_layers: int = Field(12, ge=1, description="Most cloth layers a centreline overwrap may have (R29).")
@@ -141,6 +145,16 @@ class FabricationSettings(BaseModel):
             count = listed.count(family)
             if count != 1:
                 raise ValueError(f"part family '{family}' must be on exactly one sheet, found {count}")
+        return self
+
+    @model_validator(mode="after")
+    def _cloth_fits_its_layer(self) -> "FabricationSettings":
+        """The dry cloth must weigh less than the cured layer it makes (fibre mass fraction below 1)."""
+        cured_g_m2 = self.overwrap_layer_thickness_m * self.overwrap_density_kg_m3 * G_PER_KG
+        if self.overwrap_cloth_g_m2 >= cured_g_m2:
+            raise ValueError(f"overwrap_cloth_g_m2 ({self.overwrap_cloth_g_m2:g}) must be below the cured layer's "
+                             f"areal mass ({cured_g_m2:g} g/m^2 from overwrap_layer_thickness_m x "
+                             f"overwrap_density_kg_m3)")
         return self
 
     @field_validator("tubes", mode="after")

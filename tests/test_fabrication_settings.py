@@ -79,3 +79,11 @@ def test_structural_check_defaults_match_the_spec() -> None:
 def test_polar_moment_of_a_tube() -> None:
     tube = TubeStock(od_m=0.025, id_m=0.023)
     assert tube.polar_moment_m4 == pytest.approx(2.0 * tube.second_moment_m4)
+
+
+def test_overwrap_cloth_defaults_to_200_g_m2_and_must_fit_its_cured_layer():
+    from src.schemas.fabrication import FabricationSettings
+
+    assert FabricationSettings().overwrap_cloth_g_m2 == 200.0
+    with pytest.raises(ValueError, match="overwrap_cloth_g_m2"):  # 0.6 kg/m2 of fibre in a 0.375 kg/m2 layer
+        FabricationSettings(overwrap_cloth_g_m2=600.0)

@@ -419,6 +419,40 @@ def test_centreline_joint_gives_the_overwrap_and_the_lay_up_order(kit, kit_files
     assert "| WM-RD |" in joint and "| WM-LD |" in joint  # g1's socket bosses
 
 
+def test_build_sheet_cloth_comes_from_the_settings(kit, tmp_path):
+    from src.tools.fabrication.kit_export import build_sheet_text
+
+    heavy = S.model_copy(update={"overwrap_cloth_g_m2": 300.0})
+    joint = _section(build_sheet_text(kit, heavy, nest(kit.parts, S)), "Centreline joint")
+    assert "300 g/m² carbon" in joint and "200 g/m²" not in joint
+
+
+def test_export_failure_leaves_no_partial_kit_files(kit, tmp_path, monkeypatch):
+    from src.tools.fabrication import kit_export
+
+    def broken(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(kit_export, "_write_parts_csv", broken)
+    with pytest.raises(OSError, match="disk full"):
+        export_kit(kit, S, tmp_path)
+    kit_dir = tmp_path / "kit"
+    assert not list((kit_dir / "sheets").glob("*.dxf"))
+    assert not (kit_dir / "build_sheet.md").exists() and not (kit_dir / "parts.csv").exists()
+
+
+def test_copies_of_a_part_are_one_solid_carrying_the_quantity(kit):
+    """Copies (quantity > 1) have no placement of their own: one solid per part, mass still quantity-weighted."""
+    import dataclasses
+
+    plate = _plate("P-Q", 0.05, 0.04, quantity=3)
+    twin = dataclasses.replace(kit, parts=(plate,))
+    (solid,) = ply_solids(twin, S)
+    sheet = S.sheet_for("plate")
+    assert solid.volume * sheet.density_kg_m3 * plate.quantity == pytest.approx(part_item(plate, S).mass_kg,
+                                                                               rel=VOLUME_MASS_REL)
+
+
 def test_g2_build_sheet_lists_the_pin_bosses_and_its_pin_size(g2_kit, g2_kit_files):
     text = g2_kit_files.build_sheet.read_text()
     joint = _section(text, "Centreline joint")
@@ -459,8 +493,8 @@ def test_kit_solid_volume_matches_part_mass(kit):
     ply = ply_solids(kit, S)
     carbon = carbon_solids(kit)
     tubes = carbon[:len(kit.tubes)]
-    densities = [S.sheet_for(p.family).density_kg_m3 for p in kit.parts for _ in range(p.quantity)]
-    solid_mass = sum(s.volume * rho for s, rho in zip(ply, densities, strict=True))
+    weights = [S.sheet_for(p.family).density_kg_m3 * p.quantity for p in kit.parts]  # one solid per part
+    solid_mass = sum(s.volume * w for s, w in zip(ply, weights, strict=True))
     solid_mass += sum(s.volume for s in tubes) * S.carbon_density_kg_m3
     items = {i.name: i.mass_kg for i in kit_mass_items(kit, S)}
     expected = sum(items[p.label] for p in kit.parts) + sum(items[t.label] for t in kit.tubes)

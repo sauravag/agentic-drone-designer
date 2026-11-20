@@ -692,6 +692,37 @@ def test_render_viewer_embeds_the_page_at_the_fixed_height(tmp_path: Path, monke
     assert viewer_panel.VIEWER_HEIGHT_PX == 640
 
 
+def test_render_viewer_sends_the_page_once_and_the_download_lazily(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                   run: pipeline.DesignRun) -> None:
+    from src.ui import viewer_panel
+
+    (tmp_path / "viewer.html").write_text("<html>PAGE</html>", encoding="utf-8")
+    pages: list[str] = []
+    downloads: list[object] = []
+    monkeypatch.setattr(viewer_panel.components, "html", lambda html, height: pages.append(html))
+    monkeypatch.setattr(viewer_panel.st, "download_button", lambda label, data, **_kw: downloads.append(data))
+    viewer_panel.render_viewer(_viewer_view(run, tmp_path))
+    assert pages == ["<html>PAGE</html>"]
+    (data,) = downloads
+    assert callable(data) and data() == b"<html>PAGE</html>"  # read only when the user downloads
+
+
+def test_render_viewer_reads_an_unchanged_page_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                    run: pipeline.DesignRun) -> None:
+    from src.ui import viewer_panel
+
+    viewer_panel.read_viewer_page.clear()
+    page = tmp_path / "viewer.html"
+    page.write_text("<html>PAGE</html>", encoding="utf-8")
+    monkeypatch.setattr(viewer_panel.components, "html", lambda html, height: None)
+    reads: list[str] = []
+    real = viewer_panel.Path.read_text
+    monkeypatch.setattr(viewer_panel.Path, "read_text", lambda self, **kw: reads.append(str(self)) or real(self, **kw))
+    for _ in range(3):
+        viewer_panel.render_viewer(_viewer_view(run, tmp_path))
+    assert len(reads) == 1
+
+
 def test_render_viewer_warns_when_the_page_is_not_valid_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                               run: pipeline.DesignRun) -> None:
     from src.ui import viewer_panel

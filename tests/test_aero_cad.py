@@ -685,3 +685,24 @@ def test_assembly_carries_the_kit_solids_not_shell_ribs(packed, tmp_path: Path) 
     expected = (len(r.oml.solids()) + len(kit_export.kit_solids(r.kit, DEFAULT_FABRICATION))
                 + sum(len(c.solid().solids()) for c in r.components))
     assert len(solids) == expected
+
+
+def test_fallback_assembly_still_carries_the_shell_ribs_and_spars(packed, tmp_path: Path) -> None:
+    r = packed("g3")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    solids = build123d.import_step(art.assembly_step_path).solids()
+    shell = len(r.structure.ribs) + len(r.structure.spars)
+    assert shell > 0
+    assert len(solids) == len(r.oml.solids()) + shell + sum(len(c.solid().solids()) for c in r.components)
+
+
+def test_fallback_cleanup_failure_is_reported_as_cleanup(packed, tmp_path: Path,
+                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("kit/parts.csv: permission denied")
+
+    monkeypatch.setattr(cad_packer, "remove_kit_files", denied)
+    r = packed("g3")
+    art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
+    assert art.kit_warning == f"{r.kit_warning}; stale kit files could not be removed: kit/parts.csv: permission denied"
+    assert "could not be written" not in art.kit_warning

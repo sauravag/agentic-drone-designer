@@ -239,7 +239,9 @@ function applyMode(aircraft, cgMarker, xray) {
 function fillLegend(aircraft) {
   const list = document.getElementById('legend-list');
   for (const { part, color } of aircraft.entries) {
-    if (part.group === 'skin') continue; // structure (ply / carbon, or the shell model's) and every component
+    if (part.group === 'skin') continue;
+    // The kit's ply / carbon structure carries a mass; the shell model's structure (no mass) stays out, as before.
+    if (part.group === 'structure' && typeof part.mass_kg !== 'number') continue;
     const swatch = document.createElement('span');
     swatch.className = 'swatch';
     swatch.style.background = color;

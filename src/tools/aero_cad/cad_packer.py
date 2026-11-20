@@ -63,6 +63,7 @@ STRUCTURE_TUBE_ROLES: Final[tuple[str, ...]] = ("socket",)
 NO_KIT_PREFIX: Final[str] = "No laser kit: "
 KIT_FILES_PREFIX: Final[str] = "kit files could not be written: "
 KIT_SOLIDS_PREFIX: Final[str] = "kit solids could not be built: "
+KIT_CLEANUP_PREFIX: Final[str] = "stale kit files could not be removed: "
 WARNING_SEPARATOR: Final[str] = "; "
 
 Box3 = tuple[tuple[float, float, float], tuple[float, float, float]]  # axis-aligned (min corner, max corner)
@@ -405,14 +406,15 @@ def _export_assembly(result: PackingResult, path: Path, structure: Sequence[bd.S
 def _export_kit_files(result: PackingResult, out_dir: Path) -> tuple[Optional[KitFiles], Optional[str]]:
     """The kit's DXF sheets, build sheet and parts list (none, and an earlier run's removed, without a kit). Any
     failure is logged and returned as a warning: the run goes on with the kit as packed."""
+    prefix = KIT_CLEANUP_PREFIX if result.kit is None else KIT_FILES_PREFIX
     try:
         if result.kit is None:
             remove_kit_files(out_dir)
             return None, None
         return export_kit(result.kit, result.settings, out_dir), None
     except Exception as exc:  # noqa: BLE001 - nesting, DXF or file errors must not fail the run
-        warning = f"{KIT_FILES_PREFIX}{exc}"
-        logger.exception("%s - the run continues without them", warning)
+        warning = f"{prefix}{exc}"
+        logger.exception("%s - the run continues", warning)
         return None, warning
 
 

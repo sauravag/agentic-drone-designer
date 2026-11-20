@@ -17,11 +17,12 @@ sheet `nesting.nest` filled. Each placement's kerf-compensated outline is drawn 
 BUILD_SHEET_SECTIONS order; its Summary kit mass is `kit_mass_kg`, tubes and overwrap included) and `kit/parts.csv`
 (one row per sheet part, PARTS_CSV_COLUMNS; its masses sum to the parts' `part_item` masses). `kit_solids` gives the
 kit as 3D solids in the aircraft frame: every sheet part (`ply_solids`, outline extruded by its sheet thickness, moved
-by its location; one solid per copy), then every tube and the two overwrap halves (`carbon_solids`, hollow cylinders;
+by its location; one solid per part), then every tube and the two overwrap halves (`carbon_solids`, hollow cylinders;
 a rod is solid).
 """
 
 import csv
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -46,6 +47,8 @@ from src.tools.fabrication.wing_parts import ROOT_PIN_BOSS_LABEL
 __all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "LABEL_HEIGHT_M", "LABEL_MIN_HEIGHT_M", "LabelLayout",
            "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids", "export_kit", "kit_solids", "label_layout",
            "ply_solids", "remove_kit_files", "write_sheets"]
+
+logger = logging.getLogger(__name__)
 
 LABEL_HEIGHT_M: Final[float] = 0.004
 LABEL_MIN_HEIGHT_M: Final[float] = 0.0015  # labels shrink to fit down to this, and are engraved at it regardless
@@ -75,7 +78,6 @@ MM2_PER_M2: Final[float] = 1e6
 CSV_MASS_DECIMALS: Final[int] = 6  # grams: rounding stays far below the 1e-6 kg mass identity
 CSV_AREA_DECIMALS: Final[int] = 3
 SHEET_LIST_SEPARATOR: Final[str] = ";"
-OVERWRAP_CLOTH: Final[str] = "200 g/m² carbon"  # the cloth `overwrap_layer_thickness_m` describes
 LAY_UP_STEPS: Final[tuple[str, ...]] = (
     "Insert the sockets through the side plates (`WM-R`, `WM-L`) so they meet at the centreline.",
     "Glue the mitre where the two sockets meet.",
@@ -322,12 +324,9 @@ def _tube_solid(tube: TubePart) -> bd.Solid:
 
 
 def ply_solids(kit: Kit, settings: FabricationSettings) -> list[bd.Solid]:
-    """Every sheet part as built, in kit order, one solid per copy (copies share their part's location)."""
-    solids: list[bd.Solid] = []
-    for part in kit.parts:
-        solid = _part_solid(part, settings)
-        solids.extend(solid for _ in range(part.quantity))
-    return solids
+    """Every sheet part as built, one solid per part in kit order. A part's copies (`quantity` > 1) have no location of
+    their own, so they are not drawn on top of it: its mass (`part_item`) carries the quantity instead."""
+    return [_part_solid(part, settings) for part in kit.parts]
 
 
 def carbon_solids(kit: Kit) -> list[bd.Solid]:
@@ -438,7 +437,7 @@ def _joins(kit: Kit) -> list[str]:
 def _centreline_joint(kit: Kit, settings: FabricationSettings) -> list[str]:
     wrap = kit.overwrap
     lap_mm = _to_mm(wrap.lap_m)
-    values = [("Cloth", OVERWRAP_CLOTH), ("Layers", f"{wrap.layers} layers"),
+    values = [("Cloth", f"{settings.overwrap_cloth_g_m2:g} g/m² carbon"), ("Layers", f"{wrap.layers} layers"),
               ("Layer thickness", f"{_to_mm(wrap.layer_thickness_m):.2f} mm"), ("Lap", f"{lap_mm:.1f} mm per side"),
               ("Wrapped OD", f"{_to_mm(wrap.od_m):.1f} mm"), ("Mass", f"{_g(wrap.mass_kg):.1f} g")]
     steps = [f"{n}. {step.format(layers=wrap.layers, lap_mm=lap_mm)}" for n, step in enumerate(LAY_UP_STEPS, 1)]
@@ -498,8 +497,17 @@ def remove_kit_files(out_dir: Path) -> None:
 
 def export_kit(kit: Kit, settings: FabricationSettings, out_dir: Path) -> KitFiles:
     """Nest the kit and write its DXF sheets, `kit/build_sheet.md` and `kit/parts.csv` under `out_dir`. Any earlier
-    kit files are removed first; a nesting or DXF failure raises (KitUnavailable for the known ones)."""
+    kit files are removed first; on any failure the files written so far are removed too, then the error is raised
+    (KitUnavailable for the known nesting and DXF ones)."""
     remove_kit_files(out_dir)
+    try:
+        return _write_kit_files(kit, settings, out_dir)
+    except Exception:
+        _discard_partial_files(out_dir)
+        raise
+
+
+def _write_kit_files(kit: Kit, settings: FabricationSettings, out_dir: Path) -> KitFiles:
     placements = nest(kit.parts, settings)
     sheets = write_sheets(placements, settings, out_dir)
     kit_dir = out_dir / KIT_SUBDIR
@@ -507,3 +515,12 @@ def export_kit(kit: Kit, settings: FabricationSettings, out_dir: Path) -> KitFil
     build_sheet.write_text(build_sheet_text(kit, settings, placements), encoding="utf-8")
     parts_csv = _write_parts_csv(kit, settings, placements, kit_dir / PARTS_CSV_FILE)
     return KitFiles(kit_dir, build_sheet, parts_csv, sheets)
+
+
+def _discard_partial_files(out_dir: Path) -> None:
+    """Best effort after a failed export: remove whatever was written, so no orphaned sheet set is left. A removal
+    failure is logged; the export's own error is what the caller sees."""
+    try:
+        remove_kit_files(out_dir)
+    except OSError:
+        logger.exception("could not remove the partial kit files under %s", out_dir / KIT_SUBDIR)
