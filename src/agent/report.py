@@ -231,7 +231,7 @@ def _sections(inputs: ReportInputs) -> list[str]:
               f"`{Path(inputs.cad.oml_vsp3_path).name}`"
               + (f", `{VIEWER_FILE}` (3D viewer)" if (inputs.out_dir / VIEWER_FILE).is_file() else "") + "\n"]
     if inputs.fcs:
-        s += ["## Flight control and SITL validation\n", table(presenters.fcs_rows(inputs.fcs))]
+        s += ["## Flight control and SITL consistency check\n", table(presenters.fcs_rows(inputs.fcs))]
         s += [f"Parameters: `{Path(inputs.fcs.param_path).name}`; telemetry: `{Path(inputs.fcs.sitl_report_path).name}`\n"]
     return s
 
