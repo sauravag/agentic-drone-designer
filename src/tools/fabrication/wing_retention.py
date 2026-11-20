@@ -22,6 +22,7 @@ from src.tools.fabrication.rib_outline import Hole, circle_face, common, shape_a
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable
 
 BOLT_CHORD_FRACTION: Final[float] = 0.475  # midway between the spar (25 % chord) and the pin (70 % chord)
+M5_DIAMETER_M: Final[float] = 0.005  # the bolt's nominal (shank) diameter
 M5_CLEARANCE_HOLE_M: Final[float] = 0.0055  # ISO 273 medium clearance hole for M5
 M5_NUT_ACROSS_FLATS_M: Final[float] = 0.008  # ISO 4032 M5 hex nut
 M5_NUT_HEIGHT_M: Final[float] = 0.004

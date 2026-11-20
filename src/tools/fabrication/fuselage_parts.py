@@ -90,8 +90,11 @@ from src.tools.fabrication.wing_box_bosses import (
 from src.tools.fabrication.wing_retention import (
     BOLT_CHORD_FRACTION,
     BOLT_HEAD_STACK_M,
+    BOLT_THREAD_MARGIN_M,
     BOLT_WASHER_DIAMETER_M,
     M5_CLEARANCE_HOLE_M,
+    M5_DIAMETER_M,
+    M5_NUT_HEIGHT_M,
     check_clear_of_holes,
     check_clear_of_outlines,
     check_head_clear,
@@ -319,12 +322,22 @@ def _check_layout_order(layout: AircraftLayout, firewall_m: float, fore_m: float
                              f"{'pod' if layout.tail_boom is None else 'tail-boom root'} (x = {end:.3f} m)")
 
 
+def _bolt_band_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> tuple[float, float]:
+    """R38: the x band no former may stand in: where the wing bolt line runs from the centreline out past its nut
+    (it leans with taper), widened by the bolt's radius, the fit clearance and MIN_WEB_M."""
+    reach = spar.joint_y_m + settings.sheet_for("doubler").thickness_m + M5_NUT_HEIGHT_M + BOLT_THREAD_MARGIN_M
+    xs = [socket_axis_m(layout, y, BOLT_CHORD_FRACTION)[0] for y in (0.0, reach)]
+    band = M5_DIAMETER_M / 2.0 + settings.fit_clearance_m + MIN_WEB_M
+    return min(xs) - band, max(xs) + band
+
+
 def former_stations(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
                     components: Sequence[PlacedComponent] = ()) -> tuple[float, ...]:
     """Firewall station first (`firewall_station`, taking the place of the first regular station), then every
     FORMER_PITCH_M from FIRST_FORMER_FRACTION up to TAIL_BOOM_START_FRACTION of the length (and clear of the boom
     root), plus the two socket stations and the pin station (`_mount_stations`). Regular stations within
-    STATION_MERGE_M of those, or between the two socket stations, are dropped so no former meets the socket.
+    STATION_MERGE_M of those, between the two socket stations, or whose slab meets the wing bolt's band
+    (`_bolt_band_m`, R38) are dropped, so no former meets the socket or the bolt.
     Mandatory stations closer than STATION_MERGE_M, a wing box ahead of the firewall or aft of the boom root (or the
     pod's end) raise `KitUnavailable`."""
     length, t = layout.fuselage_length_m, settings.sheet_for("former").thickness_m
@@ -337,9 +350,12 @@ def former_stations(layout: AircraftLayout, spar: SparPlan, settings: Fabricatio
     _check_layout_order(layout, firewall, fore, pin + t)
     _check_no_collision((firewall, fore, aft, pin))
 
+    bolt_lo, bolt_hi = _bolt_band_m(layout, spar, settings)
+
     def is_kept(x: float) -> bool:
         near = any(abs(x - m) < STATION_MERGE_M for m in (firewall, fore, aft, pin))
-        return not (near or fore < x < aft)
+        on_bolt = x < bolt_hi and x + t > bolt_lo  # R38: the slab would stand in the wing bolt's path
+        return not (near or fore < x < aft or on_bolt)
 
     regular = (first + k * FORMER_PITCH_M for k in range(1, count))
     return (firewall, *sorted((*(x for x in regular if is_kept(x)), fore, aft, pin)))
@@ -434,14 +450,17 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
 
 def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
                      loads: PlateLoads) -> float:
-    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge, the socket bosses'
-    bottom when `loads` need them (R32), or the underside of the socket tubes' centreline overwrap (R24, at its
+    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge, the wing bolt's
+    head and washer inside the plates (R38), the socket bosses' bottom when `loads` need them (R32), or the
+    underside of the socket tubes' centreline overwrap (R24, at its
     wrapped OD), where they sit lowest (the dihedral lifts them outboard). Pin bosses stay within the plates. Raises
     `KitUnavailable` when no overwrap within the layer cap carries the centreline moment, no boss suffices, or the
     boss's skirt would reach the crutch (the kit's own check, so pod sizing never accepts a pod the kit rejects)."""
     wrap_m = overwrap_layers(spar.centre_moment_nm, spar.socket, settings) * settings.overwrap_layer_thickness_m
     mount = _mount(layout, spar, settings)
-    floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m]
+    bolt = _inner_face_holes(layout, spar, settings, mount).bolt  # R38: the head and washer stand inboard of it
+    floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m,
+              bolt.y_m - BOLT_WASHER_DIAMETER_M / 2.0]
     depth = socket_boss_depth_m(spar, settings, loads)
     if depth is not None:
         hole = _inner_face_holes(layout, spar, settings, mount).socket

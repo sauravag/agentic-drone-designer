@@ -18,9 +18,13 @@ from src.tools.fabrication.tubes import MIN_WEB_M
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, socket_axis_m
 from src.tools.fabrication.wing_retention import (
     BOLT_CHORD_FRACTION,
+    BOLT_HEAD_STACK_M,
     BOLT_LENGTH_STEP_M,
+    BOLT_THREAD_MARGIN_M,
+    BOLT_WASHER_DIAMETER_M,
     M5_CLEARANCE_HOLE_M,
     M5_NUT_ACROSS_FLATS_M,
+    M5_NUT_HEIGHT_M,
     NUT_PLATE_DIAMETER_M,
     NUT_PLATE_LABELS,
     check_clear_of_holes,
@@ -28,7 +32,7 @@ from src.tools.fabrication.wing_retention import (
     check_head_clear,
     nut_plate_outline,
 )
-from tests.cad_helpers import hole_centre, part_solid, ribs_by_label
+from tests.cad_helpers import hole_centre, part_solid, ribs_by_label, tube_solid
 from tests.test_fabrication_kit import _build
 
 S = DEFAULT_FABRICATION
@@ -172,3 +176,53 @@ def test_a_component_at_the_bolt_head_is_unavailable():
     with pytest.raises(KitUnavailable, match="battery"):
         check_head_clear([battery(-0.02)], head, "WM-R")
     check_head_clear([battery(-0.1)], head, "WM-R")
+
+
+# ------------------------------------------------------------------------------------ bolt path (R38) ---
+M5_SHANK_M = 0.005  # the bolt's own diameter: what must pass without touching any part
+
+
+def _bolt_path(kit, layout) -> bd.Solid:
+    """The right wing bolt as a 5 mm cylinder on its line, from the head (BOLT_HEAD_STACK_M inboard of the plate's
+    inner face) to the nut's far end (M5_NUT_HEIGHT_M outboard of the root doubler), plus a thread margin."""
+    plate = ribs_by_label(kit.parts)["WM-R"]
+    t_plate, t_root = S.sheet_for("plate").thickness_m, S.sheet_for("doubler").thickness_m
+    y0 = plate.location.position.Y - t_plate - BOLT_HEAD_STACK_M
+    y1 = kit.spar.joint_y_m + t_root + M5_NUT_HEIGHT_M + BOLT_THREAD_MARGIN_M
+    (x0, z0), (x1, z1) = (socket_axis_m(layout, y, BOLT_CHORD_FRACTION) for y in (y0, y1))
+    start, end = bd.Vector(x0, y0, z0), bd.Vector(x1, y1, z1)
+    plane = bd.Plane(origin=start, z_dir=end - start)
+    return bd.Solid.make_cylinder(M5_SHANK_M / 2.0, (end - start).length, plane)
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_the_wing_bolt_path_is_clear_of_every_kit_part_and_tube(case, kits):
+    """R38: the bolt goes in as cut: its path from head to nut meets no part or tube (it passes their holes)."""
+    kit, (layout, _, _, _) = kits[case]
+    path = _bolt_path(kit, layout)
+    solids = [(p.label, part_solid(p, S)) for p in kit.parts] + [(t.label, tube_solid(t)) for t in kit.tubes]
+    hits = {label: round(_volume(path.intersect(solid)) * 1e9, 1) for label, solid in solids}
+    assert {label: mm3 for label, mm3 in hits.items() if mm3 > 0.0} == {}
+
+
+def _volume(shape) -> float:
+    pieces = shape if isinstance(shape, list) else [shape]
+    return sum(s.volume for piece in pieces if piece is not None for s in piece.solids())
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_pod_sizing_counts_the_bolt_head_in_the_wing_box_floor(case, kits, monkeypatch):
+    """R38: the wing-box floor that pod sizing seats the battery under includes the bolt head and washer, so pod
+    sizing never accepts a pod whose battery the kit's head check then rejects."""
+    from src.tools.fabrication import fuselage_parts as fp
+    from src.tools.fabrication.tubes import PlateLoads
+
+    kit, (layout, _, spar, _) = kits[case]
+    loads = PlateLoads(shear_n=1.0, down_n=1.0)
+    floor = fp.wing_box_floor_m(layout, spar, S, loads)
+    plate = ribs_by_label(kit.parts)["WM-R"]
+    y_inner = plate.location.position.Y - S.sheet_for("plate").thickness_m
+    head_z = socket_axis_m(layout, y_inner - S.sheet_for("plate").thickness_m / 2.0, BOLT_CHORD_FRACTION)[1]
+    assert floor <= head_z - BOLT_WASHER_DIAMETER_M / 2.0 + 1e-9
+    monkeypatch.setattr(fp, "BOLT_WASHER_DIAMETER_M", 0.2)  # a washer reaching below everything else governs
+    assert fp.wing_box_floor_m(layout, spar, S, loads) == pytest.approx(head_z - 0.1, abs=1e-9)
