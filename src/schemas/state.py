@@ -128,14 +128,14 @@ class FCSArtifacts(_Frozen):
     param_path: str
     sitl_report_path: str
     passed: bool
-    roll_overshoot: NonNegative  # fraction, 0.2 == 20 %
+    roll_overshoot: NonNegative  # fraction, 0.2 == 20 %; worst over the plants that completed a flight
     pitch_overshoot: NonNegative
     roll_settling_s: NonNegative
     pitch_settling_s: NonNegative
     max_transition_altitude_loss_m: NonNegative
     gain_scale: Positive = 1.0
     attempts: int = Field(default=1, ge=1)
-    governing_case: str = "nominal"  # plant whose response sets the overshoot/settling fields above
+    governing_case: str = "nominal"  # worst over the plants that completed a flight; a crashed plant governs and is listed with its error
     perturbation_cases: tuple[PlantCaseResult, ...] = ()
 
 

@@ -192,7 +192,12 @@ def _worst_step(results: Sequence[AttemptResult], attr: str, governing: AttemptR
 
 
 def combine(gain_scale: float, scores: Sequence[CaseScore]) -> AttemptResult:
-    """Worst-case roll/pitch over all plants; transition loss from the nominal flight only."""
+    """Worst-case roll/pitch over all plants; transition loss from the nominal flight only.
+
+    A crashed plant has no step metrics: the worst values cover the plants that completed a flight, while the
+    crashed plant governs (its error is carried as "<case>: <error>") and the attempt fails."""
+    if not scores:
+        raise ValueError("combine needs at least one case")
     results: list[AttemptResult] = [c.result for c in scores]
     governing: CaseScore = max(scores, key=lambda c: _case_severity(c.result))
     roll = _worst_step(results, "roll", governing.result)
@@ -259,7 +264,9 @@ def _case_results(result: AttemptResult) -> tuple[PlantCaseResult, ...]:
 
 
 def _param_header(req: OperationalRequirements, result: AttemptResult) -> str:
-    status: str = "PASSED" if result.passed else "FAILED (unverified)" if result.error else "FAILED"
+    nominal_crashed: bool = any(c.case == NOMINAL_CASE and c.result.error for c in result.cases) or (
+        not result.cases and result.error is not None)
+    status: str = "PASSED" if result.passed else "FAILED (unverified)" if nominal_crashed else "FAILED"
     return (f"ISR-Forge ArduPilot Plane 4.7 parameters for '{req.mission_name}'\n"
             f"SITL doublet test {status} at rate-gain scale {result.gain_scale:.3f}, "
             f"worst case: {result.governing_case}")

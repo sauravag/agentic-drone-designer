@@ -431,12 +431,52 @@ def test_every_attempt_flies_nominal_and_both_perturbed_plants(monkeypatch: pyte
     assert len({f[2] for f in flights[:3]}) == 1 and len({f[2] for f in flights[3:]}) == 1
     assert [f[3] for f in flights] == pytest.approx([1.0] * 3 + [0.75] * 3)
     assert flights[1][1] == pytest.approx(0.08) and flights[2][1] == pytest.approx(0.14)
-    assert fcs.attempts == 2 and fcs.governing_case in {"nominal", "hot", "sluggish"}
+    assert fcs.attempts == 2 and fcs.governing_case == "nominal"
     assert len(fcs.perturbation_cases) == 3
     report = json.loads((tmp_path / "sitl_report.json").read_text())
     assert len(report["attempts"][0]["cases"]) == 3 and report["replay_attempt"] == 2
     header = (tmp_path / "ardupilot.param").read_text().splitlines()[:3]
     assert any(f"worst case: {fcs.governing_case}" in line for line in header)
+
+
+def test_combine_rejects_an_empty_case_list() -> None:
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    with pytest.raises(ValueError, match="combine needs at least one case"):
+        sv.combine(1.0, [])
+
+
+def test_param_header_says_unverified_only_when_nominal_did_not_fly() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    req = load_design("g1")[0]
+    good = sv.score(_synthetic_log(ft, 0.4), 1.0)
+    crash = sv.AttemptResult(gain_scale=1.0, passed=False, error="SitlFlightError: stall")
+    hot_down = sv.combine(1.0, [sv.CaseScore("nominal", good), sv.CaseScore("hot", crash)])
+    nominal_down = sv.combine(1.0, [sv.CaseScore("nominal", crash), sv.CaseScore("hot", good)])
+    hot_header, nominal_header = sv._param_header(req, hot_down), sv._param_header(req, nominal_down)
+    assert "FAILED" in hot_header and "unverified" not in hot_header and "worst case: hot" in hot_header
+    assert "FAILED (unverified)" in nominal_header and "worst case: nominal" in nominal_header
+
+
+def test_a_plant_that_always_crashes_fails_end_to_end(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        if work.name == "hot":
+            return sv.AttemptResult(gain_scale=scale, passed=False, error="SitlFlightError: stall"), None
+        log = _synthetic_log(ft, 0.4)
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
+    assert fcs.passed is False and fcs.governing_case == "hot"
+    hot = next(c for c in fcs.perturbation_cases if c.case == "hot")
+    assert hot.error
+    assert json.loads((tmp_path / "sitl_report.json").read_text())["replay_attempt"] == 2
+    header = (tmp_path / "ardupilot.param").read_text().splitlines()[:3]
+    assert any("FAILED" in line for line in header) and not any("unverified" in line for line in header)
 
 
 def test_old_fcs_records_validate_with_nominal_governing() -> None:
