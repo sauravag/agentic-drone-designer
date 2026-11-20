@@ -416,6 +416,7 @@ def test_centreline_joint_gives_the_overwrap_and_the_lay_up_order(kit, kit_files
     assert f"{wrap.mass_kg * 1000:.1f} g" in joint
     steps = [joint.index(s) for s in ("Insert the sockets", "Glue the mitre", "Wrap between the plates")]
     assert steps == sorted(steps)
+    assert "Do not glue the spar roots: the wings must stay detachable." in joint
     assert "| WM-RD |" in joint and "| WM-LD |" in joint  # g1's socket bosses
 
 

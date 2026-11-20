@@ -447,6 +447,7 @@ def _centreline_joint(kit: Kit, settings: FabricationSettings) -> list[str]:
                 else ["No bosses: the plates and root ribs bear the socket and pin loads alone."])
     return ["Wet-laid carbon overwrap over the socket mitre at the centreline.", "",
             *_table(("Item", "Value"), values), "", "Lay-up order:", "", *steps, "",
+            "Do not glue the spar roots: the wings must stay detachable.", "",
             "Bosses (glue before inserting the sockets and pins):", "", *doublers]
 
 

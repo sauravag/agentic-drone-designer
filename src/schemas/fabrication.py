@@ -129,7 +129,7 @@ class FabricationSettings(BaseModel):
         7e6, gt=0.0, description="Allowable birch aviation-ply panel shear stress (Pa), for shear-out checks."
     )
     overwrap_layer_thickness_m: float = Field(
-        0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m); must exceed the dry cloth's areal mass at the cured density."
+        0.25e-3, gt=0.0, description="Cured thickness of one wet-laid carbon cloth layer (m)."
     )
     overwrap_cloth_g_m2: float = Field(
         200.0, gt=0.0, description="Areal weight of the dry carbon cloth one overwrap layer is laid from (g/m^2)."

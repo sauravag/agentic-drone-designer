@@ -206,7 +206,7 @@ future "open a shared design" feature will read.
 
 ## Building the laser-cut kit
 
-Group 1–2 designs (MTOW up to the DoD Group 2 limit) get a laser-cut internal structure: plywood ribs, formers,
+Group 1–2 designs (MTOW up to 24.95 kg / 55 lb, `GROUP2_UPPER_KG` in `src/tools/sizing/topology.py`) get a laser-cut internal structure: plywood ribs, formers,
 crutch and wing-mount plates cut from sheet, with stock carbon tubes for the spars and booms. Everything is in
 `kit/` inside the run folder:
 
@@ -215,7 +215,7 @@ crutch and wing-mount plates cut from sheet, with stock carbon tubes for the spa
   kerf-compensated, so slots press-fit.
 - `kit/build_sheet.md`: the parts, the tubes to cut, glued joins, covering and the kit mass. Its centreline joint
   section gives the carbon overwrap lay-up: cloth, layer count and thickness, lap per side, and the order to wrap
-  the mitre between the two spar halves (the spar roots stay unglued so the wings detach).
+  the glued mitre between the two fuselage socket tubes (the spar roots slide into the sockets unglued, so the wings detach).
 - `kit/parts.csv`: the parts list.
 
 The kit mass and CG feed into the as-built design. To change the bed, kerf, sheet and tube stock or the structural
