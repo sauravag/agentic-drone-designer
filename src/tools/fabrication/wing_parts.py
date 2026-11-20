@@ -51,6 +51,7 @@ WIRING_HOLE_DIAMETER_M: Final[float] = 0.008
 PIN_CHORD_FRACTION: Final[float] = 0.70
 PIN_BOSS_WIDTH_M: Final[float] = 0.003  # R31 pin boss annulus radial width
 ROOT_PIN_BOSS_LABEL: Final[str] = "WR-PD"
+ROOT_BOSS_MID_SLABS: Final[float] = 1.5  # the root pin boss slab [y + t, y + 2t] has its mid-plane 1.5 t outboard
 AREA_EPS_M2: Final[float] = 1e-10
 LIGHTENING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.38, 0.62)  # either side of the wiring hole
 SERVO_PLATE_CHORD_M: Final[float] = 0.040
@@ -234,7 +235,7 @@ def _root_pin_boss(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan
         return ()
     wing, y, label = layout.wing, spar.joint_y_m, ROOT_PIN_BOSS_LABEL
     t = settings.sheet_for("doubler").thickness_m
-    hole = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, y + 1.5 * t, spar.pin.rod_m, t, settings)
+    hole = oblique_hole(wing, airfoil, PIN_CHORD_FRACTION, y, y + ROOT_BOSS_MID_SLABS * t, spar.pin.rod_m, t, settings)
     ring = circle_face(Hole(hole.x_m, hole.y_m, hole.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
     if ring.cut(notched_profile(airfoil, wing.chord_at(y), settings)).area > AREA_EPS_M2:
         raise KitUnavailable(f"anti-rotation pin: the pin boss {label} does not fit inside the root rib")

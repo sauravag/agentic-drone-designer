@@ -4,6 +4,7 @@ strength (R26), socket bearing bosses (R27) and the crutch rail minimum (R28).""
 import dataclasses
 import math
 
+import build123d as bd
 import pytest
 
 from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
@@ -18,6 +19,8 @@ from src.tools.fabrication.fuselage_parts import (
     SOCKET_BOSS_DEPTH_STEP_M,
     SOCKET_BOSS_MAX_DEPTH_M,
     SOCKET_BOSS_WIDTH_M,
+    check_skirt_clears_crutch,
+    pin_boss_blank,
     socket_boss_depth_m,
     former_stations,
     fuselage_parts,
@@ -49,12 +52,14 @@ from src.tools.fabrication.tubes import (
     tube_ratio,
 )
 from src.tools.sizing.aero_model import air_properties
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION
+from src.tools.fabrication.rib_outline import Hole, circle_face, rect_face
+from src.tools.fabrication.wing_parts import PIN_BOSS_WIDTH_M, PIN_CHORD_FRACTION
 from tests.cad_helpers import _fitted_layout, _synthetic_oml
 from tests.test_aero_cad import _synthetic_aero
 from tests.test_fabrication_kit import _build
 
 SETTINGS = DEFAULT_FABRICATION
+POD_D_TOL_M = 0.001  # regression tolerance on the kit-aware pod diameter
 G2_LIKE_MOMENT_NM = 291.7  # g2's centreline moment (flight governs)
 SOCKET_32 = TubeStock(od_m=0.032, id_m=0.028)
 WIDE_GAP_M = 0.5
@@ -287,6 +292,7 @@ def test_g1_g2_still_build_kits_with_positive_margin(case, designs, tmp_path):
     assert cad_packer.SM_MIN <= result.static_margin <= cad_packer.SM_MAX and result.static_margin > 0.0
     assert result.interference_count == 0
     assert result.kit.overwrap.layers == {"g1": 5, "g2": 9}[case]
+    assert layout.fuselage_diameter_m == pytest.approx({"g1": 0.1658, "g2": 0.2701}[case], abs=POD_D_TOL_M)
     assert kit_mass_kg(result.kit, SETTINGS) > 0.0
 
 
@@ -382,6 +388,37 @@ def test_socket_boss_grows_below_the_socket_in_steps_until_the_web_passes(g1_kit
     beyond = SHEAR_ALLOW * 2 * (MIN_WEB_M + SOCKET_BOSS_MAX_DEPTH_M) * t * 1.01
     with pytest.raises(KitUnavailable, match="socket web shear"):
         socket_boss_depth_m(spar, settings, PlateLoads(0.0, beyond))
+
+
+def test_socket_skirt_must_clear_the_crutch():
+    crutch_t = SETTINGS.sheet_for("crutch").thickness_m
+    depth, d = 0.010, 0.020
+    clear = Hole(0.3, crutch_t / 2 + depth + d / 2 + 1e-4, d)  # skirt bottom 0.1 mm above the crutch
+    check_skirt_clears_crutch(clear, depth, crutch_t)
+    touching = Hole(0.3, crutch_t / 2 + depth + d / 2 - 1e-4, d)
+    with pytest.raises(KitUnavailable, match="crutch"):
+        check_skirt_clears_crutch(touching, depth, crutch_t)
+
+
+def test_pin_boss_is_clipped_to_the_plate_material_not_its_box():
+    pin = Hole(0.050, 0.020, 0.0052)
+    plate = rect_face(0.0, 0.0, 0.100, 0.040)
+    opening = rect_face(0.050 + 0.0026 + 0.0021, 0.010, 0.080, 0.030)  # beside the pin, inside the ring's reach
+    plate = plate.cut(opening, circle_face(pin)).faces()[0]
+    blank = pin_boss_blank(plate, pin, "WM-RPD")
+    overlap = blank.intersect(opening)
+    pieces = overlap if isinstance(overlap, list) else ([] if overlap is None else [overlap])
+    assert sum(f.area for p in pieces for f in p.faces()) == pytest.approx(0.0, abs=1e-12)
+    ring_area = math.pi * ((pin.diameter_m / 2 + PIN_BOSS_WIDTH_M) ** 2)
+    assert 0.0 < blank.area < ring_area  # clipped by the opening, and the hole is not yet drilled
+
+
+def test_g2_pin_bosses_lie_on_their_plates(g2_kit):
+    parts = {p.label: p for p in g2_kit.parts}
+    for boss, plate in zip(PIN_BOSS_LABELS, ("WM-R", "WM-L")):
+        outline = parts[plate].outline
+        filled = outline.fuse(*(bd.Face(w) for w in outline.inner_wires())).clean()  # holes count as material here
+        assert parts[boss].outline.cut(filled).area == pytest.approx(0.0, abs=1e-10)
 
 
 def test_wing_box_floor_counts_the_socket_bosses(g1_kit_inputs):

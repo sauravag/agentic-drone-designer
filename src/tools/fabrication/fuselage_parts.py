@@ -490,10 +490,10 @@ def socket_boss_depth_m(spar: SparPlan, settings: FabricationSettings, loads: Pl
         depth = min(SOCKET_BOSS_WIDTH_M + k * SOCKET_BOSS_DEPTH_STEP_M, SOCKET_BOSS_MAX_DEPTH_M)
         if _web_shear_pa(loads.down_n, depth, t) <= shear_allow:
             return depth
+    worst = _web_shear_pa(loads.down_n, SOCKET_BOSS_MAX_DEPTH_M, t)
     raise KitUnavailable(
         f"socket web shear: {loads.down_n:.0f} N down on the socket shears out the web under it even with a "
-        f"{SOCKET_BOSS_MAX_DEPTH_M * 1e3:.0f} mm boss ({_web_shear_pa(loads.down_n, SOCKET_BOSS_MAX_DEPTH_M, t) / 1e6:.1f}"
-        f" MPa > {shear_allow / 1e6:.2f} MPa)"
+        f"{SOCKET_BOSS_MAX_DEPTH_M * 1e3:.0f} mm boss ({worst / 1e6:.1f} MPa > {shear_allow / 1e6:.2f} MPa)"
     )
 
 
@@ -513,28 +513,46 @@ def _socket_boss_outline(hole: Hole, depth_m: float) -> bd.Face:
     return _single_face(ring.fuse(skirt).clean(), BOSS_LABELS[1])
 
 
-def _bosses(frame: _Frame, hole: Hole, blank: bd.Face, labels: dict[int, str]) -> list[KitPart]:
-    """A boss doubler of plate stock on each plate's inner face: `blank` drilled with `hole`."""
+def _bosses(frame: _Frame, hole: Hole, blanks: dict[int, bd.Face], labels: dict[int, str]) -> list[KitPart]:
+    """A boss doubler of plate stock on each plate's inner face: that side's blank drilled with `hole`."""
     t, m = frame.settings.sheet_for("plate").thickness_m, frame.mount
     origins = {1: m.y_inner_m, -1: -m.y_inner_m + t}  # both extrude toward -y, onto the plate's inner face
-    return [KitPart(label, "plate", drill(blank, (hole,), label),
+    return [KitPart(label, "plate", drill(blanks[side], (hole,), label),
                     _plane_location((0.0, origins[side], 0.0), (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)))
             for side, label in sorted(labels.items())]
 
 
-def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads) -> list[KitPart]:
-    """R27/R32/R33 socket bosses (annulus + skirt below) and R31 pin bosses (an annulus clipped to the plate body, so
-    it adds no height), each only when needed."""
-    socket, pin = _inner_face_holes(frame.layout, spar, frame.settings, frame.mount)
-    m, depth = frame.mount, socket_boss_depth_m(spar, frame.settings, loads)
-    if depth is not None and socket.y_m - socket.diameter_m / 2.0 - depth <= frame.crutch_t_m / 2.0:
+def check_skirt_clears_crutch(socket: Hole, depth_m: float, crutch_t_m: float) -> None:
+    """The socket boss's skirt (its bottom `depth_m` below the hole) must stay above the crutch's top face."""
+    if socket.y_m - socket.diameter_m / 2.0 - depth_m <= crutch_t_m / 2.0:
         raise KitUnavailable("socket web shear: the socket boss would reach down to the crutch")
-    parts = [] if depth is None else _bosses(frame, socket, _socket_boss_outline(socket, depth), BOSS_LABELS)
+
+
+def pin_boss_blank(plate: bd.Face, pin: Hole, label: str) -> bd.Face:
+    """R31 plate pin boss before drilling: an annulus PIN_BOSS_WIDTH_M wide round the pin hole, clipped to the
+    plate's real material (its outline less tab notches, openings and other holes; its own pin hole counts as
+    material, the boss is drilled afterwards), so it never hangs over a notch, opening or edge."""
+    ring = circle_face(Hole(pin.x_m, pin.y_m, pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
+    material = plate.fuse(circle_face(pin)).clean()
+    return _single_face(_common(ring, material), label)
+
+
+def _wing_box_bosses(frame: _Frame, spar: SparPlan, loads: PlateLoads,
+                     plates: dict[int, KitPart]) -> list[KitPart]:
+    """R27/R32/R33 socket bosses (annulus + skirt below) and R31 pin bosses (an annulus clipped to each plate's real
+    material, so it adds no height), each only when needed."""
+    socket, pin = _inner_face_holes(frame.layout, spar, frame.settings, frame.mount)
+    depth = socket_boss_depth_m(spar, frame.settings, loads)
+    parts: list[KitPart] = []
+    if depth is not None:
+        check_skirt_clears_crutch(socket, depth, frame.crutch_t_m)
+        blank = _socket_boss_outline(socket, depth)
+        parts += _bosses(frame, socket, {1: blank, -1: blank}, BOSS_LABELS)
     if spar.pin.plate_boss:
-        body = rect_face(m.x_min_m, m.z_m[0], m.x_max_m, m.z_m[1])
-        ring = circle_face(Hole(pin.x_m, pin.y_m, pin.diameter_m + 2.0 * PIN_BOSS_WIDTH_M))
         labels = dict(zip((1, -1), PIN_BOSS_LABELS))
-        parts += _bosses(frame, pin, _single_face(_common(ring, body), labels[1]), labels)
+        plate_pin = frame.mount.holes[1]
+        blanks = {side: pin_boss_blank(plates[side].outline, plate_pin, labels[side]) for side in labels}
+        parts += _bosses(frame, pin, blanks, labels)
     return parts
 
 
@@ -733,5 +751,6 @@ def fuselage_parts(
         bulkhead_t_m=settings.sheet_for("bulkhead").thickness_m,
     )
     formers = _half_formers(frame)  # first, so a too-big component is reported against the former it breaks
-    return (_crutch(frame), *formers, *_firewall(frame), _mount_plate(frame, -1), _mount_plate(frame, 1),
-            *_wing_box_bosses(frame, spar, loads), *_boom_mount_parts(frame))
+    plates = {side: _mount_plate(frame, side) for side in (-1, 1)}
+    return (_crutch(frame), *formers, *_firewall(frame), plates[-1], plates[1],
+            *_wing_box_bosses(frame, spar, loads, plates), *_boom_mount_parts(frame))
