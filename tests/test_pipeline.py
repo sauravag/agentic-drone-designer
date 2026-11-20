@@ -154,6 +154,14 @@ def test_warnings_flag_a_failed_sitl_test(sizing_only_run: pipeline.DesignRun) -
     assert "SITL doublet test failed after 4 attempt(s)" in text and "31%" in text
 
 
+def test_sitl_failure_warning_names_the_governing_case(sizing_only_run: pipeline.DesignRun) -> None:
+    fcs = FCSArtifacts(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.31, pitch_overshoot=0.05,
+                       roll_settling_s=4.2, pitch_settling_s=1.0, max_transition_altitude_loss_m=2.0, attempts=4,
+                       governing_case="hot")
+    text = " ".join(pipeline.design_warnings(sizing_only_run.sizing, None, None, fcs))
+    assert "worst case: hot" in text
+
+
 # ------------------------------------------------------------------ 3D viewer ---
 VIEWER_MODEL = {"frame": "x_aft_y_right_z_up", "cg_m": [0.5, 0, 0], "mass_kg": 10.0,
                 "parts": [{"name": "fuselage", "group": "component", "mass_kg": 1.0,

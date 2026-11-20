@@ -62,5 +62,5 @@ def test_agent_designs_the_srs_example_end_to_end(tmp_path: Path, monkeypatch: p
     assert state["sizing_results"].dod_group == 2 and state["fcs_artifacts"].passed
     report = (out / "design_report.md").read_text()
     for heading in ("## Executive summary", "## Bill of materials", "## Aerodynamics and stability",
-                    "## Flight control and SITL consistency check", "status **CONVERGED**"):
+                    "## Flight control and SITL robustness check", "status **CONVERGED**"):
         assert heading in report, heading

@@ -513,6 +513,23 @@ def test_sitl_acceptance(case: str, tmp_path: Path) -> None:
     assert {"heading_deg", "north_m", "east_m"} <= set(truth[-1])
     params = pg.read_param_file(Path(fcs.param_path))
     assert set(params) <= KNOWN_PARAMS and ("Q_ENABLE" in params) == (case == "g2")
+    last = report["attempts"][-1]
+    assert len(last["cases"]) == 3
+    assert (tmp_path / "sitl" / f"attempt_{len(report['attempts'])}" / "hot" / "jsbsim_truth.json").exists()
+
+
+@pytest.mark.docker
+def test_far_out_of_range_plant_fails_the_gate(tmp_path: Path) -> None:
+    """The perturbation check can fail: nominal gains on a plant with 3x control power do not pass."""
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    if not sv.sitl_available():
+        pytest.skip("arduplane not installed (run in the Docker image)")
+    req, sizing, bom, aero, cad = load_design("g1")
+    model = build_flight_model(req, sizing, bom, aero, cad)
+    params = pg.generate_params(model, sizing, bom)
+    extreme = perturbed_model(model, PlantCase("extreme", 3.0, 1.0, 1.0, model.static_margin))
+    result, _ = sv._attempt(extreme, params, tmp_path, 1.0, sv.SitlConfig())
+    assert not result.passed
 
 
 # ------------------------------------------------------------ robustness (review) ---

@@ -108,8 +108,8 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
     """Cross-checks between sizing, VSPAERO, the as-built CAD and SITL that the critic (M5) will act on."""
     notes: list[str] = []
     if fcs is not None and not fcs.passed:
-        notes.append(f"SITL doublet test failed after {fcs.attempts} attempt(s): roll overshoot "
-                     f"{fcs.roll_overshoot:.0%} / settling {fcs.roll_settling_s:.1f} s, pitch overshoot "
+        notes.append(f"SITL doublet test failed after {fcs.attempts} attempt(s) "
+                     f"(worst case: {fcs.governing_case}): roll overshoot {fcs.roll_overshoot:.0%} / settling {fcs.roll_settling_s:.1f} s, pitch overshoot "
                      f"{fcs.pitch_overshoot:.0%} / settling {fcs.pitch_settling_s:.1f} s, transition altitude loss "
                      f"{fcs.max_transition_altitude_loss_m:.1f} m (limits {MAX_OVERSHOOT:.0%}, {MAX_SETTLING_S:g} s, "
                      f"{MAX_TRANSITION_ALT_LOSS_M:g} m).")

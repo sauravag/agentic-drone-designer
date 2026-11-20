@@ -16,8 +16,8 @@ Given natural-language or structured operational requirements (e.g., *"Design a 
 1. **Converged Aircraft Sizing & Mass/Power Budget:** Supporting pure battery-electric and series hybrid-electric powertrains across DoD Group 1 (`< 9.07 kg`), Group 2 (`9.07–24.95 kg`), and Group 3 (`24.95–599 kg`).
 2. **COTS Bill of Materials (`bom.json`):** Mapped to real-world Commercial Off-The-Shelf (COTS) motors, engines, generators, batteries, propellers, and payloads.
 3. **Manufacturing-Ready 3D CAD (`oml.step` & `assembly.step`):** Watertight Outer Mold Line (OML) generated via OpenVSP, plus internal structural wing ribs, main carbon spars, and collision-free internal component packaging solved for Static Margin ($8\%\text{–}14\%$) via `Build123d`.
-4. **Flight Control Parameters, consistent in simulation (`ardupilot.param`):** ArduPilot `Plane` / `QuadPlane` parameter file derived from stability/control derivatives and 3D inertia tensors, checked via a headless `ArduPilot SITL + JSBSim` automated doublet test flight. The gains and the JSBSim plant are derived from the same flight model, so this test shows consistency in simulation, not robustness to errors in the aerodynamic derivatives.
-5. **Engineering Design Report (`design_report.md`):** Complete trade-off summary, mass breakdown, aerodynamic polars, stability report, and SITL telemetry consistency metrics.
+4. **Flight Control Parameters, checked in simulation (`ardupilot.param`):** ArduPilot `Plane` / `QuadPlane` parameter file derived from stability/control derivatives and 3D inertia tensors, checked via a headless `ArduPilot SITL + JSBSim` automated doublet test flight against two extreme plant corners: ±30 % control power and damping, ±20 % inertia, and both static-margin limits (0.08 and 0.14). Mixed corners are not flown.
+5. **Engineering Design Report (`design_report.md`):** Complete trade-off summary, mass breakdown, aerodynamic polars, stability report, and SITL per-plant telemetry metrics.
 
 ---
 
@@ -203,7 +203,7 @@ class DesignState(TypedDict):
        * `Q_TRANSITION_MS` = computed from cruise motor acceleration time from $0 \to 1.2 \cdot V_{\text{stall}}$
        * Scale `Q_A_RAT_RLL_P` and `Q_A_RAT_PIT_P` proportional to $\frac{I_{xx}}{L_{\text{arm}} \cdot T_{\max}}$ and $\frac{I_{yy}}{L_{\text{arm}} \cdot T_{\max}}$.
      * **Energy & Failsafes:** Set `BATT_CAPACITY`, `BATT_LOW_MAH`, and `BATT_CRT_MAH` directly from `SelectedBOM`.
-2. **Headless SITL Consistency Check (`sitl_validator.py`):**
+2. **Headless SITL Robustness Check (`sitl_validator.py`):**
    * `jsbsim_exporter.py`: Write a `JSBSim` aircraft configuration XML using the OpenVSP aerodynamic derivatives, wing geometry, propulsion thrust tables, and Build123d inertia tensor.
    * Launch `arduplane` SITL connected to the JSBSim dynamics model headlessly.
    * Connect via `pymavlink` (UDP `127.0.0.1:14550`), arm vehicle, switch to `AUTO` / `FBWA`, execute takeoff, transition to fixed-wing cruise (if QuadPlane), and inject $+15^\circ$ roll and $+10^\circ$ pitch step commands.

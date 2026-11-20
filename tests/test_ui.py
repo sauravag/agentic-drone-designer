@@ -95,6 +95,38 @@ def test_fcs_rows_compare_against_srs_limits() -> None:
     assert rows["Transition altitude loss"]["Result"] == "0.30 m"
 
 
+def _fcs_with_cases(**updates: object) -> "FCSArtifacts":
+    from src.schemas.state import FCSArtifacts, PlantCaseResult
+
+    cases = (PlantCaseResult(case="nominal", roll_overshoot=0.05, roll_settling_s=1.0, pitch_overshoot=0.04,
+                             pitch_settling_s=0.9),
+             PlantCaseResult(case="hot", roll_overshoot=0.12, roll_settling_s=1.4, pitch_overshoot=0.08,
+                             pitch_settling_s=1.1),
+             PlantCaseResult(case="sluggish", roll_overshoot=0.0, roll_settling_s=0.0, pitch_overshoot=0.0,
+                             pitch_settling_s=0.0, error="SitlFlightError: stalled"))
+    base: dict[str, object] = dict(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.12,
+                                   pitch_overshoot=0.08, roll_settling_s=1.4, pitch_settling_s=1.1,
+                                   max_transition_altitude_loss_m=0.3, governing_case="sluggish",
+                                   perturbation_cases=cases)
+    return FCSArtifacts(**{**base, **updates})
+
+
+def test_fcs_rows_name_the_governing_case_and_list_each_plant() -> None:
+    from src.schemas.state import FCSArtifacts
+
+    rows = {r["Check"]: r for r in presenters.fcs_rows(_fcs_with_cases())}
+    assert rows["Worst case (of nominal, hot, sluggish)"]["Result"] == "sluggish"
+    assert rows["Plant: hot"]["Result"] == "roll 12% / 1.4 s, pitch 8% / 1.1 s"
+    assert rows["Plant: hot"]["Pass"] == "yes"
+    assert rows["Plant: sluggish"]["Result"] == "crashed: SitlFlightError: stalled"
+    assert rows["Plant: sluggish"]["Pass"] == "no"
+    old = FCSArtifacts(param_path="a", sitl_report_path="b", passed=True, roll_overshoot=0.05, pitch_overshoot=0.05,
+                       roll_settling_s=1.0, pitch_settling_s=1.0, max_transition_altitude_loss_m=0.0)
+    assert [r["Check"] for r in presenters.fcs_rows(old)] == [
+        "Roll overshoot (+15° step)", "Roll settling time", "Pitch overshoot (+10° step)", "Pitch settling time",
+        "Transition altitude loss", "Rate-gain scale / attempts"]
+
+
 def test_downloadable_files_stay_inside_the_run_folder(run: pipeline.DesignRun) -> None:
     files = presenters.downloadable_files(run.out_dir)
     assert {f.name for f in files} >= {"requirements.json", "sizing.json", "bom.json"}

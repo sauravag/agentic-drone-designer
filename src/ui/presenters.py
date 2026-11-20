@@ -16,7 +16,7 @@ from src.schemas.fabrication import FabricationSettings
 from src.schemas.kit_files import KIT_DOWNLOADS, KIT_SUBDIR, SHEET_GLOB, SHEETS_DIR, stock_slug
 from src.schemas.payload_catalog import payload_display_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, PlantCaseResult, SizingOutput
 from src.tools.flight_control.runtime import MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M
 from src.units import WH_TO_J
 
@@ -236,7 +236,22 @@ def fcs_rows(fcs: FCSArtifacts) -> list[dict[str, str]]:
              "Pass": "yes" if value < limit else "no"} for name, value, limit, unit in entries]
     rows.append({"Check": "Rate-gain scale / attempts", "Result": f"{fcs.gain_scale:.3f} / {fcs.attempts}",
                  "Limit": "", "Pass": "yes" if fcs.passed else "no"})
+    if fcs.perturbation_cases:
+        names: str = ", ".join(c.case for c in fcs.perturbation_cases)
+        rows.append({"Check": f"Worst case (of {names})", "Result": fcs.governing_case, "Limit": "", "Pass": ""})
+        rows += [_plant_row(c) for c in fcs.perturbation_cases]
     return rows
+
+
+def _plant_row(case: PlantCaseResult) -> dict[str, str]:
+    """One plant's roll/pitch result, gated on the same SRS limits as the nominal rows."""
+    if case.error:
+        return {"Check": f"Plant: {case.case}", "Result": f"crashed: {case.error}", "Limit": "", "Pass": "no"}
+    passed: bool = (max(case.roll_overshoot, case.pitch_overshoot) < MAX_OVERSHOOT
+                    and max(case.roll_settling_s, case.pitch_settling_s) < MAX_SETTLING_S)
+    result: str = (f"roll {case.roll_overshoot:.0%} / {case.roll_settling_s:.1f} s, "
+                   f"pitch {case.pitch_overshoot:.0%} / {case.pitch_settling_s:.1f} s")
+    return {"Check": f"Plant: {case.case}", "Result": result, "Limit": "", "Pass": "yes" if passed else "no"}
 
 
 def _fmt(value: float, unit: str) -> str:
