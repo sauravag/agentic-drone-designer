@@ -19,6 +19,9 @@
   outline: on a curved skin the doubler's outer face sits one sheet off the part's plane, where the skin is narrower
   by r - sqrt(r^2 - z^2); 2 mm bounds that for every radius above 6 mm at the 4.5 mm top of a crutch doubler.
   The dovetail is cut at nominal size: its press fit comes from the kerf (like every tab and slot).
+  R23: a cut may pass straight through a component opening (one at least PASSABLE_OPENING_M long, the whole
+  dovetail core SPLIT_CLEARANCE_M inside its ends; never a small hole). Each side rail the line crosses then gets its
+  own dovetail (MIN_WEB_M rim) and its own doubler `<label>-D<k>a`, `-D<k>b`, … lapping that rail only.
 """
 
 import math
@@ -49,8 +52,10 @@ SPLIT_SEARCH_STEP_M: Final[float] = 0.001
 DOUBLER_LAP_M: Final[float] = 0.020  # doubler overlap either side of the dovetail, when there is room
 DOUBLER_MIN_LAP_M: Final[float] = 0.010  # shortest overlap accepted between holes or slots
 DOUBLER_EDGE_INSET_M: Final[float] = 0.002  # doubler edges stay this far inside the part's outline
-DOUBLER_LABEL: Final[re.Pattern[str]] = re.compile(r"^(?P<base>.+)-D(?P<k>\d+)$")
+DOUBLER_LABEL: Final[re.Pattern[str]] = re.compile(r"^(?P<base>.+)-D(?P<k>\d+)(?P<rail>[a-z])?$")
 MAX_SPLIT_PIECES: Final[int] = 8
+PASSABLE_OPENING_M: Final[float] = 0.05  # a cut may pass through an opening this long (a component's); never a hole
+SPAN_EPS_M: Final[float] = 1e-6  # a hole edge on a rail edge does not count as beside the rail
 CRUISE_MOTOR_NAME: Final[str] = "cruise_motor"
 AREA_EPS_M2: Final[float] = 1e-10
 VOLUME_EPS_M3: Final[float] = 1e-12
@@ -171,10 +176,22 @@ def cruise_motor_plate(
 
 # ------------------------------------------------------------------------------------ bed splitting ---
 @dataclass(frozen=True)
-class _Joint:
-    x_m: float  # cut line (local x); the tail reaches DOVETAIL_DEPTH_M beyond it
-    y_m: float  # tail centre
+class _Rail:
+    """One stretch of material the cut line crosses (the whole width, or a side rail beside an opening)."""
+
+    y_lo_m: float
+    y_hi_m: float
     lap_m: float = DOUBLER_LAP_M  # doubler overlap either side of the dovetail
+
+    @property
+    def y_m(self) -> float:  # tail centre
+        return 0.5 * (self.y_lo_m + self.y_hi_m)
+
+
+@dataclass(frozen=True)
+class _Joint:
+    x_m: float  # cut line (local x); each tail reaches DOVETAIL_DEPTH_M beyond it
+    rails: tuple[_Rail, ...]  # fore to aft in y; one dovetail and one doubler per rail
 
 
 def _usable_bed(settings: FabricationSettings) -> tuple[float, float]:
@@ -193,29 +210,43 @@ def _fits(face: bd.Face, settings: FabricationSettings) -> bool:
     return max(w, h) <= long and min(w, h) <= short
 
 
+def _tail_points(x_m: float, y_m: float) -> list[tuple[float, float]]:
+    """Neck, flare, flare, neck of one dovetail bulging +x round y_m."""
+    d = DOVETAIL_DEPTH_M
+    return [(x_m, y_m - DOVETAIL_NECK_M / 2.0), (x_m + d, y_m - DOVETAIL_FLARE_M / 2.0),
+            (x_m + d, y_m + DOVETAIL_FLARE_M / 2.0), (x_m, y_m + DOVETAIL_NECK_M / 2.0)]
+
+
 def _dovetail_points(joint: _Joint) -> list[tuple[float, float]]:
-    """The joint path from far below to far above: straight cut, with the tail bulging +x round y_m."""
-    c, y, d = joint.x_m, joint.y_m, DOVETAIL_DEPTH_M
-    return [(c, -REACH_M), (c, y - DOVETAIL_NECK_M / 2.0), (c + d, y - DOVETAIL_FLARE_M / 2.0),
-            (c + d, y + DOVETAIL_FLARE_M / 2.0), (c, y + DOVETAIL_NECK_M / 2.0), (c, REACH_M)]
+    """The joint path from far below to far above: straight cut, with a tail on every rail."""
+    tails = [pt for rail in joint.rails for pt in _tail_points(joint.x_m, rail.y_m)]
+    return [(joint.x_m, -REACH_M), *tails, (joint.x_m, REACH_M)]
 
 
 def _left_of(joint: _Joint) -> bd.Face:
-    """Half-plane left of the joint path; the tail belongs to the left piece."""
+    """Half-plane left of the joint path; the tails belong to the left piece."""
     pts = [(-REACH_M, -REACH_M), *_dovetail_points(joint), (-REACH_M, REACH_M)]
     return bd.Face(bd.Wire.make_polygon([(px, py, 0.0) for px, py in pts], close=True))
 
 
-def _doubler_band(joint: _Joint) -> tuple[float, float]:
-    return joint.x_m - joint.lap_m, joint.x_m + DOVETAIL_DEPTH_M + joint.lap_m
+def _doubler_band(joint: _Joint, rail: _Rail) -> tuple[float, float]:
+    return joint.x_m - rail.lap_m, joint.x_m + DOVETAIL_DEPTH_M + rail.lap_m
 
 
-def _doubler_lap(face: bd.Face, x_m: float) -> Optional[float]:
-    """Longest lap (<= DOUBLER_LAP_M) whose band misses every hole's and slot's x extent + MIN_WEB_M; None when
-    shorter than DOUBLER_MIN_LAP_M or when one sits over the dovetail itself."""
+def _beside(box: bd.BoundBox, y_lo_m: float, y_hi_m: float) -> bool:
+    """The box's y extent overlaps the open interval (y_lo, y_hi)."""
+    return box.min.Y < y_hi_m - SPAN_EPS_M and box.max.Y > y_lo_m + SPAN_EPS_M
+
+
+def _doubler_lap(face: bd.Face, x_m: float, span: tuple[float, float]) -> Optional[float]:
+    """Longest lap (<= DOUBLER_LAP_M) whose band, on this rail, misses the x extent + MIN_WEB_M of every hole and
+    slot beside the rail; None when shorter than DOUBLER_MIN_LAP_M or when one sits over the dovetail itself.
+    An opening the rail runs alongside (not beside it in y) never meets the rail's doubler."""
     lap, core = DOUBLER_LAP_M, (x_m, x_m + DOVETAIL_DEPTH_M)
     for wire in face.inner_wires():
         box = wire.bounding_box()
+        if not _beside(box, *span):
+            continue
         lo, hi = box.min.X - MIN_WEB_M, box.max.X + MIN_WEB_M
         if lo < core[1] and hi > core[0]:
             return None
@@ -223,37 +254,55 @@ def _doubler_lap(face: bd.Face, x_m: float) -> Optional[float]:
     return lap if lap >= DOUBLER_MIN_LAP_M else None
 
 
-def _material_span(face: bd.Face, x_m: float) -> Optional[tuple[float, float]]:
-    """The single stretch of material on the line local x = x_m (None when the line meets it more than once)."""
+def _material_spans(face: bd.Face, x_m: float) -> list[tuple[float, float]]:
+    """Every stretch of material on the line local x = x_m, in y order."""
     edges = _edges(face.intersect(bd.Edge.make_line((x_m, -REACH_M, 0.0), (x_m, REACH_M, 0.0))))
-    if len(edges) != 1:
-        return None
-    ys = sorted((edges[0].start_point().Y, edges[0].end_point().Y))
-    return ys[0], ys[1]
+    return sorted(tuple(sorted((e.start_point().Y, e.end_point().Y))) for e in edges)  # type: ignore[misc]
+
+
+def _crosses_opening(wire: bd.Wire, x_m: float) -> bool:
+    """The cut may pass through this opening: it is a component opening (at least PASSABLE_OPENING_M long along the
+    cut direction), and the whole dovetail core keeps SPLIT_CLEARANCE_M from its ends."""
+    box = wire.bounding_box()
+    return (box.max.X - box.min.X >= PASSABLE_OPENING_M and box.min.X + SPLIT_CLEARANCE_M <= x_m
+            and x_m + DOVETAIL_DEPTH_M + SPLIT_CLEARANCE_M <= box.max.X)
+
+
+def _tails_clear(face: bd.Face, joint: _Joint) -> bool:
+    """Every tail sits in material with a MIN_WEB_M rim."""
+    w, half = MIN_WEB_M, DOVETAIL_FLARE_M / 2.0
+    for rail in joint.rails:
+        zone = rect_face(joint.x_m - w, rail.y_m - half - w, joint.x_m + DOVETAIL_DEPTH_M + w, rail.y_m + half + w)
+        if sum(f.area for f in _faces(zone.cut(face))) > AREA_EPS_M2:
+            return False
+    return True
 
 
 def _joint_is_clear(face: bd.Face, joint: _Joint) -> bool:
-    """The tail sits in material with a MIN_WEB_M rim and the path keeps SPLIT_CLEARANCE_M from every hole and
-    slot."""
-    w, half = MIN_WEB_M, DOVETAIL_FLARE_M / 2.0
-    zone = rect_face(joint.x_m - w, joint.y_m - half - w, joint.x_m + DOVETAIL_DEPTH_M + w, joint.y_m + half + w)
-    if sum(f.area for f in _faces(zone.cut(face))) > AREA_EPS_M2:
+    """Tails in material with a MIN_WEB_M rim, and the path keeps SPLIT_CLEARANCE_M from every hole and slot except
+    a component opening it passes straight through: beside that, the tails' MIN_WEB_M rim is the web (R23)."""
+    if not _tails_clear(face, joint):
         return False
     path = bd.Wire.make_polygon([(px, py, 0.0) for px, py in _dovetail_points(joint)], close=False)
-    return all(path.distance_to(wire) >= SPLIT_CLEARANCE_M for wire in face.inner_wires())
+    return all(_crosses_opening(wire, joint.x_m) or path.distance_to(wire) >= SPLIT_CLEARANCE_M
+               for wire in face.inner_wires())
+
+
+def _joint_at(face: bd.Face, x_m: float) -> Optional[_Joint]:
+    """A joint on the line x = x_m with one dovetail per rail, or None when a rail has no doubler room."""
+    spans = _material_spans(face, x_m)
+    laps = [_doubler_lap(face, x_m, span) for span in spans]
+    if not spans or any(lap is None for lap in laps):
+        return None
+    return _Joint(x_m, tuple(_Rail(lo, hi, lap) for (lo, hi), lap in zip(spans, laps)))  # type: ignore[arg-type]
 
 
 def _find_joint(face: bd.Face, nominal_m: float) -> Optional[_Joint]:
     """The clear joint nearest the nominal cut, within SPLIT_SEARCH_M of it."""
     steps = round(SPLIT_SEARCH_M / SPLIT_SEARCH_STEP_M)
     for k in sorted(range(-steps, steps + 1), key=abs):
-        x = nominal_m + k * SPLIT_SEARCH_STEP_M
-        lap = _doubler_lap(face, x)
-        span = None if lap is None else _material_span(face, x)
-        if lap is None or span is None:
-            continue
-        joint = _Joint(x, (span[0] + span[1]) / 2.0, lap)
-        if _joint_is_clear(face, joint):
+        joint = _joint_at(face, nominal_m + k * SPLIT_SEARCH_STEP_M)
+        if joint is not None and _joint_is_clear(face, joint):
             return joint
     return None
 
@@ -270,12 +319,22 @@ def _cut(face: bd.Face, joints: Sequence[_Joint]) -> Optional[list[bd.Face]]:
     return pieces + [rest]
 
 
-def _doubler(face: bd.Face, joint: _Joint) -> Optional[bd.Face]:
-    """The part inside the doubler band, edges inset DOUBLER_EDGE_INSET_M. Only a slightly wider band is inset (then
-    trimmed back to the band), so the band ends keep their full lap and narrow necks elsewhere don't matter."""
-    lo, hi = _doubler_band(joint)
+def _rail_strip(joint: _Joint, k: int) -> tuple[float, float]:
+    """y strip owning rail k: halfway to the neighbouring rails (the far ends reach out)."""
+    rails = joint.rails
+    lo = -REACH_M if k == 0 else 0.5 * (rails[k - 1].y_hi_m + rails[k].y_lo_m)
+    hi = REACH_M if k == len(rails) - 1 else 0.5 * (rails[k].y_hi_m + rails[k + 1].y_lo_m)
+    return lo, hi
+
+
+def _doubler(face: bd.Face, joint: _Joint, k: int) -> Optional[bd.Face]:
+    """Rail k's material inside its doubler band, edges inset DOUBLER_EDGE_INSET_M. Only a slightly wider band is
+    inset (then trimmed back to the band), so the band ends keep their full lap and narrow necks elsewhere don't
+    matter."""
+    lo, hi = _doubler_band(joint, joint.rails[k])
+    y_lo, y_hi = _rail_strip(joint, k)
     pad = DOUBLER_EDGE_INSET_M
-    region = _faces(face.intersect(rect_face(lo - pad, -REACH_M, hi + pad, REACH_M)))
+    region = _faces(face.intersect(rect_face(lo - pad, y_lo, hi + pad, y_hi)))
     if len(region) != 1:
         return None
     try:
@@ -288,24 +347,31 @@ def _doubler(face: bd.Face, joint: _Joint) -> Optional[bd.Face]:
     return faces[0] if len(faces) == 1 else None
 
 
-def _try_split(face: bd.Face, count: int, settings: FabricationSettings) -> Optional[tuple[list[bd.Face], list[bd.Face]]]:
+def _joint_doublers(face: bd.Face, joint: _Joint) -> Optional[list[bd.Face]]:
+    doublers = [_doubler(face, joint, k) for k in range(len(joint.rails))]
+    return None if any(d is None for d in doublers) else doublers  # type: ignore[return-value]
+
+
+Split = tuple[list[bd.Face], list[list[bd.Face]]]  # pieces left to right; doublers per joint, one per rail
+
+
+def _try_split(face: bd.Face, count: int, settings: FabricationSettings) -> Optional[Split]:
     """(pieces, doublers) for `count` equal pieces, or None when a joint finds no clear spot or a piece won't fit."""
     box = face.bounding_box()
     pitch = (box.max.X - box.min.X) / count
-    found = [_find_joint(face, box.min.X + k * pitch) for k in range(1, count)]
-    joints = [j for j in found if j is not None]
-    if len(joints) != len(found):
+    joints = [_find_joint(face, box.min.X + k * pitch) for k in range(1, count)]
+    if any(j is None for j in joints):
         return None
-    pieces = _cut(face, joints)
-    doublers = [d for d in (_doubler(face, j) for j in joints) if d is not None]
-    if pieces is None or len(doublers) != len(joints):
+    pieces = _cut(face, joints)  # type: ignore[arg-type]
+    doublers = [_joint_doublers(face, j) for j in joints]  # type: ignore[arg-type]
+    if pieces is None or any(d is None for d in doublers):
         return None
-    if not all(_fits(f, settings) for f in (*pieces, *doublers)):
+    if not all(_fits(f, settings) for f in (*pieces, *(d for ds in doublers for d in ds))):  # type: ignore[union-attr]
         return None
-    return pieces, doublers
+    return pieces, doublers  # type: ignore[return-value]
 
 
-def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings) -> tuple[list[bd.Face], list[bd.Face]]:
+def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings) -> Split:
     long = _usable_bed(settings)[0]
     for count in range(max(2, math.ceil(_size(face)[0] / long)), MAX_SPLIT_PIECES + 1):
         result = _try_split(face, count, settings)
@@ -313,6 +379,15 @@ def _split_along_x(face: bd.Face, label: str, settings: FabricationSettings) -> 
             return result
     raise KitUnavailable(f"{label} cannot be split to fit the {settings.bed_width_m * 1e3:.0f} x "
                          f"{settings.bed_height_m * 1e3:.0f} mm bed clear of its holes and slots")
+
+
+def _doubler_labels(label: str, doublers: Sequence[Sequence[bd.Face]]) -> list[tuple[str, bd.Face]]:
+    """`<label>-D<k>` for joint k, with a rail letter (`-D<k>a`, `-D<k>b`) when the joint has several rails."""
+    named = []
+    for k, rail_doublers in enumerate(doublers, start=1):
+        many = len(rail_doublers) > 1
+        named += [(f"{label}-D{k}{chr(ord('a') + i) if many else ''}", f) for i, f in enumerate(rail_doublers)]
+    return named
 
 
 def split_to_bed(part: KitPart, settings: FabricationSettings) -> tuple[KitPart, ...]:
@@ -328,12 +403,13 @@ def split_to_bed(part: KitPart, settings: FabricationSettings) -> tuple[KitPart,
     along_y = h > w
     face = part.outline.rotate(bd.Axis.Z, ROTATE_TO_X_DEG) if along_y else part.outline
     pieces, doublers = _split_along_x(face, part.label, settings)
+    named_doublers = _doubler_labels(part.label, doublers)
     if along_y:
         pieces = [f.rotate(bd.Axis.Z, -ROTATE_TO_X_DEG) for f in pieces]
-        doublers = [f.rotate(bd.Axis.Z, -ROTATE_TO_X_DEG) for f in doublers]
+        named_doublers = [(n, f.rotate(bd.Axis.Z, -ROTATE_TO_X_DEG)) for n, f in named_doublers]
     on_face = part.location * bd.Location((0.0, 0.0, settings.sheet_for(part.family).thickness_m))
     named = [KitPart(f"{part.label}{chr(ord('a') + i)}", part.family, f, part.location) for i, f in enumerate(pieces)]
-    named += [KitPart(f"{part.label}-D{k}", part.family, f, on_face) for k, f in enumerate(doublers, start=1)]
+    named += [KitPart(n, part.family, f, on_face) for n, f in named_doublers]
     return tuple(named)
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Final
 
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import (
     SM_TARGET,
@@ -22,8 +23,9 @@ from src.tools.aero_cad.cad_packer import (
     export_artifacts,
     pack_layout,
 )
-from src.tools.aero_cad.components import required_fuselage_diameter_m, required_fuselage_length_m
+from src.tools.aero_cad.components import required_fuselage_length_m
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, AircraftLayout, layout_from_sizing
+from src.tools.fabrication.kit_pod import kit_fuselage_diameter_m
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,10 @@ Analyser = Callable[[AircraftLayout], OmlAnalysis]
 class _Search:
     """Evaluates wing stations (each = one OpenVSP + packing run) and keeps the best design."""
 
-    def __init__(self, sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser) -> None:
-        self.sizing, self.bom, self.analyse = sizing, bom, analyse
-        self.min_diameter: float = required_fuselage_diameter_m(sizing, bom)
+    def __init__(self, sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
+                 settings: FabricationSettings = DEFAULT_FABRICATION) -> None:
+        self.sizing, self.bom, self.analyse, self.settings = sizing, bom, analyse, settings
+        self.min_diameter: float = kit_fuselage_diameter_m(sizing, bom, settings)  # R23: one pod for aero and kit
         self.min_length: float = required_fuselage_length_m(sizing, bom, max(self.min_diameter, sizing.fuselage_diameter_m))
         self.evaluated: dict[float, BalancedDesign | None] = {}
         self.best: BalancedDesign | None = None
@@ -86,7 +89,7 @@ class _Search:
         layout = layout_from_sizing(self.sizing, station, self.min_diameter, self.min_length)
         analysis = self.analyse(layout)
         try:
-            packing = pack_layout(self.sizing, self.bom, analysis.aero, layout, analysis.step_path)
+            packing = pack_layout(self.sizing, self.bom, analysis.aero, layout, analysis.step_path, self.settings)
         except PackingSlotError as exc:
             logger.info("[Tool] build_aero_cad evaluation %d: wing station %.3f -> %s", n, station, exc)
             self.evaluated[station] = None
@@ -128,7 +131,8 @@ def _refine(search: _Search) -> None:
 
 
 def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
-                   wing_station: float = DEFAULT_WING_STATION) -> BalancedDesign:
+                   wing_station: float = DEFAULT_WING_STATION,
+                   settings: FabricationSettings = DEFAULT_FABRICATION) -> BalancedDesign:
     """Find a wing station whose packing is balanced and interference-free.
 
     SM(station) jumps whenever a slider changes slot (e.g. battery ahead of / behind the tank), so a
@@ -136,7 +140,7 @@ def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
     station range nearest-first, and refine only inside brackets whose two ends share a packing
     configuration. Returns the best attempt (fewest interferences, then smallest SM error) even if
     unbalanced, so the critic can act on it. The pod is floored so the internal COTS parts fit."""
-    search = _Search(sizing, bom, analyse)
+    search = _Search(sizing, bom, analyse, settings)
     search.evaluate(wing_station)
     for station in sorted(SCAN_STATIONS, key=lambda s: abs(s - wing_station)):
         if search.done or not search.budget_left:
@@ -154,8 +158,8 @@ def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
     return replace(search.best, total_iterations=total)
 
 
-def build_aero_cad(sizing: SizingOutput, bom: SelectedBOM, cruise_altitude_m: float,
-                   out_dir: Path) -> tuple[AeroStabilityOutput, CADArtifacts]:
+def build_aero_cad(sizing: SizingOutput, bom: SelectedBOM, cruise_altitude_m: float, out_dir: Path,
+                   settings: FabricationSettings = DEFAULT_FABRICATION) -> tuple[AeroStabilityOutput, CADArtifacts]:
     """Full Module C run with OpenVSP/VSPAERO (Docker toolchain)."""
     from src.tools.aero_cad import openvsp_builder  # needs the compiled OpenVSP API
 
@@ -163,7 +167,7 @@ def build_aero_cad(sizing: SizingOutput, bom: SelectedBOM, cruise_altitude_m: fl
         aero, vsp3, step = openvsp_builder.analyse_layout(layout, sizing, cruise_altitude_m, out_dir)
         return OmlAnalysis(aero, vsp3, step)
 
-    design: BalancedDesign = balance_design(sizing, bom, analyse)
+    design: BalancedDesign = balance_design(sizing, bom, analyse, settings=settings)
     if design.iterations != design.total_iterations:  # best attempt was not the last: rewrite its OML files
         design = replace(design, analysis=analyse(design.layout))
     artifacts: CADArtifacts = export_artifacts(design.packing, design.analysis.vsp3_path,

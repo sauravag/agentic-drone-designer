@@ -112,6 +112,11 @@ class _Frame:
     def inner_radius(self, x_m: float) -> float:
         return fuselage_radius_at(self.layout, x_m) - self.settings.fuselage_cover_thickness_m
 
+    def tab_radius(self, x_m: float) -> float:
+        """Radius the tabs and crutch slots of the former at station x are inset from: the smaller of the former's
+        front face and a web beyond its aft face, so a slot keeps MIN_WEB_M to the crutch edge on a steep cone."""
+        return min(self.inner_radius(x_m), self.inner_radius(x_m + self.former_t_m + MIN_WEB_M))
+
     @property
     def former_stations(self) -> tuple[float, ...]:
         return self.stations[1:]
@@ -387,6 +392,13 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
                   y_outer - t_plate, y_outer, (socket, pin))
 
 
+def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> float:
+    """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge or the socket
+    tubes' underside at the centreline, where they sit lowest (the dihedral lifts them outboard)."""
+    socket_z = socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0
+    return min(_mount(layout, spar, settings).z_m[0], socket_z)
+
+
 def _plate_component_cuts(frame: _Frame, side: int) -> list[Cut]:
     """xz openings for components whose box (grown by half the gap) reaches into this side's plate slab."""
     m, gap = frame.mount, COMPONENT_GAP_M / 2.0
@@ -468,7 +480,7 @@ def _held_by_a_tab(piece: bd.Face, tabs: Sequence[bd.Face]) -> bool:
 def _half_former(frame: _Frame, index: int, x_m: float, sign: int) -> list[KitPart]:
     label = f"F-{index:02d}{'U' if sign == UP else 'L'}"
     radius, half_t = frame.inner_radius(x_m), frame.crutch_t_m / 2.0
-    half_plane, tabs = _half_plane(radius, sign, half_t), _tabs(radius, sign, half_t)
+    half_plane, tabs = _half_plane(radius, sign, half_t), _tabs(frame.tab_radius(x_m), sign, half_t)
     rim = _disc(radius)
     base = _single_face(_single_face(_common(rim, half_plane), label).fuse(*tabs).clean(), label)
     base = _single_face(base.cut(*_stringer_notches(radius, sign, frame.settings.stringer_side_m)), label)
@@ -537,7 +549,7 @@ def _crutch_slots(frame: _Frame) -> list[Cut]:
     """Slots for the former tabs, each as wide as the former sheet (the wing-box plates sit in the formers)."""
     slots = []
     for i, x in enumerate(frame.former_stations, start=1):
-        y0, y1 = _tab_span(frame.inner_radius(x))
+        y0, y1 = _tab_span(frame.tab_radius(x))
         slots += [(f"F-{i:02d}", rect_face(x, a, x + frame.former_t_m, b)) for a, b in ((y0, y1), (-y1, -y0))]
     return slots
 

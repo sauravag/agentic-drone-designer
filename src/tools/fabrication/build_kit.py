@@ -270,7 +270,7 @@ def _covering(layout: AircraftLayout) -> tuple[CoverSurface, ...]:
 
 
 # -------------------------------------------------------------------------------------------- API ---
-def _plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
+def kit_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
           settings: FabricationSettings) -> SparPlan:
     """Spar plan with the joint where the spar meets the skin at wing height (as the spar tests build it)."""
     radius = fuselage_radius_at(layout, socket_axis_m(layout, 0.0)[0])
@@ -289,7 +289,7 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     """The whole kit for a Group 1-2 design; raises `KitUnavailable` when any part cannot be made from stock."""
     if sizing.dod_group > MAX_DOD_GROUP:
         raise KitUnavailable("laser-cut construction covers Group 1–2 designs only")
-    spar = _plan(sizing, layout, airfoil, settings)
+    spar = kit_spar_plan(sizing, layout, airfoil, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
     ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, settings))
     fuselage = fuselage_parts(layout, spar, components, settings)

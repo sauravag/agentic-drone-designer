@@ -11,6 +11,7 @@ from src.schemas.state import AeroStabilityOutput, SizingOutput
 from src.tools.aero_cad import components
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
 from src.tools.fabrication.kit import KitPart, TubePart
+from src.tools.fabrication.kit_pod import kit_fuselage_diameter_m
 
 
 def _synthetic_aero(layout: AircraftLayout, np_offset_mac: float = 0.25) -> AeroStabilityOutput:
@@ -23,7 +24,7 @@ def _synthetic_aero(layout: AircraftLayout, np_offset_mac: float = 0.25) -> Aero
 
 
 def _fitted_layout(sizing: SizingOutput, bom: SelectedBOM, station: float = 0.30) -> AircraftLayout:
-    diameter: float = max(sizing.fuselage_diameter_m, components.required_fuselage_diameter_m(sizing, bom))
+    diameter: float = max(sizing.fuselage_diameter_m, kit_fuselage_diameter_m(sizing, bom))  # as build.py sizes it
     return layout_from_sizing(sizing, station, diameter, components.required_fuselage_length_m(sizing, bom, diameter))
 
 

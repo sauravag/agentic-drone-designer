@@ -7,9 +7,15 @@ until SM = (X_np - X_cg) / MAC is centred in [0.08, 0.14]. A slot is free only i
 other part and boom and fits the local skin radius; the final OML-solid containment check counts any
 skin interference as a collision.
 
-The composite OML shell (rho = 1600 kg/m^3, thickness derived) carries the sized airframe mass minus
-ribs and spars; discrete parts use their actual COTS masses, so the as-built mass exposes any
-catalog-snapping growth for the critic's MTOW-convergence check.
+Airframe mass comes from the laser-cut kit when one can be built (Group 1-2): kit parts, tubes, stock,
+covering and glue plus the residual landing gear. Two passes: the kit is first built around the fixed parts
+(estimate for the slider solve, and its socket tubes, wing-box plates and bulkheads become 3D obstacles kept
+STRUCTURE_CLEARANCE_M away; the sliders sit as low as their former openings allow, R23), then
+rebuilt around every placed part for exact openings and the final mass. When no kit can be built - in either
+pass - packing falls back to the shell model with `kit_warning` saying why: the composite OML shell
+(rho = 1600 kg/m^3, thickness derived) carries the sized airframe mass minus ribs and spars. Discrete parts use
+their actual COTS masses, so the as-built mass exposes any catalog-snapping growth for the critic's
+MTOW-convergence check.
 """
 
 import logging
@@ -22,10 +28,11 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad import components as parts
 from src.tools.aero_cad import mass_properties as mp
-from src.tools.aero_cad.airfoil_geometry import load_airfoil
+from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
 from src.tools.aero_cad.components import (  # noqa: F401  (re-exported for callers)
     COMPONENT_GAP_M,
     PlacedComponent,
@@ -35,6 +42,10 @@ from src.tools.aero_cad.components import (  # noqa: F401  (re-exported for call
 from src.tools.aero_cad.layout import AircraftLayout
 from src.tools.aero_cad.mesh_export import export_viewer_model
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
+from src.tools.fabrication.build_kit import build_kit
+from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart
+from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
+from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit_formers, seat_low
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
 
@@ -46,6 +57,11 @@ SM_TARGET: Final[float] = 0.5 * (SM_MIN + SM_MAX)
 SLIDER_SCAN_POINTS: Final[int] = 400
 TRAY_SCAN_POINTS: Final[int] = 80
 STEP_IMPORT_TO_M: Final[float] = 1e-3  # OCC's STEP reader always returns millimetres
+STRUCTURE_PART_PREFIXES: Final[tuple[str, ...]] = ("WM-", "FW-", "BM-")  # wing-box plates, firewall, boom mounts
+STRUCTURE_TUBE_ROLES: Final[tuple[str, ...]] = ("socket",)
+NO_KIT_PREFIX: Final[str] = "No laser kit: "
+
+Box3 = tuple[tuple[float, float, float], tuple[float, float, float]]  # axis-aligned (min corner, max corner)
 
 
 class CADPackingError(RuntimeError):
@@ -63,9 +79,12 @@ class PackingResult:
     static_margin: float
     collision_count: int  # part-part and part-boom overlaps
     containment_violations: int  # internal parts poking through the OML
-    shell_areal_density_kg_m2: float
+    shell_areal_density_kg_m2: float  # 0.0 with a kit
     oml: bd.Shape
-    structure: WingStructure
+    structure: Optional[WingStructure]  # shell-model fallback only (None with a kit)
+    kit: Optional[Kit] = None
+    kit_warning: Optional[str] = None  # why there is no kit, when there is none
+    mass_items: tuple[mp.MassItem, ...] = ()  # the items combined into `mass`
 
     @property
     def interference_count(self) -> int:
@@ -91,10 +110,38 @@ class _Balance:
         return ((self.x_np - x_cg) / self.mac - SM_TARGET) ** 2
 
 
-def _is_clear(item: PlacedComponent, obstacles: Sequence[PlacedComponent], layout: AircraftLayout) -> bool:
+def _component_box(item: PlacedComponent) -> Box3:
+    lo = tuple(c - s / 2 for c, s in zip(item.center_m, item.size_m))
+    hi = tuple(c + s / 2 for c, s in zip(item.center_m, item.size_m))
+    return lo, hi  # type: ignore[return-value]
+
+
+def _clear_of_structure(item: PlacedComponent, boxes: Sequence[Box3]) -> bool:
+    """Kit structure blocks in 3D: the item's box must keep STRUCTURE_CLEARANCE_M from each structure box along at
+    least one axis, so a part may pass beneath the socket (unlike the x-only rule between components) without the
+    kit having to cut the wing-box plates."""
+    lo, hi = _component_box(item)
+    c = STRUCTURE_CLEARANCE_M
+    return all(any(hi[k] + c <= b_lo[k] or b_hi[k] + c <= lo[k] for k in range(3)) for b_lo, b_hi in boxes)
+
+
+@dataclass(frozen=True)
+class _KitRules:
+    """Slot rules when the airframe is a kit: structure boxes to clear, former openings to fit (R23)."""
+
+    boxes: tuple[Box3, ...]
+    settings: FabricationSettings
+
+
+def _is_clear(item: PlacedComponent, obstacles: Sequence[PlacedComponent], layout: AircraftLayout,
+              kit: Optional[_KitRules] = None) -> bool:
+    """x-clear of every other component; with a kit, also clear of its structure and inside its former openings
+    (which replaces the shell model's radial margin), else inside that margin."""
     gap = COMPONENT_GAP_M
     clear_x: bool = all(item.x_max + gap <= o.x_min or item.x_min >= o.x_max + gap for o in obstacles)
-    return clear_x and parts.fits_radially(item, layout)
+    if kit is None:
+        return clear_x and parts.fits_radially(item, layout)
+    return clear_x and _clear_of_structure(item, kit.boxes) and fits_kit_formers(item, layout, kit.settings)
 
 
 def _center_bounds(item: PlacedComponent, layout: AircraftLayout) -> tuple[float, float]:
@@ -123,7 +170,8 @@ def _clear_intervals(grid: np.ndarray, clear: np.ndarray) -> list[tuple[float, f
 
 
 def _solve_slider(item: PlacedComponent, obstacles: Sequence[PlacedComponent], balance: _Balance,
-                  layout: AircraftLayout, extra: tuple[float, float] = (0.0, 0.0)) -> float:
+                  layout: AircraftLayout, extra: tuple[float, float] = (0.0, 0.0),
+                  kit: Optional[_KitRules] = None) -> float:
     """Centre x of `item` closest to SM_TARGET among free positions: scan for free intervals, then
     bounded Brent (`minimize_scalar`) inside each. `extra` = (mass, x-moment) of other placed sliders."""
     lo, hi = _center_bounds(item, layout)
@@ -132,7 +180,8 @@ def _solve_slider(item: PlacedComponent, obstacles: Sequence[PlacedComponent], b
         return balance.sm_error(extra[0] + item.mass_kg, extra[1] + item.mass_kg * x)
 
     grid = np.linspace(lo, hi, SLIDER_SCAN_POINTS)
-    intervals = _clear_intervals(grid, np.array([_is_clear(item.at_x(float(x)), obstacles, layout) for x in grid]))
+    free = np.array([_is_clear(item.at_x(float(x)), obstacles, layout, kit) for x in grid])
+    intervals = _clear_intervals(grid, free)
     if not intervals:
         raise PackingSlotError(f"no free fuselage slot for the {item.name}")
     candidates = [a if b <= a else float(minimize_scalar(err, bounds=(a, b), method="bounded").x) for a, b in intervals]
@@ -140,17 +189,18 @@ def _solve_slider(item: PlacedComponent, obstacles: Sequence[PlacedComponent], b
 
 
 def _solve_battery_and_tray(battery: PlacedComponent, tray: PlacedComponent, obstacles: Sequence[PlacedComponent],
-                            balance: _Balance, layout: AircraftLayout) -> tuple[PlacedComponent, PlacedComponent]:
+                            balance: _Balance, layout: AircraftLayout,
+                            kit: Optional[_KitRules] = None) -> tuple[PlacedComponent, PlacedComponent]:
     """Slide both independently: scan tray positions and, for each, solve the battery position."""
     lo, hi = _center_bounds(tray, layout)
     best: Optional[tuple[float, PlacedComponent, PlacedComponent]] = None
     for x_tray in np.linspace(lo, hi, TRAY_SCAN_POINTS):
         placed_tray = tray.at_x(float(x_tray))
-        if not _is_clear(placed_tray, obstacles, layout):
+        if not _is_clear(placed_tray, obstacles, layout, kit):
             continue
         extra = (tray.mass_kg, tray.mass_kg * float(x_tray))
         try:
-            x_bat: float = _solve_slider(battery, [*obstacles, placed_tray], balance, layout, extra)
+            x_bat: float = _solve_slider(battery, [*obstacles, placed_tray], balance, layout, extra, kit)
         except PackingSlotError:
             continue
         error: float = balance.sm_error(extra[0] + battery.mass_kg, extra[1] + battery.mass_kg * x_bat)
@@ -161,7 +211,7 @@ def _solve_battery_and_tray(battery: PlacedComponent, tray: PlacedComponent, obs
     return best[1], best[2]
 
 
-# ------------------------------------------------------------------------------------- packing ---
+# ---------------------------------------------------------------------------------------- shell ---
 def _load_oml(oml_step: Path) -> bd.Shape:
     if not oml_step.is_file():
         raise FileNotFoundError(f"OML STEP not found: {oml_step}")
@@ -199,27 +249,108 @@ def _structure_items(oml: bd.Shape, wing: WingStructure, areal_density: float) -
     ]
 
 
-def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
-                layout: AircraftLayout, oml_step: Path) -> PackingResult:
-    """Place every part, slide battery + tray for static margin, build the mass properties."""
+# ---------------------------------------------------------------------------------- airframe mass ---
+@dataclass(frozen=True)
+class _Airframe:
+    """Airframe mass items (kit or shell model) and the kit structure the sliders must avoid."""
+
+    items: tuple[mp.MassItem, ...]
+    boxes: tuple[Box3, ...] = ()
+    kit: Optional[Kit] = None
+    kit_warning: Optional[str] = None
+    structure: Optional[WingStructure] = None
+    shell_areal_density_kg_m2: float = 0.0
+
+
+def _shell_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape, oml: bd.Shape,
+                    reason: KitUnavailable) -> _Airframe:
+    warning: str = f"{NO_KIT_PREFIX}{reason}"
+    logger.warning("%s - using the shell mass model", warning)
+    wing: WingStructure = build_wing_structure(layout, airfoil)
+    areal: float = _shell_areal_density(sized_airframe_mass_kg(sizing), wing, oml)
+    return _Airframe(tuple(_structure_items(oml, wing, areal)), kit_warning=warning, structure=wing,
+                     shell_areal_density_kg_m2=areal)
+
+
+def _part_box(part: KitPart, settings: FabricationSettings) -> Box3:
+    thickness: float = settings.sheet_for(part.family).thickness_m
+    box = bd.extrude(part.outline, amount=thickness, dir=(0, 0, 1)).moved(part.location).bounding_box()
+    return (box.min.X, box.min.Y, box.min.Z), (box.max.X, box.max.Y, box.max.Z)
+
+
+def _tube_box(tube: TubePart) -> Box3:
+    """Axis-aligned box around the tube: its axis segment grown by the outer radius (conservative when oblique)."""
+    end = np.asarray(tube.start_m) + tube.length_m * np.asarray(tube.axis)
+    radius: float = tube.tube.od_m / 2
+    lo = np.minimum(tube.start_m, end) - radius
+    hi = np.maximum(tube.start_m, end) + radius
+    return (float(lo[0]), float(lo[1]), float(lo[2])), (float(hi[0]), float(hi[1]), float(hi[2]))
+
+
+def _structure_boxes(kit: Kit, settings: FabricationSettings) -> tuple[Box3, ...]:
+    """Kit structure no component may cross: socket tubes, wing-box plates, firewall and boom-mount bulkheads
+    (formers, crutch and trays take openings or belong to components)."""
+    plates = [_part_box(p, settings) for p in kit.parts if p.label.startswith(STRUCTURE_PART_PREFIXES)]
+    return (*plates, *(_tube_box(t) for t in kit.tubes if t.role in STRUCTURE_TUBE_ROLES))
+
+
+def _kit_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
+                  placed: Sequence[PlacedComponent], settings: FabricationSettings) -> _Airframe:
+    """Raises KitUnavailable when the kit cannot be built around `placed`."""
+    kit: Kit = build_kit(sizing, layout, airfoil, placed, settings)
+    items = (*kit_mass_items(kit, settings), residual_gear_item(sizing, layout))
+    return _Airframe(items, _structure_boxes(kit, settings), kit=kit)
+
+
+def _airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape, oml: bd.Shape,
+              placed: Sequence[PlacedComponent], settings: FabricationSettings) -> _Airframe:
+    """The kit built around `placed`, or the shell model when no kit can be built (never fails for the kit)."""
+    try:
+        return _kit_airframe(sizing, layout, airfoil, placed, settings)
+    except KitUnavailable as exc:
+        return _shell_airframe(sizing, layout, airfoil, oml, exc)
+
+
+# ------------------------------------------------------------------------------------- packing ---
+def _sliders(sizing: SizingOutput, bom: SelectedBOM, layout: AircraftLayout,
+             kit: Optional[_KitRules]) -> tuple[PlacedComponent, PlacedComponent]:
+    """Battery and tray on the axis, or seated as low as their former openings allow when the airframe is a kit."""
+    battery, tray = parts.sliders(sizing, bom)
+    if kit is None:
+        return battery, tray
+    d = layout.fuselage_diameter_m
+    return seat_low(battery, d, kit.settings), seat_low(tray, d, kit.settings)
+
+
+def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, layout: AircraftLayout,
+                oml_step: Path, settings: FabricationSettings = DEFAULT_FABRICATION) -> PackingResult:
+    """Place every part, slide battery + tray for static margin, build the mass properties.
+
+    Pass 1 builds the kit around the fixed parts (mass estimate + structure obstacles) and solves the sliders;
+    pass 2 rebuilds it around every placed part for exact openings and the final mass. The static margin and
+    `is_balanced` use the final mass."""
     oml: bd.Shape = _load_oml(oml_step)
-    wing: WingStructure = build_wing_structure(layout, load_airfoil(layout.airfoil))
+    airfoil: AirfoilShape = load_airfoil(layout.airfoil)
     fixed = [parts.cruise_motor(bom), parts.payload(bom, layout),
              *parts.hybrid_parts(sizing, bom, layout, aero.x_np_m), *parts.vtol_motors(bom, layout)]
     booms = parts.boom_obstacles(layout)
-    areal: float = _shell_areal_density(sized_airframe_mass_kg(sizing), wing, oml)
-    static_items = _structure_items(oml, wing, areal) + [c.mass_item() for c in fixed]
+    estimate: _Airframe = _airframe(sizing, layout, airfoil, oml, fixed, settings)
+    static_items = [*estimate.items, *(c.mass_item() for c in fixed)]
     balance = _Balance(sum(i.mass_kg for i in static_items), sum(i.mass_kg * i.cg_m[0] for i in static_items),
                        aero.x_np_m, layout.wing.mac_m)
     on_axis = [c for c in (*fixed, *booms) if abs(c.center_m[1]) < layout.fuselage_diameter_m / 2]
-    placed = _solve_battery_and_tray(*parts.sliders(sizing, bom), on_axis, balance, layout)
-    mass = mp.combine(static_items + [c.mass_item() for c in placed])
+    rules = None if estimate.kit is None else _KitRules(estimate.boxes, settings)
+    placed = _solve_battery_and_tray(*_sliders(sizing, bom, layout, rules), on_axis, balance, layout, rules)
     components = (*fixed, *placed)
+    final = estimate if estimate.kit is None else _airframe(sizing, layout, airfoil, oml, components, settings)
+    mass_items = (*final.items, *(c.mass_item() for c in components))
+    mass = mp.combine(list(mass_items))
     result = PackingResult(
         components=components, mass=mass, static_margin=(aero.x_np_m - mass.cg_m[0]) / layout.wing.mac_m,
         collision_count=count_collisions(components, booms),
         containment_violations=parts.containment_violations(components, oml),
-        shell_areal_density_kg_m2=areal, oml=oml, structure=wing,
+        shell_areal_density_kg_m2=final.shell_areal_density_kg_m2, oml=oml, structure=final.structure,
+        kit=final.kit, kit_warning=final.kit_warning, mass_items=mass_items,
     )
     if not result.is_balanced:
         logger.warning("packing unbalanced: SM %.3f (band %.2f-%.2f), %d collisions, %d skin interferences",
@@ -227,8 +358,15 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     return result
 
 
+def _structure_solids(result: PackingResult) -> list[bd.Shape]:
+    """Shell-model ribs and spars (none with a kit)."""
+    if result.structure is None:
+        return []
+    return [*result.structure.ribs, *result.structure.spars]
+
+
 def _export_assembly(result: PackingResult, path: Path) -> Path:
-    solids = [result.oml, *result.structure.ribs, *result.structure.spars, *(c.solid() for c in result.components)]
+    solids = [result.oml, *_structure_solids(result), *(c.solid() for c in result.components)]
     path.parent.mkdir(parents=True, exist_ok=True)
     if not bd.export_step(bd.Compound(solids), str(path), unit=bd.Unit.M):
         raise CADPackingError(f"STEP export failed: {path}")
@@ -250,6 +388,7 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
 
 
 def pack_aircraft(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, layout: AircraftLayout,
-                  oml_vsp3: Path, oml_step: Path, out_dir: Path) -> CADArtifacts:
+                  oml_vsp3: Path, oml_step: Path, out_dir: Path,
+                  settings: FabricationSettings = DEFAULT_FABRICATION) -> CADArtifacts:
     """Pack for a fixed layout and export the assembly."""
-    return export_artifacts(pack_layout(sizing, bom, aero, layout, oml_step), oml_vsp3, oml_step, out_dir)
+    return export_artifacts(pack_layout(sizing, bom, aero, layout, oml_step, settings), oml_vsp3, oml_step, out_dir)

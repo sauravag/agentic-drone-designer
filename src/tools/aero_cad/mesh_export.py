@@ -56,13 +56,20 @@ def _unique_names(names: Sequence[str]) -> tuple[str, ...]:
     return tuple(unique)
 
 
-def model_parts(result: "PackingResult") -> tuple[MeshPart, ...]:
-    """Skin, one merged structure part (ribs and spars), then one part per component."""
+def _structure_parts(result: "PackingResult") -> tuple[MeshPart, ...]:
+    """One merged shell-model structure part (ribs and spars); none when the airframe is a laser-cut kit."""
+    if result.structure is None:
+        return ()
     structure = bd.Compound([*result.structure.ribs, *result.structure.spars])
+    return (tessellate(structure, "structure", "structure", None),)
+
+
+def model_parts(result: "PackingResult") -> tuple[MeshPart, ...]:
+    """Skin, the structure (shell model only), then one part per component."""
     names = _unique_names([c.name for c in result.components])
     return (
         tessellate(result.oml, "skin", "skin", None),
-        tessellate(structure, "structure", "structure", None),
+        *_structure_parts(result),
         *(tessellate(c.solid(), n, "component", c.mass_kg) for c, n in zip(result.components, names)),
     )
 

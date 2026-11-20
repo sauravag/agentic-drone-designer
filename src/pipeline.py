@@ -17,6 +17,7 @@ from typing import Callable, Final, Optional
 from pydantic import BaseModel
 
 from src.schemas.components import SelectedBOM
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN, CADPackingError
@@ -159,7 +160,8 @@ def ensure_catalog(db_path: Path) -> None:
 
 
 def run_aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequirements, out_dir: Path,
-              progress: Progress) -> tuple[AeroStabilityOutput, CADArtifacts]:
+                 progress: Progress,
+                 settings: FabricationSettings = DEFAULT_FABRICATION) -> tuple[AeroStabilityOutput, CADArtifacts]:
     from src.tools.aero_cad.build import build_aero_cad  # imports OpenVSP
 
     if not _OPENVSP_LOCK.acquire(blocking=False):
@@ -167,7 +169,7 @@ def run_aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequire
         _OPENVSP_LOCK.acquire()
     try:
         progress("Building the OpenVSP OML, running VSPAERO and packing the CAD (this can take a few minutes)")
-        return build_aero_cad(sizing, bom, req.service_ceiling_m, out_dir)
+        return build_aero_cad(sizing, bom, req.service_ceiling_m, out_dir, settings)
     finally:
         _OPENVSP_LOCK.release()
 

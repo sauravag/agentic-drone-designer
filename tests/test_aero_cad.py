@@ -13,10 +13,14 @@ import pytest
 build123d = pytest.importorskip("build123d")
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS  # noqa: E402
+from src.schemas.fabrication import DEFAULT_FABRICATION  # noqa: E402
 from src.tools.aero_cad import build, cad_packer, components, mass_properties, stability, structure  # noqa: E402
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_selig_dat  # noqa: E402
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
-from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml  # noqa: E402
+from src.tools.fabrication.kit import KitUnavailable  # noqa: E402
+from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
+from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
+from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml, part_solid, tube_solid  # noqa: E402
 from tests.reference_designs import CASES  # noqa: E402
 
 SM_MIN: float = 0.08
@@ -243,6 +247,7 @@ def test_balancing_hits_static_margin_without_collisions(case: str, designs: dic
     assert result.collision_count == 0
     names = {c.name for c in result.components}
     assert {"payload", "battery", "avionics_tray", "cruise_motor"} <= names
+    assert (result.kit is not None) == (case in ("g1", "g2")), result.kit_warning  # R23: no shell fallback
     assert ("fuel_tank" in names) == (sizing.propulsion_type == "series_hybrid")
 
 
@@ -276,7 +281,15 @@ def test_airframe_mass_round_trips_the_sizing_breakdown() -> None:
     assert mm.airframe_mass_kg(mtow, sum(parts.values()), loads, avionics) == pytest.approx(structural)
 
 
-def test_as_built_mass_counts_every_part(designs: dict, tmp_path: Path) -> None:
+@pytest.fixture()
+def no_kit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the shell-model fallback (as if the kit could not be built)."""
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise KitUnavailable("forced by the test")
+    monkeypatch.setattr(cad_packer, "build_kit", unavailable)
+
+
+def test_as_built_mass_counts_every_part(designs: dict, tmp_path: Path, no_kit: None) -> None:
     sizing, bom = designs["g2"]
     lay = _fitted_layout(sizing, bom)
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "o.step"))
@@ -308,7 +321,9 @@ def test_pod_is_widened_to_house_the_cots_parts(designs: dict) -> None:
     sizing, bom = designs["g1"]  # catalog battery is wider than the fineness-ratio fuselage
     required: float = components.required_fuselage_diameter_m(sizing, bom)
     assert required > sizing.fuselage_diameter_m
-    assert _fitted_layout(sizing, bom).fuselage_diameter_m == pytest.approx(required)
+    kit_pod: float = kit_fuselage_diameter_m(sizing, bom)  # R23: then widened so the battery passes under the wing box
+    assert kit_pod > required
+    assert _fitted_layout(sizing, bom).fuselage_diameter_m == pytest.approx(kit_pod)
 
 
 def test_pod_is_lengthened_to_hold_the_hybrid_stack(designs: dict) -> None:
@@ -366,7 +381,7 @@ def test_sized_airframe_excludes_propulsion_and_systems(designs: dict) -> None:
     assert 0 < airframe < sizing.empty_mass_kg
 
 
-def test_airframe_lighter_than_ribs_and_spars_raises(designs: dict, tmp_path: Path) -> None:
+def test_airframe_lighter_than_ribs_and_spars_raises(designs: dict, tmp_path: Path, no_kit: None) -> None:
     sizing, bom = designs["g1"]
     lay = _fitted_layout(sizing, bom)
     starved = sizing.model_copy(update={"empty_mass_kg": 0.01})
@@ -374,7 +389,7 @@ def test_airframe_lighter_than_ribs_and_spars_raises(designs: dict, tmp_path: Pa
         cad_packer.pack_layout(starved, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
 
 
-def test_pack_aircraft_exports_assembly(designs: dict, tmp_path: Path) -> None:
+def test_pack_aircraft_exports_assembly(designs: dict, tmp_path: Path, no_kit: None) -> None:
     sizing, bom = designs["g1"]
     lay = _fitted_layout(sizing, bom)
     oml = _synthetic_oml(lay, tmp_path / "oml.step")
@@ -387,6 +402,147 @@ def test_pack_aircraft_exports_assembly(designs: dict, tmp_path: Path) -> None:
     assert len(reloaded.solids()) >= 2 * len(structure.rib_stations(lay)) + 4
     tensor = np.array([[art.ixx_kgm2, 0, -art.ixz_kgm2], [0, art.iyy_kgm2, 0], [-art.ixz_kgm2, 0, art.izz_kgm2]])
     assert mass_properties.is_positive_definite(tensor)
+
+
+# ---------------------------------------------------------------------------------- laser-cut kit ---
+SLIDERS: tuple[str, ...] = ("battery", "avionics_tray")
+SOLID_TOL_M3: float = 1e-12
+
+
+def _pack(designs: dict, case: str, out_dir: Path) -> cad_packer.PackingResult:
+    sizing, bom = designs[case]
+    lay = _fitted_layout(sizing, bom)
+    return cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, out_dir / "oml.step"))
+
+
+@pytest.fixture(scope="module")
+def packed(designs: dict, tmp_path_factory: pytest.TempPathFactory):
+    """Pack a reference design once per module (the kit is rebuilt inside every pack)."""
+    cache: dict[str, cad_packer.PackingResult] = {}
+
+    def get(case: str) -> cad_packer.PackingResult:
+        if case not in cache:
+            cache[case] = _pack(designs, case, tmp_path_factory.mktemp(f"pack_{case}"))
+        return cache[case]
+    return get
+
+
+def _box(c: components.PlacedComponent) -> tuple[np.ndarray, np.ndarray]:
+    half = np.asarray(c.size_m) / 2
+    return np.asarray(c.center_m) - half, np.asarray(c.center_m) + half
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_kit_replaces_the_shell_mass(case: str, packed) -> None:
+    r = packed(case)
+    assert r.kit is not None and r.kit_warning is None
+    assert r.shell_areal_density_kg_m2 == 0.0 and r.structure is None
+    names = {i.name for i in r.mass_items}
+    assert "oml_shell" not in names and GEAR_NAME in names and GLUE_NAME in names
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_as_built_mass_is_kit_plus_gear_plus_components(case: str, designs: dict, packed) -> None:
+    r = packed(case)
+    sizing, bom = designs[case]
+    gear = residual_gear_item(sizing, _fitted_layout(sizing, bom)).mass_kg
+    expected = kit_mass_kg(r.kit, DEFAULT_FABRICATION) + gear + sum(c.mass_kg for c in r.components)
+    assert r.mass.mass_kg == pytest.approx(expected, rel=1e-9)
+    assert r.mass.mass_kg == pytest.approx(sum(i.mass_kg for i in r.mass_items), rel=1e-12)
+    lay = _fitted_layout(sizing, bom)
+    assert r.static_margin == pytest.approx((_synthetic_aero(lay).x_np_m - r.mass.cg_m[0]) / lay.wing.mac_m)
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_kit_designs_pack_with_the_kit_and_a_positive_margin(case: str, packed) -> None:
+    """R23 acceptance: widened pod, sliders seated low, kit rebuilt around them, SM > 0."""
+    r = packed(case)
+    assert r.kit is not None, r.kit_warning
+    assert r.static_margin > 0.0 and r.interference_count == 0
+    battery = next(c for c in r.components if c.name == "battery")
+    assert battery.center_m[2] < 0.0  # seated low
+
+
+def test_group_3_falls_back_with_a_warning(packed) -> None:
+    r = packed("g3")
+    assert r.kit is None and "Group 1–2" in r.kit_warning and r.kit_warning.startswith("No laser kit: ")
+    assert r.structure is not None and r.shell_areal_density_kg_m2 > 0
+    names = {i.name for i in r.mass_items}
+    assert "oml_shell" in names and GLUE_NAME not in names and GEAR_NAME not in names
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_battery_never_overlaps_the_socket(case: str, packed) -> None:
+    """The sliders clear the socket tubes in 3D (they may pass beneath, never through)."""
+    r = packed(case)
+    sockets = [t for t in r.kit.tubes if t.role == "socket"]
+    assert len(sockets) == 2
+    for name in SLIDERS:
+        c = next(p for p in r.components if p.name == name)
+        lo, hi = _box(c)
+        for tube in sockets:
+            end = np.asarray(tube.start_m) + tube.length_m * np.asarray(tube.axis)
+            t_lo = np.minimum(tube.start_m, end) - tube.tube.od_m / 2
+            t_hi = np.maximum(tube.start_m, end) + tube.tube.od_m / 2
+            gap = np.maximum(t_lo - hi, lo - t_hi)  # per-axis separation (negative = overlap)
+            assert gap.max() >= STRUCTURE_CLEARANCE_M - 1e-9, f"{name} box is within 5 mm of the {tube.label} box"
+            assert cad_packer.overlap_volume_m3(c.solid(), tube_solid(tube)) < SOLID_TOL_M3
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_formers_have_openings_for_the_placed_battery(case: str, packed) -> None:
+    """The rebuilt kit cuts openings (or crutch notches) for the sliders: no part solid touches them."""
+    r = packed(case)
+    for name in SLIDERS:
+        c = next(p for p in r.components if p.name == name)
+        lo, hi = _box(c)
+        solids = {p.label: part_solid(p, DEFAULT_FABRICATION) for p in r.kit.parts}
+        crossing = [label for label, s in solids.items() if label.startswith("F-")
+                    and s.bounding_box().min.X < hi[0] and lo[0] < s.bounding_box().max.X]
+        assert crossing or name == "avionics_tray", f"no former crosses the {name}: test would be vacuous"
+        for label, solid in solids.items():
+            volume = cad_packer.overlap_volume_m3(solid, c.solid())
+            assert volume < SOLID_TOL_M3, f"{label} intersects the {name}: {volume:.3e} m^3"
+
+
+def test_structure_boxes_block_in_3d_not_by_x_alone() -> None:
+    socket = ((0.40, -0.10, 0.03), (0.45, 0.10, 0.05))
+    beneath = components.PlacedComponent("b", "box", 1.0, (0.10, 0.05, 0.04), (0.42, 0.0, -0.01))
+    through = components.PlacedComponent("t", "box", 1.0, (0.10, 0.05, 0.08), (0.42, 0.0, 0.0))
+    too_close = components.PlacedComponent("c", "box", 1.0, (0.10, 0.05, 0.04), (0.42, 0.0, 0.007))  # top 3 mm under
+    assert cad_packer._clear_of_structure(beneath, (socket,))
+    assert not cad_packer._clear_of_structure(through, (socket,))
+    assert not cad_packer._clear_of_structure(too_close, (socket,))
+    assert cad_packer._clear_of_structure(through, ())
+
+
+def test_kit_rebuild_failure_falls_back_to_the_shell(designs: dict, tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    real = cad_packer.build_kit
+    calls: list[int] = []
+
+    def second_fails(*args: object, **kwargs: object):
+        calls.append(1)
+        if len(calls) > 1:
+            raise KitUnavailable("F-04U: the opening for the battery leaves less than 2 mm of the former")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cad_packer, "build_kit", second_fails)
+    r = _pack(designs, "g1", tmp_path)
+    assert len(calls) == 2
+    assert r.kit is None and r.kit_warning == "No laser kit: F-04U: the opening for the battery leaves less than 2 mm of the former"
+    names = {i.name for i in r.mass_items}
+    assert "oml_shell" in names and GLUE_NAME not in names
+    assert r.mass.mass_kg == pytest.approx(sum(i.mass_kg for i in r.mass_items), rel=1e-12)
+
+
+def test_kit_design_exports_assembly_and_viewer(designs: dict, tmp_path: Path) -> None:
+    sizing, bom = designs["g1"]
+    lay = _fitted_layout(sizing, bom)
+    oml = _synthetic_oml(lay, tmp_path / "oml.step")
+    art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3", oml, tmp_path)
+    assert Path(art.assembly_step_path).stat().st_size > 0
+    assert art.viewer_model_path is not None and Path(art.viewer_model_path).stat().st_size > 0
 
 
 # ------------------------------------------------------------------ end-to-end (Docker toolchain) ---
