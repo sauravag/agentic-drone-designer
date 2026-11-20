@@ -6,10 +6,9 @@ sheet `nesting.nest` filled. Each placement's kerf-compensated outline is drawn 
 - a wire that is one full circle as a DXF `CIRCLE`; any other wire as one closed `LWPOLYLINE` with exact bulge
   arcs for circular edges (lines and arcs are all the kit outlines contain), and any other curve flattened to
   CURVE_SAMPLES points per edge. Closed polylines and circles are what laser software imports most reliably;
-- the part label as `TEXT` on layer `ENGRAVE` (`label_layout`): LABEL_HEIGHT_M high, shrunk in steps down to
-  LABEL_MIN_HEIGHT_M until its estimated extent fits in the material clear of the outline and holes, centred at
-  the roomiest grid point where it fits, along the part's longer side when it fits that way. A label that fits
-  nowhere even at the floor is engraved at the floor anyway (engraving cuts nothing).
+- the part label as open single-stroke polylines on layer `ENGRAVE`, gathered in one DXF group whose description
+  is the label (`kit_labels`: placed and shrunk to fit by `label_layout`, drawn by `label_strokes`). No TEXT
+  entities: laser software drops them on import.
 - the kerf offset is computed once per part label, however many copies are placed; two different parts sharing a
   label raise KitUnavailable, as does a failed offset (naming the part, as `nesting.nest` does).
 
@@ -33,29 +32,23 @@ import build123d as bd
 import ezdxf
 import numpy as np
 from ezdxf import colors, units
-from ezdxf.enums import TextEntityAlignment
+from ezdxf.document import Drawing
 from ezdxf.layouts import Modelspace
-from OCP.BRepTools import BRepTools_WireExplorer
 
 from src.schemas.fabrication import FabricationSettings
 from src.tools.fabrication.fuselage_parts import BOSS_LABELS, PIN_BOSS_LABELS
 from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart
+from src.tools.fabrication.kit_labels import CURVE_SAMPLES, label_layout, label_strokes, ordered_edges
 from src.tools.fabrication.kit_mass import GLUE_NAME, kit_mass_items, part_item
-from src.tools.fabrication.nesting import EPS_M, MM_PER_M, QUARTER_TURN_DEG, Placement, kerfed_part, nest, place_kerfed
+from src.tools.fabrication.nesting import MM_PER_M, Placement, kerfed_part, nest, place_kerfed
 from src.tools.fabrication.wing_parts import ROOT_PIN_BOSS_LABEL
 from src.tools.fabrication.wing_retention import BOLT_CHORD_FRACTION
 
-__all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "LABEL_HEIGHT_M", "LABEL_MIN_HEIGHT_M", "LabelLayout",
-           "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids", "export_kit", "kit_solids", "label_layout",
-           "ply_solids", "remove_kit_files", "write_sheets"]
+__all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids", "export_kit",
+           "kit_solids", "ply_solids", "remove_kit_files", "write_sheets"]
 
 logger = logging.getLogger(__name__)
 
-LABEL_HEIGHT_M: Final[float] = 0.004
-LABEL_MIN_HEIGHT_M: Final[float] = 0.0015  # labels shrink to fit down to this, and are engraved at it regardless
-LABEL_HEIGHT_STEP_M: Final[float] = 0.00025
-LABEL_CHAR_WIDTH: Final[float] = 0.8  # estimated character advance / text height (generous for laser fonts)
-LABEL_CLEARANCE_M: Final[float] = 0.001  # kept between the label's estimated extent and any cut (no burn-through)
 LAYER_CUT_OUTER: Final[str] = "CUT_OUTER"
 LAYER_CUT_INNER: Final[str] = "CUT_INNER"
 LAYER_ENGRAVE: Final[str] = "ENGRAVE"
@@ -63,9 +56,6 @@ LAYER_COLOURS: Final[dict[str, int]] = {LAYER_CUT_OUTER: colors.RED, LAYER_CUT_I
                                         LAYER_ENGRAVE: colors.BLACK}
 DXF_VERSION: Final[str] = "R2010"
 METRIC_MEASUREMENT: Final[int] = 1  # $MEASUREMENT: 1 = metric
-CURVE_SAMPLES: Final[int] = 24  # points per non-line edge when flattening (labels; non-circular DXF curves)
-LABEL_GRID: Final[int] = 15  # label candidates per bounding-box side
-MIN_SEGMENT_SQ_M2: Final[float] = 1e-30  # guards the projection onto a zero-length boundary segment
 KIT_SUBDIR: Final[str] = "kit"
 SHEETS_SUBDIR: Final[tuple[str, str]] = (KIT_SUBDIR, "sheets")
 BUILD_SHEET_FILE: Final[str] = "build_sheet.md"
@@ -118,17 +108,6 @@ def _xy(v: bd.Vector) -> tuple[float, float]:
     return v.X, v.Y
 
 
-def _ordered_edges(wire: bd.Wire) -> list[bd.Edge]:
-    """The wire's edges in traversal order and direction (OCCT's wire explorer: ~100x faster than
-    `Wire.order_edges`, which dominated sheet-writing time)."""
-    explorer = BRepTools_WireExplorer(wire.wrapped)
-    edges: list[bd.Edge] = []
-    while explorer.More():
-        edges.append(bd.Edge(explorer.Current()))
-        explorer.Next()
-    return edges
-
-
 def _is_circle(edges: Sequence[bd.Edge]) -> bool:
     return len(edges) == 1 and edges[0].geom_type == bd.GeomType.CIRCLE
 
@@ -152,7 +131,7 @@ def _edge_points(edge: bd.Edge) -> list[tuple[bd.Vector, float]]:
 
 
 def _add_wire(msp: Modelspace, wire: bd.Wire, layer: str) -> None:
-    edges = _ordered_edges(wire)
+    edges = ordered_edges(wire)
     if _is_circle(edges):
         msp.add_circle(_mm(edges[0].arc_center), edges[0].radius * MM_PER_M, dxfattribs={"layer": layer})
         return
@@ -160,119 +139,22 @@ def _add_wire(msp: Modelspace, wire: bd.Wire, layer: str) -> None:
     msp.add_lwpolyline(points, format="xyb", close=True, dxfattribs={"layer": layer})
 
 
-def _ring(wire: bd.Wire) -> np.ndarray:
-    """The wire as a closed polygon (n, 2), arcs and curves sampled."""
-    pts = []
-    for edge in _ordered_edges(wire):
-        ts = [0.0] if edge.geom_type == bd.GeomType.LINE else np.linspace(0.0, 1.0, CURVE_SAMPLES, endpoint=False)
-        pts.extend(_xy(edge.position_at(t)) for t in ts)
-    return np.array(pts)
+def _add_label(doc: Drawing, face: bd.Face, text: str) -> None:
+    """The label as open single-stroke polylines on ENGRAVE, gathered in one DXF group described by the label."""
+    msp = doc.modelspace()
+    strokes = label_strokes(text, label_layout(face, text))
+    entities = [msp.add_lwpolyline([(x * MM_PER_M, y * MM_PER_M) for x, y in stroke], close=False,
+                                   dxfattribs={"layer": LAYER_ENGRAVE}) for stroke in strokes]
+    doc.groups.new(description=text).extend(entities)
 
 
-def _segments(face: bd.Face) -> tuple[np.ndarray, np.ndarray]:
-    rings = [_ring(w) for w in (face.outer_wire(), *face.inner_wires())]
-    return np.vstack(rings), np.vstack([np.roll(r, -1, axis=0) for r in rings])
-
-
-def _inside(pts: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Even-odd test of points (n, 2) against all boundary segments a -> b (holes count as outside)."""
-    px, py = pts[:, None, 0], pts[:, None, 1]
-    ax, ay, bx, by = a[None, :, 0], a[None, :, 1], b[None, :, 0], b[None, :, 1]
-    straddles = (ay > py) != (by > py)
-    with np.errstate(divide="ignore", invalid="ignore"):  # level segments never straddle; their nan is masked
-        x_cross = ax + (py - ay) * (bx - ax) / (by - ay)
-    return np.count_nonzero(straddles & (px < x_cross), axis=1) % 2 == 1
-
-
-def _clearance(pts: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Distance from each point to the nearest boundary segment."""
-    ab = b - a
-    length_sq = np.maximum((ab * ab).sum(-1), MIN_SEGMENT_SQ_M2)
-    t = np.clip(((pts[:, None, :] - a[None]) * ab[None]).sum(-1) / length_sq, 0.0, 1.0)
-    nearest = a[None] + t[..., None] * ab[None]
-    return np.linalg.norm(pts[:, None, :] - nearest, axis=-1).min(axis=1)
-
-
-@dataclass(frozen=True)
-class LabelLayout:
-    x_m: float  # centre of the label text
-    y_m: float
-    rotation_deg: float
-    width_m: float  # estimated text extent (LABEL_CHAR_WIDTH x height per character) by its height
-    height_m: float
-    fits: bool  # the extent, plus LABEL_CLEARANCE_M, lies wholly in the material
-
-
-def _box_crosses(centres: np.ndarray, half: tuple[float, float], a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Whether any boundary segment a -> b touches the axis-aligned box of half-extents `half` round each centre."""
-    lo, hi = centres - np.array(half), centres + np.array(half)
-    seg_lo, seg_hi = np.minimum(a, b), np.maximum(a, b)
-    overlap = ((seg_lo[None] <= hi[:, None]) & (seg_hi[None] >= lo[:, None])).all(-1)  # (n, m) bbox overlap
-    corners = np.stack([lo, np.column_stack([hi[:, 0], lo[:, 1]]), hi, np.column_stack([lo[:, 0], hi[:, 1]])], 1)
-    ab = b - a
-    rel = corners[:, None, :, :] - a[None, :, None, :]  # (n, m, 4, 2)
-    side = ab[None, :, None, 0] * rel[..., 1] - ab[None, :, None, 1] * rel[..., 0]
-    straddle = (side.min(-1) <= 0.0) & (side.max(-1) >= 0.0)
-    return (overlap & straddle).any(axis=1)
-
-
-def _extent(text: str, height_m: float) -> tuple[float, float]:
-    return len(text) * LABEL_CHAR_WIDTH * height_m, height_m
-
-
-def _heights() -> np.ndarray:
-    steps = round((LABEL_HEIGHT_M - LABEL_MIN_HEIGHT_M) / LABEL_HEIGHT_STEP_M)
-    return np.linspace(LABEL_HEIGHT_M, LABEL_MIN_HEIGHT_M, steps + 1)
-
-
-def _first_fit(text: str, candidates: np.ndarray, rotations: Sequence[float], a: np.ndarray,
-               b: np.ndarray) -> Optional[LabelLayout]:
-    """The tallest label (then the first rotation, then the roomiest candidate) whose padded box clears every cut."""
-    for height_m in _heights():
-        w_m, h_m = _extent(text, height_m)
-        for rotation in rotations:
-            span = (w_m, h_m) if rotation == 0.0 else (h_m, w_m)
-            half = (span[0] / 2.0 + LABEL_CLEARANCE_M, span[1] / 2.0 + LABEL_CLEARANCE_M)
-            clear = ~_box_crosses(candidates, half, a, b)
-            if clear.any():
-                x, y = candidates[int(np.argmax(clear))]
-                return LabelLayout(float(x), float(y), rotation, w_m, h_m, True)
-    return None
-
-
-def label_layout(face: bd.Face, text: str) -> LabelLayout:
-    """Where and how big to engrave `text` on `face`: the largest height from LABEL_HEIGHT_M down to
-    LABEL_MIN_HEIGHT_M whose estimated extent (plus LABEL_CLEARANCE_M) fits in the material, clear of the
-    outline and holes, at a grid point (roomiest first), along the longer side if it fits (level when the sides
-    are equal). If nothing fits at the floor, the floor height at the roomiest point (`fits=False`), or at the
-    face centre when no grid point lies in the material."""
-    box = face.bounding_box()
-    xs = np.linspace(box.min.X, box.max.X, LABEL_GRID + 2)[1:-1]
-    ys = np.linspace(box.min.Y, box.max.Y, LABEL_GRID + 2)[1:-1]
-    grid = np.array([(x, y) for y in ys for x in xs])
-    a, b = _segments(face)
-    inside = grid[_inside(grid, a, b)]
-    along = QUARTER_TURN_DEG if box.size.Y > box.size.X + EPS_M else 0.0  # round parts read level
-    w_m, h_m = _extent(text, LABEL_MIN_HEIGHT_M)
-    if not len(inside):
-        centre = face.center()
-        return LabelLayout(centre.X, centre.Y, along, w_m, h_m, False)
-    roomiest = inside[np.argsort(-_clearance(inside, a, b), kind="stable")]
-    layout = _first_fit(text, roomiest, (along, QUARTER_TURN_DEG - along), a, b)
-    if layout is not None:
-        return layout
-    return LabelLayout(float(roomiest[0][0]), float(roomiest[0][1]), along, w_m, h_m, False)
-
-
-def _add_part(msp: Modelspace, placement: Placement, kerfed: bd.Face) -> None:
+def _add_part(doc: Drawing, placement: Placement, kerfed: bd.Face) -> None:
+    msp = doc.modelspace()
     face = place_kerfed(kerfed, placement)
     _add_wire(msp, face.outer_wire(), LAYER_CUT_OUTER)
     for wire in face.inner_wires():
         _add_wire(msp, wire, LAYER_CUT_INNER)
-    label = label_layout(face, placement.part.label)
-    text = msp.add_text(placement.part.label, height=label.height_m * MM_PER_M, rotation=label.rotation_deg,
-                        dxfattribs={"layer": LAYER_ENGRAVE})
-    text.set_placement((label.x_m * MM_PER_M, label.y_m * MM_PER_M), align=TextEntityAlignment.MIDDLE_CENTER)
+    _add_label(doc, face, placement.part.label)
 
 
 def _write_sheet(placements: Sequence[Placement], kerfed: Mapping[str, bd.Face], path: Path) -> Path:
@@ -281,9 +163,8 @@ def _write_sheet(placements: Sequence[Placement], kerfed: Mapping[str, bd.Face],
     doc.header["$MEASUREMENT"] = METRIC_MEASUREMENT
     for name, colour in LAYER_COLOURS.items():
         doc.layers.add(name, color=colour)
-    msp = doc.modelspace()
     for placement in placements:
-        _add_part(msp, placement, kerfed[placement.part.label])
+        _add_part(doc, placement, kerfed[placement.part.label])
     doc.saveas(path)
     return path
 

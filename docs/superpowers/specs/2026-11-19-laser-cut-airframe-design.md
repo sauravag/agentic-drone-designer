@@ -185,7 +185,9 @@ naming the reason. The design run's status is unaffected.
   holes; ribs between 0.55–0.95 semi-span split at 75 % chord for the aileron (matching `openvsp_builder`'s
   `AILERON_ETA`/`AILERON_CHORD_FRACTION`); tail ribs split at 65 % chord for elevator/rudder
   (`TAIL_CONTROL_CHORD_FRACTION`).
-- DXF: millimetres, layers `CUT_INNER`, `CUT_OUTER`, `ENGRAVE`; labels as outline text on `ENGRAVE`.
+- DXF: millimetres, layers `CUT_INNER`, `CUT_OUTER`, `ENGRAVE`; labels as vector text on `ENGRAVE`: open
+  single-stroke polylines from a built-in stroke font (no TEXT entities, which laser software drops), one DXF
+  group per label, shrunk to fit the part.
 - Wing retention (R36): one M5 nylon bolt per side, spanwise on the wing's chord line midway between the spar and
   the pin (47.5 % chord), through an M5 clearance hole in the wing-box plate and in the root doubler
   (`WR-01`/`WL-01`), into an M5 nut held captive in a nut plate `NP-R`/`NP-L` (doubler stock: a 15 mm disc with

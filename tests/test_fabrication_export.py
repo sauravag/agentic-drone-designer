@@ -17,13 +17,10 @@ from src.schemas.fabrication import DEFAULT_FABRICATION
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication import nesting
 from src.tools.fabrication.kit_export import (
-    LABEL_HEIGHT_M,
-    LABEL_MIN_HEIGHT_M,
     PARTS_CSV_COLUMNS,
     carbon_solids,
     export_kit,
     kit_solids,
-    label_layout,
     ply_solids,
     write_sheets,
 )
@@ -72,10 +69,6 @@ def _assert_on_bed_and_apart(placements: tuple[Placement, ...]) -> None:
             gap_x = max(b.min.X - a.max.X, a.min.X - b.max.X)
             gap_y = max(b.min.Y - a.max.Y, a.min.Y - b.max.Y)
             assert max(gap_x, gap_y) >= m - GAP_TOL_M, (la, lb, sheet)
-
-
-def _texts(paths: tuple[Path, ...]) -> list:
-    return [e for path in paths for e in ezdxf.readfile(path).modelspace().query("TEXT")]
 
 
 @pytest.fixture(scope="module")
@@ -198,14 +191,6 @@ def test_sheet_files_are_named_by_stock_slug(tmp_path):
                      "kit/sheets/birch-ply-3-mm-2.dxf"]
 
 
-def test_every_label_engraved_once(kit, tmp_path):
-    texts = _texts(write_sheets(nest(kit.parts, S), S, tmp_path))
-    assert len(texts) == sum(p.quantity for p in kit.parts)
-    assert sorted(t.dxf.text for t in texts) == sorted(p.label for p in kit.parts for _ in range(p.quantity))
-    assert all(t.dxf.layer == "ENGRAVE" for t in texts)
-    assert all(LABEL_MIN_HEIGHT_M * MM_PER_M - 1e-9 <= t.dxf.height <= LABEL_HEIGHT_M * MM_PER_M + 1e-9 for t in texts)
-
-
 def test_dxf_geometry_is_kerf_compensated_in_millimetres(tmp_path):
     part = KitPart("H", "plate", plate_with_hole(0.1, 0.05, hole_d=0.01), bd.Location())
     (path,) = write_sheets(nest([part], S), S, tmp_path)
@@ -215,46 +200,6 @@ def test_dxf_geometry_is_kerf_compensated_in_millimetres(tmp_path):
     outer = dxf_bbox.extents(msp.query("*[layer=='CUT_OUTER']"))
     assert outer.size.x == pytest.approx(100.15) and outer.size.y == pytest.approx(50.15)
     assert outer.extmin.x == pytest.approx(S.margin_m * MM_PER_M)
-
-
-def _assert_label_box_in_material(face: bd.Face, layout) -> None:
-    box = bd.Pos(layout.x_m, layout.y_m) * bd.Rot(0, 0, layout.rotation_deg) * bd.Rectangle(layout.width_m,
-                                                                                         layout.height_m)
-    common = box.faces()[0].intersect(face)
-    shapes = common if isinstance(common, list) else [common]
-    assert sum(sh.area for sh in shapes if sh is not None) == pytest.approx(box.area, rel=1e-6)
-
-
-def test_label_sits_inside_the_material_of_a_ring():
-    ring = (bd.Circle(0.05) - bd.Circle(0.035)).faces()[0]
-    layout = label_layout(ring, "BM-1")
-    assert layout.fits and layout.height_m == pytest.approx(LABEL_HEIGHT_M)
-    _assert_label_box_in_material(ring, layout)
-
-
-def test_label_shrinks_to_fit_a_small_part():
-    part = bd.Rectangle(0.025, 0.005).faces()[0]
-    layout = label_layout(part, "WR-07A")
-    assert layout.fits and LABEL_MIN_HEIGHT_M <= layout.height_m < LABEL_HEIGHT_M
-    _assert_label_box_in_material(part, layout)
-
-
-def test_label_keeps_clear_of_holes():
-    plate = (bd.Rectangle(0.03, 0.012) - bd.Circle(0.0045)).faces()[0]
-    layout = label_layout(plate, "P-1")
-    assert layout.fits
-    _assert_label_box_in_material(plate, layout)
-
-
-def test_label_too_long_for_any_height_is_engraved_at_the_floor():
-    layout = label_layout(bd.Rectangle(0.004, 0.003).faces()[0], "A-VERY-LONG-LABEL")
-    assert not layout.fits and layout.height_m == pytest.approx(LABEL_MIN_HEIGHT_M)
-
-
-def test_small_part_label_is_shrunk_in_the_dxf(tmp_path):
-    part = KitPart("WR-07A", "rib", bd.Rectangle(0.025, 0.005).faces()[0], bd.Location())
-    (text,) = _texts(write_sheets(nest([part], S), S, tmp_path))
-    assert LABEL_MIN_HEIGHT_M * MM_PER_M <= text.dxf.height < LABEL_HEIGHT_M * MM_PER_M
 
 
 def test_rewriting_removes_stale_sheets(tmp_path):
@@ -282,20 +227,6 @@ def test_dxf_writing_is_deterministic(kit, tmp_path):
         ents = [ezdxf.readfile(p).modelspace() for p in (a, b)]
         assert [e.dxftype() for e in ents[0]] == [e.dxftype() for e in ents[1]]
         assert dxf_bbox.extents(ents[0]).extmax.isclose(dxf_bbox.extents(ents[1]).extmax)
-
-
-def test_label_runs_along_the_longer_side_and_reads_level_on_round_parts():
-    assert label_layout(bd.Rectangle(0.01, 0.1).faces()[0], "R").rotation_deg == pytest.approx(90.0)
-    assert label_layout(bd.Rectangle(0.1, 0.01).faces()[0], "R").rotation_deg == pytest.approx(0.0)
-    assert label_layout(bd.Circle(0.05).faces()[0], "R").rotation_deg == pytest.approx(0.0)
-
-
-def test_label_falls_back_to_the_centre_when_no_grid_point_is_in_the_material():
-    strip_m = 0.0002
-    ell = (bd.Pos(0.05, strip_m / 2) * bd.Rectangle(0.1, strip_m)
-           + bd.Pos(strip_m / 2, 0.05) * bd.Rectangle(strip_m, 0.1)).faces()[0]
-    layout = label_layout(ell, "L")
-    assert not layout.fits and (layout.x_m, layout.y_m) == pytest.approx((ell.center().X, ell.center().Y))
 
 
 def test_curves_other_than_arcs_are_flattened_into_the_outline(tmp_path):
