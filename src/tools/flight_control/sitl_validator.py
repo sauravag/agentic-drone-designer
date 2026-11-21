@@ -344,7 +344,7 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
     if not flown:  # still leave the generated (unverified) parameters and the attempt log behind
         report_path.write_text(json.dumps(_report(attempts, None, params, None), indent=2))
         pg.write_param_file(params, out_dir / PARAM_FILE, header=_param_header(req, attempts[-1]))
-        raise SitlValidationError(f"no SITL flight completed: {attempts[-1].error}")
+        raise SitlValidationError(f"no nominal SITL flight completed: {attempts[-1].error}")
     best, best_log, best_params, best_number = _shipped_attempt(flown)
     report_path.write_text(json.dumps(_report(attempts, best_log, best_params, best_number), indent=2))
     param_path: Path = pg.write_param_file(best_params, out_dir / PARAM_FILE, header=_param_header(req, best))

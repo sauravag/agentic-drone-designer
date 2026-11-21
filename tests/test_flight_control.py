@@ -504,6 +504,23 @@ def test_validator_raises_when_no_flight_completes(monkeypatch: pytest.MonkeyPat
     assert report["passed"] is False and report["replay_attempt"] is None
 
 
+def test_validator_says_no_nominal_flight_completed_when_only_perturbed_plants_flew(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        if work.name.startswith("attempt_"):  # the nominal flight always crashes
+            return sv.AttemptResult(gain_scale=scale, passed=False, error="SitlFlightError: stall"), None
+        log = _synthetic_log(ft, 0.4)
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    with pytest.raises(sv.SitlValidationError, match="no nominal SITL flight completed"):
+        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
+
+
 def test_worst_case_takes_each_metric_from_its_worst_case() -> None:
     ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
