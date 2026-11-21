@@ -119,6 +119,9 @@ def test_fcs_rows_name_the_governing_case_and_list_each_plant() -> None:
     assert rows["Plant: hot"]["Pass"] == "yes"
     assert rows["Plant: sluggish"]["Result"] == "crashed: SitlFlightError: stalled"
     assert rows["Plant: sluggish"]["Pass"] == "no"
+    assert rows["Roll overshoot, worst plant (+15° step)"]["Result"] == "12%"
+    assert {"Roll settling time, worst plant", "Pitch overshoot, worst plant (+10° step)",
+            "Pitch settling time, worst plant"} <= set(rows)
     old = FCSArtifacts(param_path="a", sitl_report_path="b", passed=True, roll_overshoot=0.05, pitch_overshoot=0.05,
                        roll_settling_s=1.0, pitch_settling_s=1.0, max_transition_altitude_loss_m=0.0)
     assert [r["Check"] for r in presenters.fcs_rows(old)] == [

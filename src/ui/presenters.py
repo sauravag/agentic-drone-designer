@@ -57,6 +57,7 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
 SHEET_STEM_NUMBER: Final[re.Pattern[str]] = re.compile(r"-\d+$")
 SECONDS_PER_MINUTE: Final[float] = 60.0
+WORST_PLANT_LABEL: Final[str] = ", worst plant"  # suffix for step rows that hold the worst over the plants
 IN_AVIONICS_ALLOWANCE: Final[str] = "in avionics allowance"
 PAYLOAD_CAPTION: Final[str] = ("Masses and powers are datasheet values (typical power). NextVision masses are "
                                 "probably the bare camera, so add your mount if it's separate.")
@@ -224,12 +225,13 @@ def cad_rows(cad: CADArtifacts, settings: Optional[FabricationSettings] = None) 
 
 
 def fcs_rows(fcs: FCSArtifacts) -> list[dict[str, str]]:
-    """SITL doublet-test results against the SRS limits."""
+    """SITL doublet-test results against the SRS limits; with perturbed plants the step rows are the worst plant."""
+    worst: str = WORST_PLANT_LABEL if fcs.perturbation_cases else ""
     entries: list[tuple[str, float, float, str]] = [
-        ("Roll overshoot (+15° step)", fcs.roll_overshoot, MAX_OVERSHOOT, "%"),
-        ("Roll settling time", fcs.roll_settling_s, MAX_SETTLING_S, "s"),
-        ("Pitch overshoot (+10° step)", fcs.pitch_overshoot, MAX_OVERSHOOT, "%"),
-        ("Pitch settling time", fcs.pitch_settling_s, MAX_SETTLING_S, "s"),
+        (f"Roll overshoot{worst} (+15° step)", fcs.roll_overshoot, MAX_OVERSHOOT, "%"),
+        (f"Roll settling time{worst}", fcs.roll_settling_s, MAX_SETTLING_S, "s"),
+        (f"Pitch overshoot{worst} (+10° step)", fcs.pitch_overshoot, MAX_OVERSHOOT, "%"),
+        (f"Pitch settling time{worst}", fcs.pitch_settling_s, MAX_SETTLING_S, "s"),
         ("Transition altitude loss", fcs.max_transition_altitude_loss_m, MAX_TRANSITION_ALT_LOSS_M, "m"),
     ]
     rows = [{"Check": name, "Result": _fmt(value, unit), "Limit": f"< {_fmt(limit, unit)}",
