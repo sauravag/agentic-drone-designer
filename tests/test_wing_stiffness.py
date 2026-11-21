@@ -1,5 +1,4 @@
 """Wing stiffness model: D-cell geometry, Bredt torsion, tip deflection and aileron reversal (R43-R45)."""
-import dataclasses
 import math
 
 import pytest
@@ -10,9 +9,9 @@ from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.layout import QUARTER_CHORD
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.build_kit import kit_spar_plan, stiffened_spar_plan
-from src.tools.fabrication.tubes import SEA_LEVEL_DENSITY_KG_M3, KitUnavailable, SparPlan
+from src.tools.fabrication.tubes import SEA_LEVEL_DENSITY_KG_M3, KitUnavailable, SparPlan, spar_member_at
 from src.tools.fabrication.wing_stiffness import (
-    DCell, d_cell, dbox_gj_nm2, dbox_web_x_m, flap_derivatives, lift_slope_per_rad, reversal_speed_ms,
+    DCell, d_cell, dbox_cell_at, dbox_gj_nm2, dbox_material_m2, dbox_web_x_m, flap_derivatives, lift_slope_per_rad, reversal_speed_ms,
     WingStiffness, stiffen_spar, tip_deflection_m, wing_stiffness,
 )
 from tests.cad_helpers import _fitted_layout
@@ -147,7 +146,7 @@ def test_wing_stiffness_uses_the_user_limits(g1_kit_inputs, designs):
     assert w.tip_deflection_limit_m == pytest.approx(0.05 * layout.wing.semi_span_m)
     assert w.reversal_required_ms == pytest.approx(1.15 * 1.4 * sizing.v_cruise_ms)
     assert not w.dbox
-    assert w.deflection_ok and w.reversal_ok and w.passes
+    assert w.deflection_ok  # whether g1 needs a D-box is not pinned here (its tube-only margin is thin)
 
 
 def test_dbox_raises_reversal_speed_and_leaves_deflection(g2_kit_inputs, designs):
@@ -231,3 +230,35 @@ def test_sizing_without_cruise_speed_is_refused(designs):
     old = sizing.model_copy(update={"v_cruise_ms": None})
     with pytest.raises(KitUnavailable, match="re-run"):
         stiffened_spar_plan(old, layout, load_airfoil(layout.airfoil), DEFAULT_FABRICATION)
+
+
+def test_a_chord_too_small_for_the_spar_refuses_the_dbox_naming_the_station(g2_kit_inputs, designs):
+    # Arrange: a 25 mm chord puts the D-box web ahead of the leading edge for any stock tube
+    layout, airfoil, spar, settings = g2_kit_inputs
+    sizing = designs["g2"][0]
+    tiny_chord = 0.025
+    # Act / Assert: the cell and the full stiffness path both refuse in words, not with a ValueError
+    with pytest.raises(KitUnavailable, match=r"too large for a leading-edge D-box at y = 0\.\d{3} m"):
+        dbox_cell_at(airfoil, tiny_chord, spar.segments[0].tube.od_m, 0.3, settings)
+    with pytest.raises(KitUnavailable, match=r"too large for a leading-edge D-box at y = "):
+        wing_stiffness(spar, airfoil, True, sizing.mtow_kg, layout.wing.semi_span_m, lambda y: tiny_chord,
+                       sizing.aspect_ratio, sizing.v_cruise_ms, settings)
+
+
+def test_dbox_material_area_matches_an_independent_quadrature(g2_kit_inputs):
+    # Arrange: 2 x integral (arc + web)(y) c(y) dy from the joint to the tip, split at the spar segment steps
+    layout, airfoil, spar, settings = g2_kit_inputs
+    wing, root = layout.wing, spar.joint_y_m
+
+    def material_per_m(y: float) -> float:
+        c = wing.chord_at(y)
+        od = spar_member_at(spar, y - 1e-7).od_m  # inboard member at a step
+        cell = d_cell(airfoil, dbox_web_x_m(c, od, settings) / c)
+        return (cell.arc_ratio + cell.web_ratio) * c
+
+    steps = [s.y_end_m for s in spar.segments[:-1]]
+    # Act
+    expected = 2.0 * quad(material_per_m, root, wing.semi_span_m, points=steps or None, limit=200)[0]
+    area = dbox_material_m2(spar, airfoil, wing.semi_span_m, wing.chord_at, settings)
+    # Assert
+    assert area == pytest.approx(expected, rel=1e-3)

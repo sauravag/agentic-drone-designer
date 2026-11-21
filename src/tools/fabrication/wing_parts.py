@@ -53,6 +53,7 @@ from src.tools.fabrication.tubes import (
     SparPlan,
     elliptic_root_moment_nm,
     smallest_passing,
+    spar_member_at,
     tail_surface_load_n,
     usable_depth_m,
 )
@@ -165,11 +166,6 @@ def _mirrored(part: KitPart, side_from: str, side_to: str, settings: Fabrication
     mirrored_y = -pos.Y - normal_y * settings.sheet_for(part.family).thickness_m
     location = bd.Location((pos.X, mirrored_y, pos.Z), tuple(part.location.orientation))
     return dataclasses.replace(part, label=part.label.replace(side_from, side_to, 1), location=location)
-
-
-def spar_member_at(spar: SparPlan, y_m: float) -> TubeStock:
-    """The spar member at y (the inboard one on a step); the socket stays inside the fuselage."""
-    return next(s for s in spar.segments if s.y_start_m - FIT_EPS_M <= y_m <= s.y_end_m + FIT_EPS_M).tube
 
 
 def spar_hole_m(spar: SparPlan, y_m: float, settings: FabricationSettings) -> float:

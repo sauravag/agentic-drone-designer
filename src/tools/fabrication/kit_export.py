@@ -51,7 +51,7 @@ from src.tools.fabrication.nesting import MM_PER_M, Placement, kerfed_part, nest
 from src.tools.fabrication.wing_box_bosses import BOSS_LABELS, PIN_BOSS_LABELS
 from src.tools.fabrication.wing_parts import ROOT_PIN_BOSS_LABEL
 from src.tools.fabrication.wing_retention import BOLT_CHORD_FRACTION
-from src.tools.fabrication.wing_stiffness import REVERSAL_MARGIN
+from src.tools.fabrication.wing_stiffness import REVERSAL_MARGIN, TIP_DEFLECTION_LOAD_FACTOR
 
 __all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "KitSolids", "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids",
            "export_kit", "kit_solid_sets", "kit_solids", "ply_solids", "remove_kit_files", "write_sheets"]
@@ -379,7 +379,7 @@ def _covering(kit: Kit, settings: FabricationSettings) -> list[str]:
     lines = [f"- Film (both faces of the wing and tails, outside the fuselage): {film:.3f} m², "
              f"{_g(film * settings.film_kg_m2):.1f} g",
              f"- Fuselage cover: {cover:.3f} m², {_g(cover * settings.fuselage_cover_kg_m2):.1f} g"]
-    if kit.spar.dbox:
+    if kit.dbox_area_m2 > 0.0:
         lines.append(f"- Leading-edge D-box (balsa): {kit.dbox_area_m2:.3f} m², {_dbox_mass_g(kit, settings):.1f} g")
     return lines
 
@@ -389,12 +389,13 @@ def _wing_stiffness(kit: Kit, settings: FabricationSettings) -> list[str]:
     report = kit.spar.stiffness
     if report is None:
         return ["Wing stiffness: not checked"]
-    lines = [f"- Tip deflection at 1 g: {_to_mm(report.tip_deflection_m):.1f} mm "
+    has_dbox = kit.dbox_area_m2 > 0.0  # the covering entry is the one source of truth for area, mass and yes/no
+    lines = [f"- Tip deflection at {TIP_DEFLECTION_LOAD_FACTOR:g} g: {_to_mm(report.tip_deflection_m):.1f} mm "
              f"(limit {_to_mm(report.tip_deflection_limit_m):.1f} mm)",
              f"- Aileron reversal speed: {report.reversal_speed_ms:.1f} m/s "
              f"(needs above {report.reversal_required_ms:.1f} m/s = {REVERSAL_MARGIN:.2f} x V_NE)",
-             f"- D-box: {'yes' if kit.spar.dbox else 'no'}"]
-    if kit.spar.dbox:
+             f"- D-box: {'yes' if has_dbox else 'no'}"]
+    if has_dbox:
         t = f"{_to_mm(settings.dbox_sheet_thickness_m):g}"
         lines += [f"- D-box area: {kit.dbox_area_m2:.3f} m²", f"- D-box mass: {_dbox_mass_g(kit, settings):.1f} g",
                   "", DBOX_NOTE.format(t=t)]

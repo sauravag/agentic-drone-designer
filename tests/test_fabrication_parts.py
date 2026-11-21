@@ -14,9 +14,8 @@ from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.rib_outline import notched_profile
 from src.tools.fabrication.skin import max_skin_radius_m
-from src.tools.fabrication.tubes import MIN_WEB_M, SparPlan, SparSegment, plan_spar
+from src.tools.fabrication.tubes import MIN_WEB_M, SparPlan, SparSegment, plan_spar, spar_member_at
 from src.tools.fabrication.wing_parts import (
-    tail_root_radius_m,
     AILERON_HINGE_FRACTION,
     PIN_CHORD_FRACTION,
     TAIL_HINGE_FRACTION,
@@ -24,9 +23,11 @@ from src.tools.fabrication.wing_parts import (
     socket_axis_m,
     spar_depth_at,
     tail_ribs,
+    tail_root_radius_m,
     tail_spar_tubes,
     wing_ribs,
 )
+from src.tools.fabrication.wing_stiffness import dbox_web_x_m
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
 
 TOL_M = 1e-6
@@ -382,6 +383,9 @@ def test_a_hole_at_exactly_the_minimum_web_keeps_it():
     assert not keeps_web(face, Hole(0.01, 0.005, exact + 2e-6), [])
 
 
+STEP_PROBE_M = 0.001  # distance either side of the D-box step at which the rib thickness is probed
+
+
 def _thickness_at(face: bd.Face, x_m: float) -> float:
     """Vertical extent of the (hole-free) outline along the line local x = x_m."""
     strip = face.intersect(bd.Face(bd.Wire.make_polygon(
@@ -438,3 +442,18 @@ def test_tail_ribs_are_not_inset(g2_kit_inputs, designs):
     plain = notched_profile(tail_airfoil, chord, settings)
     # Assert: an inset rib would be about 2 x the sheet thickness thinner near 0.10 c
     assert _thickness_at(root.outline, 0.10 * chord) == pytest.approx(_thickness_at(plain, 0.10 * chord), abs=1e-5)
+
+
+def test_a_real_g2_wing_rib_steps_at_the_dbox_web(g2_kit_inputs):
+    # Arrange: WR-02's own outline against the plain profile at its chord
+    layout, airfoil, spar, settings = g2_kit_inputs
+    rib = ribs_by_label(wing_ribs(*g2_kit_inputs))["WR-02"]
+    y = rib.location.position.Y
+    chord = layout.wing.chord_at(y)
+    web_x = dbox_web_x_m(chord, spar_member_at(spar, y).od_m, settings)
+    plain = notched_profile(airfoil, chord, settings)
+    ahead, aft = web_x - STEP_PROBE_M, web_x + STEP_PROBE_M
+    # Act / Assert: ahead of the step the rib is about 2 t thinner; just aft it is unchanged
+    assert _thickness_at(plain, ahead) - _thickness_at(rib.outline, ahead) == pytest.approx(
+        2.0 * settings.dbox_sheet_thickness_m, rel=0.15)
+    assert _thickness_at(rib.outline, aft) == pytest.approx(_thickness_at(plain, aft), abs=1e-5)

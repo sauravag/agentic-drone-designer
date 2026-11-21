@@ -20,12 +20,13 @@ from typing import Callable, Final
 
 import numpy as np
 
-from src.schemas.fabrication import FabricationSettings, TubeStock
+from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape
 from src.tools.aero_cad.layout import AILERON_CHORD_FRACTION, AILERON_ETA
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.tubes import (
     DYNAMIC_PRESSURE_FACTOR, MIN_WEB_M, SEA_LEVEL_DENSITY_KG_M3, KitUnavailable, SparPlan, elliptic_moment_nm,
+    spar_member_at,
 )
 from src.tools.sizing.aero_model import VNE_TO_CRUISE
 
@@ -83,10 +84,33 @@ def dbox_gj_nm2(cell: DCell, chord_m: float, settings: FabricationSettings) -> f
     return BREDT_FACTOR * area_mid**2 * settings.balsa_shear_modulus_pa * t / perimeter
 
 
+def dbox_cell_at(airfoil: AirfoilShape, chord_m: float, od_m: float, y_m: float,
+                 settings: FabricationSettings) -> DCell:
+    """D-cell of the airfoil ahead of the web at span station y; KitUnavailable when the spar is so large for the
+    chord that the web would fall ahead of the leading edge."""
+    web_x_m = dbox_web_x_m(chord_m, od_m, settings)
+    if web_x_m <= 0.0:
+        raise KitUnavailable(f"the spar is too large for a leading-edge D-box at y = {y_m:.3f} m")
+    return d_cell(airfoil, web_x_m / chord_m)
+
+
 def _strips(root_m: float, semi_span_m: float) -> tuple[np.ndarray, float]:
     """Midpoints of the integration strips from the joint to the tip, and their width."""
     dy = (semi_span_m - root_m) / STIFFNESS_INTEGRATION_STEPS
     return root_m + (np.arange(STIFFNESS_INTEGRATION_STEPS) + HALF) * dy, dy
+
+
+def dbox_material_m2(spar: SparPlan, airfoil: AirfoilShape, semi_span_m: float,
+                     chord_at: Callable[[float], float], settings: FabricationSettings) -> float:
+    """Balsa sheet and shear web of both panels' D-boxes: 2 x sum (arc + web) c dy over the same midpoint strips as
+    the stiffness integrals, each strip's D-cell at its own web fraction."""
+    y, dy = _strips(spar.joint_y_m, semi_span_m)
+    total = 0.0
+    for station in y:
+        chord = chord_at(float(station))
+        cell = dbox_cell_at(airfoil, chord, spar_member_at(spar, float(station)).od_m, float(station), settings)
+        total += (cell.arc_ratio + cell.web_ratio) * chord * dy
+    return 2.0 * total
 
 
 def tip_deflection_m(ei_at: Callable[[float], float], moment_at: Callable[[float], float],
@@ -162,23 +186,16 @@ def wing_stiffness(spar: SparPlan, airfoil: AirfoilShape, with_dbox: bool, mtow_
                    chord_at: Callable[[float], float], aspect_ratio: float, v_cruise_ms: float,
                    settings: FabricationSettings) -> WingStiffness:
     """Tip deflection at 1 g and aileron reversal of the wing built on `spar`, with or without the D-box."""
-    segments = spar.segments
-
-    def member_at(y_m: float) -> TubeStock:
-        # inboard member at a step boundary; stations past the last segment use the last member
-        return next((s.tube for s in segments if y_m <= s.y_end_m), segments[-1].tube)
-
     def ei_at(y_m: float) -> float:
-        return settings.carbon_modulus_pa * member_at(y_m).second_moment_m4
+        return settings.carbon_modulus_pa * spar_member_at(spar, y_m).second_moment_m4
 
     def gj_at(y_m: float) -> float:
-        tube = member_at(y_m)
+        tube = spar_member_at(spar, y_m)
         gj = settings.carbon_shear_modulus_pa * tube.polar_moment_m4
         if not with_dbox:
             return gj
         chord = chord_at(y_m)
-        cell = d_cell(airfoil, dbox_web_x_m(chord, tube.od_m, settings) / chord)
-        return gj + dbox_gj_nm2(cell, chord, settings)
+        return gj + dbox_gj_nm2(dbox_cell_at(airfoil, chord, tube.od_m, y_m, settings), chord, settings)
 
     def moment_at(y_m: float) -> float:
         return elliptic_moment_nm(mtow_kg, TIP_DEFLECTION_LOAD_FACTOR, semi_span_m, y_m)
@@ -200,7 +217,7 @@ def _failures(report: WingStiffness) -> str:
     """Each failing check with its value and limit (D18 style), joined with '; '."""
     found: list[str] = []
     if not report.deflection_ok:
-        found.append(f"tip deflection {report.tip_deflection_m * 1e3:.0f} mm at {TIP_DEFLECTION_LOAD_FACTOR:.0f} g "
+        found.append(f"tip deflection {report.tip_deflection_m * 1e3:.0f} mm at {TIP_DEFLECTION_LOAD_FACTOR:g} g "
                      f"(limit {report.tip_deflection_limit_m * 1e3:.0f} mm, "
                      f"{TIP_DEFLECTION_FRACTION:.0%} of the semi-span)")
     if not report.reversal_ok:

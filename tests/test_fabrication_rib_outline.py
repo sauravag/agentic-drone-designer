@@ -32,7 +32,7 @@ def test_a_face_with_an_arc_is_returned_unchanged():
 
 
 def test_a_face_with_an_inner_wire_is_returned_unchanged():
-    # Arrange: a rectangle with a sliver edge and a rectangular hole
+    # Arrange: a rectangle with a rectangular hole (an inner wire)
     outer = rect_face(0.0, 0.0, 0.04, 0.01)
     face = outer.cut(rect_face(0.01, 0.002, 0.02, 0.008)).faces()[0]
     # Act / Assert

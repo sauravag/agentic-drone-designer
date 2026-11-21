@@ -16,8 +16,9 @@ from src.tools.aero_cad.airfoil_geometry import AirfoilShape, camber_at
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable
 
 MIN_LIGHTENING_DIAMETER_M: Final[float] = 0.006  # smaller holes save too little to be worth cutting
-# 0.3 mm is about 4x the 75 um kerf, so the kerf offset cannot fold a sliver, and far below MIN_WEB_M, so closing
-# one up changes the outline negligibly
+# An edge threshold, not a bound on displacement: 0.3 mm is about 4x the 75 um kerf, so the kerf offset cannot fold
+# a sliver, and far below MIN_WEB_M. A run of several short edges closes up as one move and can shift the outline by
+# up to about 0.4 mm (seen at the D-box step of outboard g2 ribs); the spar web is re-checked on the final outline.
 MIN_OUTLINE_EDGE_M: Final[float] = 0.0003
 CUTTER_REACH_FACTOR: Final[float] = 2.0  # cutting rectangles extend this many chords past the rib
 

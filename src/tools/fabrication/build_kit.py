@@ -106,9 +106,8 @@ from src.tools.fabrication.wing_retention import (
     bolt_length_m,
 )
 from src.tools.fabrication.wing_stiffness import (
-    STIFFNESS_INTEGRATION_STEPS,
     WingStiffness,
-    d_cell,
+    dbox_material_m2,
     dbox_web_x_m,
     stiffen_spar,
     wing_stiffness,
@@ -313,21 +312,6 @@ def _fuselage_cover(layout: AircraftLayout) -> CoverSurface:
     return CoverSurface("fuselage_cover", "fuselage", shell, shell.area)
 
 
-def _dbox_material_m2(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan,
-                      settings: FabricationSettings) -> float:
-    """Balsa sheet and shear web of both panels' D-boxes: 2 x sum (arc + web) c dy over the midpoint strips from the
-    joint to the tip, each strip's D-cell at its own web fraction."""
-    wing, root = layout.wing, spar.joint_y_m
-    dy = (wing.semi_span_m - root) / STIFFNESS_INTEGRATION_STEPS
-    total = 0.0
-    for i in range(STIFFNESS_INTEGRATION_STEPS):
-        y = root + (i + 0.5) * dy
-        chord = wing.chord_at(y)
-        cell = d_cell(airfoil, dbox_web_x_m(chord, spar_member_at(spar, y).od_m, settings) / chord)
-        total += (cell.arc_ratio + cell.web_ratio) * chord * dy
-    return 2.0 * total
-
-
 def _dbox(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
           ) -> CoverSurface:
     """The leading-edge D-box (R45): the planform strip from the leading edge back to the web, on both panels."""
@@ -335,7 +319,7 @@ def _dbox(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, setting
     chord = wing.chord_at(root)
     web_fraction = dbox_web_x_m(chord, spar_member_at(spar, root).od_m, settings) / chord
     faces = bd.Compound([_planform_face(wing, side, root, LE_FRACTION, web_fraction) for side in (1.0, -1.0)])
-    return CoverSurface("dbox_wing", "dbox", faces, _dbox_material_m2(layout, airfoil, spar, settings))
+    return CoverSurface("dbox_wing", "dbox", faces, dbox_material_m2(spar, airfoil, wing.semi_span_m, wing.chord_at, settings))
 
 
 def _covering(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings

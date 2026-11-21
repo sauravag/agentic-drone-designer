@@ -82,6 +82,11 @@ class SparPlan:
     dbox: bool = False  # the balsa D-box (R45) is fitted
 
 
+def spar_member_at(spar: SparPlan, y_m: float) -> TubeStock:
+    """The spar member at y (the inboard one on a step); the socket stays inside the fuselage."""
+    return next(s for s in spar.segments if s.y_start_m - FIT_EPS_M <= y_m <= s.y_end_m + FIT_EPS_M).tube
+
+
 @dataclass(frozen=True)
 class PinPlan:
     """Anti-rotation pin (R31): rod diameter, the bearing load it carries (root torque / pin arm), and whether the

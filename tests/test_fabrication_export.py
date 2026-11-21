@@ -467,14 +467,25 @@ def test_build_sheet_has_a_wing_stiffness_section(g2_kit, g2_kit_files):
     assert f"Leading-edge D-box (balsa): {g2_kit.dbox_area_m2:.3f} m², {mass_g:.1f} g" in _section(text, "Covering")
 
 
-def test_build_sheet_says_no_dbox_without_one(kit):
-    # Arrange
-    plain = dataclasses.replace(kit, spar=dataclasses.replace(kit.spar, dbox=False))
+def test_build_sheet_says_no_dbox_without_a_dbox_covering(g2_kit):
+    # Arrange: the spar flag still says D-box, but the kit carries no D-box covering: the covering decides
+    plain = dataclasses.replace(g2_kit, covering=tuple(c for c in g2_kit.covering if c.kind != "dbox"))
     # Act
     text = build_sheet_text(plain, S, {})
     # Assert
     section = _section(text, "Wing stiffness")
+    assert plain.spar.dbox and plain.dbox_area_m2 == 0.0
     assert "D-box: no" in section and "Leading-edge D-box" not in text and "balsa sheet" not in section
+
+
+def test_build_sheet_lists_the_dbox_from_its_covering_not_the_spar_flag(g2_kit):
+    # Arrange: the covering carries the D-box while the spar flag says otherwise
+    boxed = dataclasses.replace(g2_kit, spar=dataclasses.replace(g2_kit.spar, dbox=False))
+    # Act
+    text = build_sheet_text(boxed, S, {})
+    # Assert: yes, area and mass all come from the kit's covering entry
+    assert "D-box: yes" in _section(text, "Wing stiffness")
+    assert f"Leading-edge D-box (balsa): {boxed.dbox_area_m2:.3f} m²" in _section(text, "Covering")
 
 
 def test_build_sheet_says_not_checked_without_a_report(kit):

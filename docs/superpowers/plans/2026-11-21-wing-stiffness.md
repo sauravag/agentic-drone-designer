@@ -108,7 +108,7 @@ bend enough to wreck the film and the hinges. Today only the lift booms have a s
     `"the wing is too flexible even with the {t_mm:.1f} mm balsa D-box"`.
   - No stiffer-root-tube search: the spars are depth-limited, so none fits, and a bigger root would change the
     socket and the pod (review finding 6).
-- **Settings (four new `FabricationSettings` fields):**
+- **Settings (three new `FabricationSettings` fields):**
   - `carbon_shear_modulus_pa = 5e9`;
   - `balsa_shear_modulus_pa = 0.13e9` (Wood Handbook, G_LT/E_L ≈ 0.037 at E_L 3.4 GPa for balsa of about
     160 kg/m³);
@@ -137,11 +137,11 @@ credit, changing the strength torsion speed (R30 still uses V_A; using V_NE ther
 
 | | g1 | g2 |
 |---|---|---|
-| Tip deflection at 1 g | 44.0 mm (limit 49.5 mm) | 79.3 mm (limit 90.5 mm) |
-| Reversal, tube only | 29.1 m/s (needs 29.0 m/s) | 33.1 m/s (needs 35.4 m/s) |
-| Reversal, D-box | 34.3 m/s | 36.0 m/s |
+| Tip deflection at 1 g | 44.0 mm (limit 49.5 mm) | 79.0 mm (limit 90.5 mm) |
+| Reversal, tube only | 29.15 m/s (needs 28.98 m/s) | 33.1 m/s (needs 35.4 m/s) |
+| Reversal, D-box | 34.16 m/s | 36.00 m/s (needs 35.42 m/s) |
 
-So g1 passes on the tube alone, by under 0.5 %. g2 needs the D-box and passes by 1.5 %. Because g1's margin is
+So g1 passes on the tube alone, by +0.6 %. g2 needs the D-box (area 0.519 m², 124.6 g) and passes by +1.6 %. Because g1's margin is
 within numerical noise, its test pins "passes both" and not whether the D-box is fitted.
 
 ## Global Constraints
@@ -165,7 +165,7 @@ within numerical noise, its test pins "passes both" and not whether the D-box is
 
 ## Review Focus
 
-1. **Thin margins.** g1's tube-only reversal passes by 0.45 % and g2's D-box reversal by 1.5 %.
+1. **Thin margins.** g1's tube-only reversal passes by 0.6 % and g2's D-box reversal by 1.6 %.
    - Don't pin the D-box state for g1.
    - For g2, pin "D-box fitted and passes".
    - Changes to the integration or geometry that move g2 past its margin are findings, not test edits.

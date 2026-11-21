@@ -18,7 +18,7 @@ from src.tools.fabrication.kit import Kit, KitUnavailable, TubePart
 from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual_gear_item, tube_item
 from src.tools.fabrication.tubes import SparPlan, SparSegment
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at, spar_member_at
-from src.tools.fabrication.wing_stiffness import STIFFNESS_INTEGRATION_STEPS, d_cell, dbox_web_x_m
+from src.tools.fabrication.wing_stiffness import dbox_material_m2, dbox_web_x_m
 from src.tools.sizing.mass_model import GEAR_FRACTION
 from tests.cad_helpers import part_solid, tube_solid
 from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components
@@ -375,16 +375,9 @@ def test_dbox_covering_area_and_mass(designs, g2_kit_inputs):
     kit = build_kit(designs["g2"][0], layout, airfoil, _placed(designs, "g2", layout), settings)
     # Act
     by = {i.name: i for i in kit_mass_items(kit, settings)}
-    # Assert: area is the material area of the D-cells, 2 x sum (arc + web) c dy
-    wing, root = layout.wing, kit.spar.joint_y_m
-    dy = (wing.semi_span_m - root) / STIFFNESS_INTEGRATION_STEPS
-    expected = 0.0
-    for i in range(STIFFNESS_INTEGRATION_STEPS):
-        y = root + (i + 0.5) * dy
-        c = wing.chord_at(y)
-        cell = d_cell(airfoil, dbox_web_x_m(c, spar_member_at(kit.spar, y).od_m, settings) / c)
-        expected += (cell.arc_ratio + cell.web_ratio) * c * dy
-    assert kit.spar.dbox and kit.dbox_area_m2 == pytest.approx(2.0 * expected, rel=1e-9)
+    # Assert: the area is the D-box material area (independently integrated in test_wing_stiffness)
+    assert kit.spar.dbox and kit.dbox_area_m2 == pytest.approx(
+        dbox_material_m2(kit.spar, airfoil, layout.wing.semi_span_m, layout.wing.chord_at, settings), rel=1e-9)
     dbox_kg = kit.dbox_area_m2 * settings.dbox_sheet_thickness_m * 200.0
     assert by["dbox_wing"].mass_kg == pytest.approx(dbox_kg, rel=1e-9)
     structure = [by[p.label] for p in kit.parts] + [by[t.label] for t in kit.tubes] + [by[s.label] for s in kit.linear]
@@ -406,11 +399,11 @@ def test_dbox_strip_spans_the_leading_edge_to_the_web_on_both_panels(g2_kit, g2_
     assert cover.label == "dbox_wing"
     assert box.max.Y == pytest.approx(wing.semi_span_m, abs=1e-9) and box.min.Y == pytest.approx(-wing.semi_span_m, abs=1e-9)
     assert sorted(v.X for v in root_edge if v.Y > 0) == pytest.approx(
-        [wing.x_le_root_m + 0.0 * c_root, web_x], abs=1e-9)
+        [wing.x_le_root_m, web_x], abs=1e-9)
     assert cover.area_m2 > 2.0 * cover.surface.area  # the web and both faces of the sheet
 
 
-def test_kit_without_dbox_has_no_dbox_covering(designs, g2_kit_inputs, g2_kit):
+def test_kit_without_dbox_has_no_dbox_covering(g2_kit_inputs, g2_kit):
     # Arrange: the g2 inputs with the D-box switched off, independent of any design's reversal margin
     layout, airfoil, spar, settings = g2_kit_inputs
     plain_spar = dataclasses.replace(spar, dbox=False)
