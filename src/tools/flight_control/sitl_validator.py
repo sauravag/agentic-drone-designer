@@ -296,16 +296,35 @@ def next_gain_scale(result: AttemptResult, scale: float, last_direction: int) ->
     return new_scale, direction
 
 
+FlownAttempt = tuple[AttemptResult, FlightLog, pg.ParamSet, int]  # result, nominal log, params, attempt number
+
+
+def _attempt_severity(result: AttemptResult) -> float:
+    """R42: the governing case's largest limit ratio; a crashed plant makes the attempt infinitely severe."""
+    return math.inf if result.error is not None else _case_severity(result)
+
+
+def _shipped_attempt(flown: Sequence[FlownAttempt]) -> FlownAttempt:
+    """The passing attempt if there is one, else the least severe flown attempt, ties to the lower gain scale."""
+    passing: list[FlownAttempt] = [f for f in flown if f[0].passed]
+    if passing:
+        return passing[-1]
+    return min(flown, key=lambda f: (_attempt_severity(f[0]), f[0].gain_scale))
+
+
 def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                             aero: AeroStabilityOutput, cad: CADArtifacts, out_dir: Path,
                             config: SitlConfig = SitlConfig(), max_attempts: int = MAX_ATTEMPTS) -> FCSArtifacts:
-    """Generate ardupilot.param, fly it in SITL, retry with two-way gain steps (`next_gain_scale`) until it passes, the steps reverse, or attempts run out.
-    Writes out_dir/ardupilot.param (the last completed attempt's set) and out_dir/sitl_report.json."""
+    """Generate ardupilot.param, fly it in SITL and retry with two-way gain steps (`next_gain_scale`).
+
+    The loop ends when an attempt passes, a step would reverse or pass MAX_GAIN_SCALE, or attempts run out.
+    Writes out_dir/ardupilot.param and out_dir/sitl_report.json for the shipped attempt: the passing one, else the
+    least severe attempt whose nominal flight completed (R42, `_shipped_attempt`)."""
     if not sitl_available(config.binary):
         raise SitlUnavailableError(f"{config.binary} not found: run inside the ISR-Forge Docker image")
     model: FlightModel = build_flight_model(req, sizing, bom, aero, cad)
     attempts: list[AttemptResult] = []
-    flown: list[tuple[AttemptResult, FlightLog, pg.ParamSet, int]] = []
+    flown: list[FlownAttempt] = []
     params: pg.ParamSet = {}
     scale: float = 1.0
     direction: int = DIRECTION_NONE
@@ -326,7 +345,7 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
         report_path.write_text(json.dumps(_report(attempts, None, params, None), indent=2))
         pg.write_param_file(params, out_dir / PARAM_FILE, header=_param_header(req, attempts[-1]))
         raise SitlValidationError(f"no SITL flight completed: {attempts[-1].error}")
-    best, best_log, best_params, best_number = flown[-1]
+    best, best_log, best_params, best_number = _shipped_attempt(flown)
     report_path.write_text(json.dumps(_report(attempts, best_log, best_params, best_number), indent=2))
     param_path: Path = pg.write_param_file(best_params, out_dir / PARAM_FILE, header=_param_header(req, best))
     if best.roll is None or best.pitch is None:  # score() always sets both; guard against future changes

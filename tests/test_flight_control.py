@@ -427,7 +427,7 @@ def test_retry_loop_stops_when_no_single_scale_satisfies_both_corners(monkeypatc
 
     def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
         scales.append(scale)
-        log = _synthetic_log(ft, 0.4, ringing=scale > 1.0) if scale > 1.0 else _synthetic_log(ft, 2.0)
+        log = _synthetic_log(ft, 0.4, ringing=True) if scale > 1.0 else _synthetic_log(ft, 2.0)
         return sv.score(log, scale), log
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
@@ -435,6 +435,37 @@ def test_retry_loop_stops_when_no_single_scale_satisfies_both_corners(monkeypatc
     fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
     assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3)  # settling up, then overshoot would reverse: stop
     assert not fcs.passed and fcs.attempts == 2
+
+
+def test_a_failed_run_ships_the_least_severe_attempt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        # scale 1.0 settles slightly over 3 s; scale 1.333 overshoots ~60 %, then the down-step would reverse
+        log = _synthetic_log(ft, 1.1) if scale <= 1.0 else _synthetic_log(ft, 0.4, ringing=True)
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    inputs = load_design("g1")
+    fcs = sv.generate_and_verify_fcs(*inputs, tmp_path)
+    assert not fcs.passed and fcs.attempts == 2
+    assert fcs.gain_scale == pytest.approx(1.0) and 3.0 <= fcs.roll_settling_s < 3.6 and fcs.roll_overshoot < 0.2
+    assert json.loads((tmp_path / "sitl_report.json").read_text())["replay_attempt"] == 1
+    header = (tmp_path / "ardupilot.param").read_text().splitlines()[:3]
+    assert any("rate-gain scale 1.000" in line for line in header)
+    shipped = pg.read_param_file(tmp_path / "ardupilot.param")
+    model = build_flight_model(*inputs)
+    assert shipped["RLL_RATE_P"] == pytest.approx(pg.fixed_wing_gains(model, gain_scale=1.0)["RLL_RATE_P"], rel=1e-4)
+
+
+def test_equally_severe_failed_attempts_ship_the_lower_gain_scale() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    log = _synthetic_log(ft, 2.0)
+    flown = [(sv.score(log, 1.0), log, {}, 1), (sv.score(log, 1 / 0.75), log, {}, 2)]
+    assert sv._shipped_attempt(flown)[3] == 1
 
 
 def test_retry_loop_scales_gains_by_0_75_until_it_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
