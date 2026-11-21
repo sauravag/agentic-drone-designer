@@ -48,6 +48,7 @@ class SizingOutput(_Frozen):
     hover_power_w: NonNegative  # peak electrical hover power; 0 for conventional fixed-wing
     v_stall_ms: Positive  # sea-level stall speed at MTOW
     v_loiter_ms: Positive
+    v_cruise_ms: Optional[Positive] = None  # requested cruise speed; None in records that predate it
     # --- extensions consumed by matcher / CAD / critic ---
     assumed_ld_cruise: Positive  # L/D the sizing loop assumed; critic compares to VSPAERO
     payload_mass_kg: Positive

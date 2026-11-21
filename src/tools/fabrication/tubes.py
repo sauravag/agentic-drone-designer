@@ -12,8 +12,9 @@ tail-boom check (R26) and the tail spars use, the loads each wing-box plate bear
 that reacts the spar's root torque (R31). All values SI. Must not import from the schemas' consumers.
 
 Limitations:
-- R30: flight loads use q at max(V_A, the loiter speed). SizingOutput carries no cruise or dash speed, so a design
-  flown faster than V_A = V_stall sqrt(n_limit) has its flight torsion and tail loads under-estimated.
+- R30: flight loads use q at max(V_A, the loiter speed). SizingOutput now carries v_cruise_ms, but the strength
+  torsion and tail loads still use that max, so a design cruising faster than V_A = V_stall sqrt(n_limit) has them
+  under-estimated.
 - R35: a tail surface's load is q_A S CL_max with no extra n_limit factor (CL_max at V_A is already the ceiling of
   tail lift). High-speed gust cases on the tails are not modelled and could exceed it.
 """

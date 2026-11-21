@@ -147,3 +147,9 @@ def test_cad_artifacts_inertia_must_be_positive() -> None:
             x_cg_m=0.5, static_margin=0.1, collision_count=0, as_built_mass_kg=10.0,
             ixx_kgm2=-1.0, iyy_kgm2=1.0, izz_kgm2=1.0, ixz_kgm2=0.0,
         )
+
+
+def test_old_sizing_records_without_cruise_speed_still_validate() -> None:
+    sizing = SizingOutput(**_sizing_kwargs())
+    assert sizing.v_cruise_ms is None
+    assert SizingOutput(**_sizing_kwargs(v_cruise_ms=25.0)).v_cruise_ms == 25.0

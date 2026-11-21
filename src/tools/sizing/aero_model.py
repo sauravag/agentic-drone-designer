@@ -15,6 +15,8 @@ CL_MAX_3D_FACTOR: Final[float] = 0.90  # finite-wing / 2D CLmax knockdown
 ALPHA_SWEEP_DEG: Final[np.ndarray] = np.linspace(-5.0, 20.0, 51)
 POLAR_MACH: Final[float] = 0.05
 
+VNE_TO_CRUISE: Final[float] = 1.4  # design dive speed / cruise (CS-23 style margin)
+
 QUADPLANE_DRAG_PENALTY: Final[float] = 0.008  # booms + stopped lift rotors, referenced to wing area
 MISC_DRAG_FACTOR: Final[float] = 1.15  # gimbal, antennas, cooling, interference
 FUSELAGE_WETTED_FACTOR: Final[float] = 0.75  # tapered pod vs. full cylinder

@@ -147,3 +147,14 @@ def test_margins_must_leave_a_usable_bed(margin: float) -> None:
     with pytest.raises(ValidationError, match="margin_m .* leaves no usable bed"):
         FabricationSettings(bed_width_m=0.6, bed_height_m=0.4, margin_m=margin)
     FabricationSettings(bed_width_m=0.6, bed_height_m=0.4, margin_m=0.19)
+
+
+def test_stiffness_settings_defaults() -> None:
+    s = FabricationSettings()
+    assert (s.carbon_shear_modulus_pa, s.balsa_shear_modulus_pa, s.dbox_sheet_thickness_m) == (5e9, 0.13e9, 0.0015)
+
+
+@pytest.mark.parametrize("field", ["carbon_shear_modulus_pa", "balsa_shear_modulus_pa", "dbox_sheet_thickness_m"])
+def test_stiffness_settings_reject_non_positive(field: str) -> None:
+    with pytest.raises(ValidationError):
+        FabricationSettings(**{field: 0.0})

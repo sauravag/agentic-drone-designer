@@ -374,3 +374,14 @@ def test_rootless_shrinking_map_raises_mass_collapse(monkeypatch: pytest.MonkeyP
     _patch_map(monkeypatch, lambda m: m * 0.999)
     with pytest.raises(SizingDivergenceError, match="mass collapse"):
         mission_solver._converge(_fake_design())  # type: ignore[arg-type]
+
+
+def test_sizing_output_carries_the_requested_cruise_speed() -> None:
+    assert size_aircraft(CASES["g1"]).v_cruise_ms == CASES["g1"].cruise_speed_ms
+
+
+def test_vne_ratio_is_shared_from_the_aero_model() -> None:
+    from src.tools.flight_control import flight_model
+    from src.tools.sizing.aero_model import VNE_TO_CRUISE
+
+    assert VNE_TO_CRUISE == 1.4 and flight_model.VNE_TO_CRUISE is VNE_TO_CRUISE

@@ -103,6 +103,9 @@ DEFAULT_FUSELAGE_COVER_THICKNESS_M: Final[float] = 0.0015
 DEFAULT_GLUE_FRACTION: Final[float] = 0.10
 DEFAULT_CARBON_DENSITY_KG_M3: Final[float] = 1600.0
 DEFAULT_CARBON_MODULUS_PA: Final[float] = 70e9
+DEFAULT_CARBON_SHEAR_MODULUS_PA: Final[float] = 5e9
+DEFAULT_BALSA_SHEAR_MODULUS_PA: Final[float] = 0.13e9
+DEFAULT_DBOX_SHEET_THICKNESS_M: Final[float] = 0.0015
 DEFAULT_SIGMA_ALLOW_PA: Final[float] = 500e6
 DEFAULT_SAFETY_FACTOR: Final[float] = 1.5
 DEFAULT_N_LIMIT: Final[float] = 4.0
@@ -171,6 +174,18 @@ class FabricationSettings(BaseModel):
     carbon_modulus_pa: float = Field(
         DEFAULT_CARBON_MODULUS_PA, gt=0.0,
         description="Carbon tube / rod bending (Young's) modulus (Pa), for boom stiffness."
+    )
+    carbon_shear_modulus_pa: float = Field(
+        DEFAULT_CARBON_SHEAR_MODULUS_PA, gt=0.0,
+        description="Carbon tube / rod shear modulus (Pa), for spar torsional stiffness (R43).",
+    )
+    balsa_shear_modulus_pa: float = Field(
+        DEFAULT_BALSA_SHEAR_MODULUS_PA, gt=0.0,
+        description="Balsa sheet in-plane shear modulus (Pa), for the leading-edge D-box torsion (R45).",
+    )
+    dbox_sheet_thickness_m: float = Field(
+        DEFAULT_DBOX_SHEET_THICKNESS_M, gt=0.0,
+        description="Leading-edge D-box balsa sheet thickness (m); its mass uses the stringer (balsa) density (R45).",
     )
     sigma_allow_pa: float = Field(DEFAULT_SIGMA_ALLOW_PA, gt=0.0, description="Allowable carbon stress (Pa).")
     safety_factor: float = Field(DEFAULT_SAFETY_FACTOR, ge=1.0, description="Ultimate-load safety factor.")

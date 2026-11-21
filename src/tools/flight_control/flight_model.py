@@ -25,7 +25,7 @@ from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_TAPER_RATIO, layout_from_sizing
 from src.tools.aero_cad.stability import cruise_lift_coefficient
-from src.tools.sizing.aero_model import air_properties, induced_drag_factor
+from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor
 from src.units import G0
 
 SITL_ALTITUDE_M: Final[float] = 0.0  # SITL flies near sea level; gains are scheduled with airspeed
@@ -36,7 +36,6 @@ FUSELAGE_DAMPING_FACTOR: Final[float] = 1.1  # fuselage/wing contribution to Cmq
 ROLL_YAW_CL_FACTOR_CLR: Final[float] = 0.25  # Clr ~ CL/4 (strip theory)
 ROLL_YAW_CL_FACTOR_CNP: Final[float] = -0.125  # Cnp ~ -CL/8 (strip theory)
 ADVERSE_YAW_FACTOR: Final[float] = -0.2  # Cn_delta_a ~ -0.2 CL Cl_delta_a
-VNE_TO_CRUISE: Final[float] = 1.4  # design dive speed / cruise (CS-23 style margin)
 AILERON_MAX_RAD: Final[float] = math.radians(20.0)
 ELEVATOR_MAX_RAD: Final[float] = math.radians(20.0)
 RUDDER_MAX_RAD: Final[float] = math.radians(25.0)

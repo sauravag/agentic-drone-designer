@@ -302,6 +302,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
         cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
         v_stall_ms=math.sqrt(2.0 * weight / (aero.rho_sl * geom.wing_area_m2 * cl_max)),
+        v_cruise_ms=req.cruise_speed_ms,
         v_loiter_ms=loiter_speed(weight, aero, design.cruise_polar.cl_max_3d),
         assumed_ld_cruise=lift_to_drag(weight / (q_cruise * geom.wing_area_m2), aero.cd0, aero.k),
         dod_group=group, propulsion_type=design.propulsion, airframe_topology=design.airframe,
