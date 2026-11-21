@@ -5,9 +5,12 @@ nominal JSBSim plant and against the "hot" and "sluggish" perturbed plants (pert
 exports the aircraft, starts the JSON physics bridge and `arduplane --model JSON`, and flies the doublet
 sequence over MAVLink (udpin:127.0.0.1:14550). The attempt gates roll/pitch overshoot and settling on the
 worst of the three, and the transition altitude loss on the nominal flight.
+The perturbed plants change only the roll/pitch control power and damping, the inertia and the static margin;
+yaw and the VTOL rotor terms are flown nominal.
 `generate_and_verify_fcs` retries with the rate gains scaled two ways (SRS 5.6, `next_gain_scale`): x0.75 after an
-overshoot failure or a crashed plant, /0.75 after a settling-only failure. A step that would reverse the previous
-one stops the loop, because no single gain scale then satisfies both the hot and the sluggish corner.
+overshoot failure or a crashed plant, /0.75 after a settling-only failure, up to MAX_GAIN_SCALE. A step that would
+reverse the previous one stops the loop: no scale on the 0.75 grid satisfies both the hot and the sluggish corner.
+When no attempt passes, the least severe flown attempt is shipped (R42).
 """
 
 import json

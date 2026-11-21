@@ -6,6 +6,10 @@ two off-nominal plants so a design that only works on its own model is caught.
   * SLUGGISH: weak control power, high damping, heavy inertia, CG forward (SM_MAX). Slowest to respond,
     so it exposes the worst settling time.
 
+Only the roll/pitch terms (Cl_delta_a, Cm_delta_e, Cl_p, Cm_q), the inertia and the static margin change. Yaw/rudder
+terms and the VTOL lift rotors are not perturbed, and the lift-rotor geometry stays referenced to the nominal CG, so
+the hover sees the inertia change but no CG imbalance. The transition gate uses the nominal flight.
+
 Known gap: mixed corners (e.g. high control power with high damping) are not flown.
 
 The CG shift keeps tail incidence fixed: Cm_alpha = -CL_alpha * SM' and Cm0 moves by CL0 * (SM0 - SM').

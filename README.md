@@ -2,7 +2,7 @@
 
 An agent that designs DoD Group 1–3 ISR UAVs from mission requirements: conceptual sizing (battery-electric
 or series-hybrid, fixed-wing or quadplane VTOL), a COTS bill of materials, OpenVSP/VSPAERO aerodynamics,
-Build123d internal CAD solved for static margin, ArduPilot parameters checked in a headless SITL flight test against two extreme plant corners (±30 % control power and damping, ±20 % inertia, and both static-margin limits, 0.08 and 0.14; mixed corners are not flown), and a design report. The full specification is in [REQUIREMENTS.md](REQUIREMENTS.md).
+Build123d internal CAD solved for static margin, ArduPilot parameters checked in a headless SITL flight test against two extreme corners of the roll/pitch aerodynamics (±30 % aileron/elevator power and roll/pitch damping, ±20 % inertia, and both static-margin limits, 0.08 and 0.14; yaw and the VTOL rotors are not perturbed, the transition is gated on the nominal flight, and mixed corners are not flown), and a design report. The full specification is in [REQUIREMENTS.md](REQUIREMENTS.md).
 
 **Zero LLM math.** The LLM only reads the request, suggests which design knob to turn, and writes report
 prose. Every engineering number comes from deterministic tools; the critic's knob steps are bounded and

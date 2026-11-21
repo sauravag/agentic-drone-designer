@@ -420,7 +420,7 @@ def test_retry_loop_raises_gains_after_a_settling_only_failure(monkeypatch: pyte
     assert fcs.passed and fcs.attempts == 2 and fcs.gain_scale == pytest.approx(1 / 0.75)
 
 
-def test_retry_loop_stops_when_no_single_scale_satisfies_both_corners(monkeypatch: pytest.MonkeyPatch,
+def test_retry_loop_stops_when_the_gain_step_would_reverse(monkeypatch: pytest.MonkeyPatch,
                                                                      tmp_path: Path) -> None:
     ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)

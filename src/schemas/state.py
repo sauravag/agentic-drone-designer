@@ -135,7 +135,8 @@ class FCSArtifacts(_Frozen):
     max_transition_altitude_loss_m: NonNegative
     gain_scale: Positive = 1.0
     attempts: int = Field(default=1, ge=1)
-    governing_case: str = "nominal"  # worst over the plants that completed a flight; a crashed plant governs and is listed with its error
+    # worst over the plants that completed a flight; a crashed plant governs and is listed with its error
+    governing_case: str = "nominal"
     perturbation_cases: tuple[PlantCaseResult, ...] = ()
 
 
