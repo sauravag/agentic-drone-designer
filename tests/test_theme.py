@@ -34,6 +34,10 @@ def test_theme_is_light_with_readable_text() -> None:
 
 
 def test_theme_is_shipped_in_the_docker_image() -> None:
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    dockerfile_path = REPO_ROOT / "Dockerfile"
+    if not dockerfile_path.is_file():  # running inside the image, which ships no Dockerfile: the theme must be here
+        assert THEME_PATH.is_file()
+        return
+    dockerfile = dockerfile_path.read_text()
     assert "COPY .streamlit ./.streamlit" in dockerfile
     assert ".streamlit" not in (REPO_ROOT / ".dockerignore").read_text()
