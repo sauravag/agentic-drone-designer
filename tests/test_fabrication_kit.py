@@ -11,13 +11,14 @@ from src.tools.aero_cad import components
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.layout import FUSELAGE_PROFILE, TAIL_AIRFOIL_NAME, fuselage_radius_at
-from src.tools.fabrication.build_kit import MITRE_LABELS, build_kit, socket_end_m, spar_tubes
+from src.tools.fabrication.build_kit import MITRE_LABELS, _covering, build_kit, socket_end_m, spar_tubes
 from src.tools.fabrication.fittings import join_notes
 from src.tools.fabrication.fuselage_parts import STRINGER_COUNT, former_stations, socket_axis_m
 from src.tools.fabrication.kit import Kit, KitUnavailable, TubePart
 from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual_gear_item, tube_item
 from src.tools.fabrication.tubes import SparPlan, SparSegment
-from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at
+from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at, spar_member_at
+from src.tools.fabrication.wing_stiffness import STIFFNESS_INTEGRATION_STEPS, d_cell, dbox_web_x_m
 from src.tools.sizing.mass_model import GEAR_FRACTION
 from tests.cad_helpers import part_solid, tube_solid
 from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components
@@ -375,9 +376,6 @@ def test_dbox_covering_area_and_mass(designs, g2_kit_inputs):
     # Act
     by = {i.name: i for i in kit_mass_items(kit, settings)}
     # Assert: area is the material area of the D-cells, 2 x sum (arc + web) c dy
-    from src.tools.fabrication.wing_parts import spar_member_at
-    from src.tools.fabrication.wing_stiffness import STIFFNESS_INTEGRATION_STEPS, d_cell, dbox_web_x_m
-
     wing, root = layout.wing, kit.spar.joint_y_m
     dy = (wing.semi_span_m - root) / STIFFNESS_INTEGRATION_STEPS
     expected = 0.0
@@ -394,21 +392,31 @@ def test_dbox_covering_area_and_mass(designs, g2_kit_inputs):
     assert by["glue_hardware"].mass_kg == pytest.approx(settings.glue_fraction * glue_base, rel=1e-9)
 
 
-def test_dbox_strip_spans_the_leading_edge_to_the_web_on_both_panels(g2_kit):
+def test_dbox_strip_spans_the_leading_edge_to_the_web_on_both_panels(g2_kit, g2_kit_inputs):
     # Arrange
+    layout, _, spar, settings = g2_kit_inputs
     cover = next(c for c in g2_kit.covering if c.kind == "dbox")
+    wing, root = layout.wing, spar.joint_y_m
+    c_root = wing.chord_at(root)
+    web_x = wing.x_le_root_m + dbox_web_x_m(c_root, spar_member_at(spar, root).od_m, settings)
     # Act
     box = cover.surface.bounding_box()
-    # Assert: both panels, from the joint to the tip, ahead of the spar
+    root_edge = [v for v in cover.surface.vertices() if abs(abs(v.Y) - root) < 1e-9]
+    # Assert: both panels, from the joint to the tip, from the leading edge back to the root web
     assert cover.label == "dbox_wing"
-    assert box.min.Y < -g2_kit.spar.joint_y_m and box.max.Y > g2_kit.spar.joint_y_m
+    assert box.max.Y == pytest.approx(wing.semi_span_m, abs=1e-9) and box.min.Y == pytest.approx(-wing.semi_span_m, abs=1e-9)
+    assert sorted(v.X for v in root_edge if v.Y > 0) == pytest.approx(
+        [wing.x_le_root_m + 0.0 * c_root, web_x], abs=1e-9)
     assert cover.area_m2 > 2.0 * cover.surface.area  # the web and both faces of the sheet
 
 
-def test_kit_without_dbox_has_no_dbox_covering(g1_kit):
-    # Arrange / Act
-    kinds = {c.kind for c in g1_kit.covering}
-    # Assert: g1 passes on its tube alone
-    assert not g1_kit.spar.dbox
-    assert "dbox" not in kinds and g1_kit.dbox_area_m2 == 0.0
-    assert "dbox_wing" not in {i.name for i in kit_mass_items(g1_kit, SETTINGS)}
+def test_kit_without_dbox_has_no_dbox_covering(designs, g2_kit_inputs, g2_kit):
+    # Arrange: the g2 inputs with the D-box switched off, independent of any design's reversal margin
+    layout, airfoil, spar, settings = g2_kit_inputs
+    plain_spar = dataclasses.replace(spar, dbox=False)
+    # Act
+    covering = _covering(layout, airfoil, plain_spar, settings)
+    plain = dataclasses.replace(g2_kit, spar=plain_spar, covering=covering)
+    # Assert
+    assert "dbox" not in {c.kind for c in covering} and plain.dbox_area_m2 == 0.0
+    assert "dbox_wing" not in {i.name for i in kit_mass_items(plain, SETTINGS)}

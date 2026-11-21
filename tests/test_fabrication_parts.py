@@ -16,6 +16,7 @@ from src.tools.fabrication.rib_outline import notched_profile
 from src.tools.fabrication.skin import max_skin_radius_m
 from src.tools.fabrication.tubes import MIN_WEB_M, SparPlan, SparSegment, plan_spar
 from src.tools.fabrication.wing_parts import (
+    tail_root_radius_m,
     AILERON_HINGE_FRACTION,
     PIN_CHORD_FRACTION,
     TAIL_HINGE_FRACTION,
@@ -26,7 +27,6 @@ from src.tools.fabrication.wing_parts import (
     tail_spar_tubes,
     wing_ribs,
 )
-from src.tools.fabrication.wing_stiffness import dbox_web_x_m
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
 
 TOL_M = 1e-6
@@ -426,13 +426,15 @@ def test_dbox_ribs_are_smaller_than_the_plain_ones(g2_kit_inputs):
     assert sum(p.area_m2 * p.quantity for p in boxed) < sum(p.area_m2 * p.quantity for p in plain)
 
 
-def test_tail_ribs_are_not_inset(g1_kit_inputs, g1_tail_spars):
-    # Arrange
-    layout, _, _, settings = g1_kit_inputs
-    # Act: the tail rib builder takes no spar plan, so a wing D-box cannot reach it
-    tails = tail_ribs(layout, load_airfoil(TAIL_AIRFOIL_NAME), g1_tail_spars, settings)
-    # Assert: a tail rib's outline is its plain notched airfoil (before holes and splits)
-    root = next(p for p in tails if p.label == "HR-01")
-    plain = notched_profile(load_airfoil(TAIL_AIRFOIL_NAME), layout.htail.chord_at(0.0), settings)
-    assert root.area_m2 <= plain.area
-    assert dbox_web_x_m(0.1, 0.01, settings) > 0.0
+def test_tail_ribs_are_not_inset(g2_kit_inputs, designs):
+    # Arrange: a wing with a D-box; the tail must stay plain
+    layout, _, spar, settings = g2_kit_inputs
+    assert spar.dbox
+    tail_airfoil = load_airfoil(TAIL_AIRFOIL_NAME)
+    spars = tail_spar_tubes(designs["g2"][0], layout, tail_airfoil, settings)
+    # Act
+    root = next(p for p in tail_ribs(layout, tail_airfoil, spars, settings) if p.label == "HR-01")
+    chord = layout.htail.chord_at(tail_root_radius_m(layout))
+    plain = notched_profile(tail_airfoil, chord, settings)
+    # Assert: an inset rib would be about 2 x the sheet thickness thinner near 0.10 c
+    assert _thickness_at(root.outline, 0.10 * chord) == pytest.approx(_thickness_at(plain, 0.10 * chord), abs=1e-5)
