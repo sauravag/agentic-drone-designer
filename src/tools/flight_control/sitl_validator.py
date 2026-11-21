@@ -5,7 +5,9 @@ nominal JSBSim plant and against the "hot" and "sluggish" perturbed plants (pert
 exports the aircraft, starts the JSON physics bridge and `arduplane --model JSON`, and flies the doublet
 sequence over MAVLink (udpin:127.0.0.1:14550). The attempt gates roll/pitch overshoot and settling on the
 worst of the three, and the transition altitude loss on the nominal flight.
-`generate_and_verify_fcs` retries with the rate gains scaled by 0.75 per attempt (SRS 5.6).
+`generate_and_verify_fcs` retries with the rate gains scaled two ways (SRS 5.6, `next_gain_scale`): x0.75 after an
+overshoot failure or a crashed plant, /0.75 after a settling-only failure. A step that would reverse the previous
+one stops the loop, because no single gain scale then satisfies both the hot and the sluggish corner.
 """
 
 import json
@@ -40,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 DAMPING_FACTOR: Final[float] = 0.75  # SRS 5.6
 MAX_ATTEMPTS: Final[int] = 4  # first run + 3 retries
+DIRECTION_DOWN: Final[int] = -1  # gains lowered: curbs overshoot and crashes
+DIRECTION_UP: Final[int] = 1  # gains raised: speeds up a slow settling
+DIRECTION_NONE: Final[int] = 0  # no step taken yet
 PARAM_FILE: Final[str] = "ardupilot.param"
 SITL_PARAM_FILE: Final[str] = "sitl_overrides.param"
 REPORT_FILE: Final[str] = "sitl_report.json"
@@ -272,10 +277,23 @@ def _param_header(req: OperationalRequirements, result: AttemptResult) -> str:
             f"worst case: {result.governing_case}")
 
 
+def next_gain_scale(result: AttemptResult, scale: float, last_direction: int) -> Optional[tuple[float, int]]:
+    """Gain scale and direction for the retry after a failed attempt, or None to stop.
+    Overshoot at or over the limit, or a crashed plant, lowers the gains; a settling-only failure raises them.
+    Reversing the previous step means no single scale satisfies both corners, so the loop stops."""
+    steps: list[StepResponse] = [x for x in (result.roll, result.pitch) if x is not None]
+    needs_less: bool = result.error is not None or any(x.overshoot >= MAX_OVERSHOOT for x in steps)
+    needs_more: bool = not needs_less and any(x.settling_s >= MAX_SETTLING_S for x in steps)
+    direction: int = DIRECTION_UP if needs_more else DIRECTION_DOWN
+    if last_direction == -direction:
+        return None
+    return (scale / DAMPING_FACTOR if direction == DIRECTION_UP else scale * DAMPING_FACTOR), direction
+
+
 def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                             aero: AeroStabilityOutput, cad: CADArtifacts, out_dir: Path,
                             config: SitlConfig = SitlConfig(), max_attempts: int = MAX_ATTEMPTS) -> FCSArtifacts:
-    """Generate ardupilot.param, fly it in SITL, retry with 0.75x gains until it passes or attempts run out.
+    """Generate ardupilot.param, fly it in SITL, retry with two-way gain steps (`next_gain_scale`) until it passes, the steps reverse, or attempts run out.
     Writes out_dir/ardupilot.param (the last completed attempt's set) and out_dir/sitl_report.json."""
     if not sitl_available(config.binary):
         raise SitlUnavailableError(f"{config.binary} not found: run inside the ISR-Forge Docker image")
@@ -283,8 +301,9 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
     attempts: list[AttemptResult] = []
     flown: list[tuple[AttemptResult, FlightLog, pg.ParamSet, int]] = []
     params: pg.ParamSet = {}
+    scale: float = 1.0
+    direction: int = DIRECTION_NONE
     for index in range(max_attempts):
-        scale: float = DAMPING_FACTOR**index
         params = pg.generate_params(model, sizing, bom, gain_scale=scale)
         result, log = _fly_cases(model, params, out_dir / "sitl" / f"attempt_{index + 1}", scale, config)
         attempts.append(result)
@@ -292,6 +311,10 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
             flown.append((result, log, params, index + 1))
         if result.passed:
             break
+        step = next_gain_scale(result, scale, direction)
+        if step is None:
+            break
+        scale, direction = step
     report_path: Path = out_dir / REPORT_FILE
     if not flown:  # still leave the generated (unverified) parameters and the attempt log behind
         report_path.write_text(json.dumps(_report(attempts, None, params, None), indent=2))

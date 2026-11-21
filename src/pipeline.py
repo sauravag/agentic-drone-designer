@@ -103,16 +103,22 @@ def _write_json(path: Path, payload: BaseModel | dict) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
+def _governing_note(fcs: FCSArtifacts) -> str:
+    """'worst case: <plant>', plus the crash when that plant never completed a flight (its metrics are zeros)."""
+    crash = next((c.error for c in fcs.perturbation_cases if c.case == fcs.governing_case and c.error), None)
+    return f"worst case: {fcs.governing_case}" + (f", crashed: {crash}" if crash else "")
+
+
 def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
                     cad: Optional[CADArtifacts], fcs: Optional[FCSArtifacts] = None) -> tuple[str, ...]:
     """Cross-checks between sizing, VSPAERO, the as-built CAD and SITL that the critic (M5) will act on."""
     notes: list[str] = []
     if fcs is not None and not fcs.passed:
-        notes.append(f"SITL doublet test failed after {fcs.attempts} attempt(s) "
-                     f"(worst case: {fcs.governing_case}): roll overshoot {fcs.roll_overshoot:.0%} / settling {fcs.roll_settling_s:.1f} s, pitch overshoot "
-                     f"{fcs.pitch_overshoot:.0%} / settling {fcs.pitch_settling_s:.1f} s, transition altitude loss "
-                     f"{fcs.max_transition_altitude_loss_m:.1f} m (limits {MAX_OVERSHOOT:.0%}, {MAX_SETTLING_S:g} s, "
-                     f"{MAX_TRANSITION_ALT_LOSS_M:g} m).")
+        notes.append(f"SITL doublet test failed after {fcs.attempts} attempt(s) ({_governing_note(fcs)}): "
+                     f"roll overshoot {fcs.roll_overshoot:.0%} / settling {fcs.roll_settling_s:.1f} s, "
+                     f"pitch overshoot {fcs.pitch_overshoot:.0%} / settling {fcs.pitch_settling_s:.1f} s, "
+                     f"transition altitude loss {fcs.max_transition_altitude_loss_m:.1f} m "
+                     f"(limits {MAX_OVERSHOOT:.0%}, {MAX_SETTLING_S:g} s, {MAX_TRANSITION_ALT_LOSS_M:g} m).")
     if aero is not None:
         dev: float = aero.ld_cruise / sizing.assumed_ld_cruise - 1
         if abs(dev) > LD_DEVIATION_TOLERANCE:

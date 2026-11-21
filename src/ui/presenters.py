@@ -238,7 +238,8 @@ def fcs_rows(fcs: FCSArtifacts) -> list[dict[str, str]]:
                  "Limit": "", "Pass": "yes" if fcs.passed else "no"})
     if fcs.perturbation_cases:
         names: str = ", ".join(c.case for c in fcs.perturbation_cases)
-        rows.append({"Check": f"Worst case (of {names})", "Result": fcs.governing_case, "Limit": "", "Pass": ""})
+        rows.append({"Check": f"Worst case (of {names})", "Result": fcs.governing_case, "Limit": "",
+                     "Pass": "yes" if fcs.passed else "no"})
         rows += [_plant_row(c) for c in fcs.perturbation_cases]
     return rows
 

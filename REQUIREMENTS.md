@@ -229,7 +229,7 @@ Build a cyclical `StateGraph(DesignState)` with the following nodes and routing 
      * If all gates pass $\rightarrow$ route to `generate_and_verify_fcs`.
      * If any gate fails and `iteration_count < 8` $\rightarrow$ LLM reviews `validation_errors`, updates `sizing_overrides` (e.g., increases `aspect_ratio` if $L/D$ is too low, increases `tail_volume_h` or `fuselage_length_factor` if $SM$ is out of bounds), increments `iteration_count`, and routes back to `run_sizing`.
      * If `iteration_count >= 8` $\rightarrow$ route to `compile_report` with explicit non-convergence warnings.
-6. **`generate_and_verify_fcs` (Tool Node):** Executes Module D (`param_generator.py` + `sitl_validator.py`). If SITL damping check fails, automatically applies a $0.75\times$ gain damping adjustment and retries SITL up to 3 times.
+6. **`generate_and_verify_fcs` (Tool Node):** Executes Module D (`param_generator.py` + `sitl_validator.py`). If the SITL check fails, automatically retries up to 3 times with the rate gains scaled by $0.75\times$ after an overshoot failure or a crashed plant, or by $1/0.75\times$ after a settling-only failure. A step that would reverse the previous one stops the retries, because no single gain scale then satisfies both plant corners.
 7. **`compile_report` (LLM Node):** Generates `outputs/<run_id>/design_report.md` summarizing operational compliance, mass/power budget, BOM table, aerodynamic stability derivatives, CAD file paths, and SITL flight test metrics.
 
 ---

@@ -159,7 +159,19 @@ def test_sitl_failure_warning_names_the_governing_case(sizing_only_run: pipeline
                        roll_settling_s=4.2, pitch_settling_s=1.0, max_transition_altitude_loss_m=2.0, attempts=4,
                        governing_case="hot")
     text = " ".join(pipeline.design_warnings(sizing_only_run.sizing, None, None, fcs))
-    assert "worst case: hot" in text
+    assert "worst case: hot" in text and "crashed" not in text
+
+
+def test_sitl_failure_warning_says_when_the_governing_plant_crashed(sizing_only_run: pipeline.DesignRun) -> None:
+    from src.schemas.state import PlantCaseResult
+
+    crashed = PlantCaseResult(case="hot", roll_overshoot=0.0, roll_settling_s=0.0, pitch_overshoot=0.0,
+                              pitch_settling_s=0.0, error="SitlFlightError: stalled")
+    fcs = FCSArtifacts(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.05, pitch_overshoot=0.05,
+                       roll_settling_s=1.0, pitch_settling_s=1.0, max_transition_altitude_loss_m=0.0, attempts=1,
+                       governing_case="hot", perturbation_cases=(crashed,))
+    text = " ".join(pipeline.design_warnings(sizing_only_run.sizing, None, None, fcs))
+    assert "worst case: hot, crashed: SitlFlightError: stalled" in text
 
 
 # ------------------------------------------------------------------ 3D viewer ---

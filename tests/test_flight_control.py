@@ -320,11 +320,14 @@ def test_stick_mapping() -> None:
     assert (ft.pitch_stick_pwm(10.0, params), ft.pitch_stick_pwm(-5.0, params)) == (1750, 1250)
 
 
-def _synthetic_log(ft: Any, roll_tau: float, transition_dip_m: float = 0.0) -> Any:
+def _synthetic_log(ft: Any, roll_tau: float, transition_dip_m: float = 0.0, ringing: bool = False) -> Any:
+    """roll_tau 2.0 settles too slowly; ringing=True adds a ~60 % roll overshoot instead."""
     log = ft.FlightLog()
     for i in range(1500):
         t = i * 0.04
-        roll = 0.0 if t < 20 else 15 * (1 - math.exp(-(t - 20) / roll_tau))
+        d = t - 20
+        roll = 0.0 if t < 20 else 15 * (1 - math.exp(-d / 2.0) * math.cos(3 * d)) if ringing else (
+            0.0 if t < 20 else 15 * (1 - math.exp(-d / roll_tau)))
         pitch = 3.0 if t < 40 else 13 - 10 * math.exp(-(t - 40) / 0.3)
         alt = 40 - (transition_dip_m if 5 < t < 8 else 0.0)
         log.samples.append(ft.Sample(t, roll, pitch, 0.0 if t < 20 else 15.0, 3.0 if t < 40 else 13.0, alt, 22, 20))
@@ -342,6 +345,64 @@ def test_score_applies_all_three_srs_criteria() -> None:
     assert not sv.score(_synthetic_log(ft, 0.4, transition_dip_m=20.0), 1.0).passed
 
 
+def test_next_gain_scale_goes_down_for_overshoot_and_crashes_up_for_settling() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    overshoot = sv.score(_synthetic_log(ft, 0.4, ringing=True), 1.0)
+    slow = sv.score(_synthetic_log(ft, 2.0), 1.0)
+    crash = sv.AttemptResult(gain_scale=1.0, passed=False, error="SitlFlightError: stall")
+    assert overshoot.roll.overshoot >= 0.2 and slow.roll.overshoot < 0.2
+    assert sv.next_gain_scale(overshoot, 1.0, sv.DIRECTION_NONE) == (pytest.approx(0.75), sv.DIRECTION_DOWN)
+    assert sv.next_gain_scale(slow, 1.0, sv.DIRECTION_NONE) == (pytest.approx(1 / 0.75), sv.DIRECTION_UP)
+    assert sv.next_gain_scale(crash, 1.0, sv.DIRECTION_NONE) == (pytest.approx(0.75), sv.DIRECTION_DOWN)
+    assert sv.next_gain_scale(slow, 0.75, sv.DIRECTION_UP) is not None  # same direction continues
+
+
+def test_next_gain_scale_stops_when_the_step_would_reverse() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    overshoot = sv.score(_synthetic_log(ft, 0.4, ringing=True), 1.0)
+    slow = sv.score(_synthetic_log(ft, 2.0), 1.0)
+    assert sv.next_gain_scale(overshoot, 1.0, sv.DIRECTION_UP) is None
+    assert sv.next_gain_scale(slow, 0.75, sv.DIRECTION_DOWN) is None
+
+
+def test_retry_loop_raises_gains_after_a_settling_only_failure(monkeypatch: pytest.MonkeyPatch,
+                                                              tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    scales: list[float] = []
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        scales.append(scale)
+        log = _synthetic_log(ft, 2.0 if scale <= 1.0 else 0.4)
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3)
+    assert fcs.passed and fcs.attempts == 2 and fcs.gain_scale == pytest.approx(1 / 0.75)
+
+
+def test_retry_loop_stops_when_no_single_scale_satisfies_both_corners(monkeypatch: pytest.MonkeyPatch,
+                                                                     tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    scales: list[float] = []
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        scales.append(scale)
+        log = _synthetic_log(ft, 0.4, ringing=scale > 1.0) if scale > 1.0 else _synthetic_log(ft, 2.0)
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3)  # settling up, then overshoot would reverse: stop
+    assert not fcs.passed and fcs.attempts == 2
+
+
 def test_retry_loop_scales_gains_by_0_75_until_it_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
@@ -349,7 +410,8 @@ def test_retry_loop_scales_gains_by_0_75_until_it_passes(monkeypatch: pytest.Mon
 
     def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
         scales.append(scale)
-        log = _synthetic_log(ft, 2.0 if len(scales) <= 6 else 0.4)  # three flights per attempt
+        failing = len(scales) <= 6  # three flights per attempt
+        log = _synthetic_log(ft, 0.4, ringing=True) if failing else _synthetic_log(ft, 0.4)
         return sv.score(log, scale), log
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
@@ -420,7 +482,7 @@ def test_every_attempt_flies_nominal_and_both_perturbed_plants(monkeypatch: pyte
         flights.append((work.name, model.static_margin, id(params), scale))
         params_seen.append(params)
         slow_first = scale == 1.0 and work.name == "sluggish"
-        log = _synthetic_log(ft, 2.0 if slow_first else 0.4)
+        log = _synthetic_log(ft, 0.4, ringing=slow_first)  # overshoot on the sluggish plant: gains go down
         return sv.score(log, scale), log
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
@@ -520,14 +582,14 @@ def test_sitl_acceptance(case: str, tmp_path: Path) -> None:
 
 @pytest.mark.docker
 def test_far_out_of_range_plant_fails_the_gate(tmp_path: Path) -> None:
-    """The perturbation check can fail: nominal gains on a plant with 3x control power do not pass."""
+    """The perturbation check can fail: nominal gains on a plant with 0.3x control power are too slow to settle."""
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     if not sv.sitl_available():
         pytest.skip("arduplane not installed (run in the Docker image)")
     req, sizing, bom, aero, cad = load_design("g1")
     model = build_flight_model(req, sizing, bom, aero, cad)
     params = pg.generate_params(model, sizing, bom)
-    extreme = perturbed_model(model, PlantCase("extreme", 3.0, 1.0, 1.0, model.static_margin))
+    extreme = perturbed_model(model, PlantCase("extreme", 0.3, 1.0, 1.0, model.static_margin))
     result, _ = sv._attempt(extreme, params, tmp_path, 1.0, sv.SitlConfig())
     assert not result.passed
 

@@ -11,6 +11,7 @@ from src.ui import presenters
 from src.ui.examples import EXAMPLE_MISSIONS
 from src.agent.llm import StructuredLLM
 from src.schemas.requirements import OperationalRequirements
+from src.schemas.state import FCSArtifacts, PlantCaseResult
 from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "ui" / "app.py"
@@ -85,8 +86,6 @@ def test_bom_rows_list_parts_and_total(run: pipeline.DesignRun) -> None:
 
 
 def test_fcs_rows_compare_against_srs_limits() -> None:
-    from src.schemas.state import FCSArtifacts
-
     fcs = FCSArtifacts(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.05, pitch_overshoot=0.25,
                        roll_settling_s=1.5, pitch_settling_s=1.0, max_transition_altitude_loss_m=0.3)
     rows = {r["Check"]: r for r in presenters.fcs_rows(fcs)}
@@ -95,13 +94,13 @@ def test_fcs_rows_compare_against_srs_limits() -> None:
     assert rows["Transition altitude loss"]["Result"] == "0.30 m"
 
 
-def _fcs_with_cases(**updates: object) -> "FCSArtifacts":
-    from src.schemas.state import FCSArtifacts, PlantCaseResult
-
+def _fcs_with_cases(**updates: object) -> FCSArtifacts:
     cases = (PlantCaseResult(case="nominal", roll_overshoot=0.05, roll_settling_s=1.0, pitch_overshoot=0.04,
                              pitch_settling_s=0.9),
              PlantCaseResult(case="hot", roll_overshoot=0.12, roll_settling_s=1.4, pitch_overshoot=0.08,
                              pitch_settling_s=1.1),
+             PlantCaseResult(case="ringing", roll_overshoot=0.25, roll_settling_s=1.0, pitch_overshoot=0.04,
+                             pitch_settling_s=0.9),
              PlantCaseResult(case="sluggish", roll_overshoot=0.0, roll_settling_s=0.0, pitch_overshoot=0.0,
                              pitch_settling_s=0.0, error="SitlFlightError: stalled"))
     base: dict[str, object] = dict(param_path="a", sitl_report_path="b", passed=False, roll_overshoot=0.12,
@@ -112,10 +111,10 @@ def _fcs_with_cases(**updates: object) -> "FCSArtifacts":
 
 
 def test_fcs_rows_name_the_governing_case_and_list_each_plant() -> None:
-    from src.schemas.state import FCSArtifacts
-
     rows = {r["Check"]: r for r in presenters.fcs_rows(_fcs_with_cases())}
-    assert rows["Worst case (of nominal, hot, sluggish)"]["Result"] == "sluggish"
+    worst = rows["Worst case (of nominal, hot, ringing, sluggish)"]
+    assert worst["Result"] == "sluggish" and worst["Pass"] == "no"
+    assert rows["Plant: ringing"]["Pass"] == "no" and rows["Plant: ringing"]["Result"].startswith("roll 25%")
     assert rows["Plant: hot"]["Result"] == "roll 12% / 1.4 s, pitch 8% / 1.1 s"
     assert rows["Plant: hot"]["Pass"] == "yes"
     assert rows["Plant: sluggish"]["Result"] == "crashed: SitlFlightError: stalled"
