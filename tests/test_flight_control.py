@@ -328,13 +328,14 @@ def test_stick_mapping() -> None:
     assert (ft.pitch_stick_pwm(10.0, params), ft.pitch_stick_pwm(-5.0, params)) == (1750, 1250)
 
 
-def _synthetic_log(ft: Any, roll_tau: float, transition_dip_m: float = 0.0, ringing: bool = False) -> Any:
-    """roll_tau 2.0 settles too slowly; ringing=True adds a ~60 % roll overshoot instead."""
+def _synthetic_log(ft: Any, roll_tau: float, transition_dip_m: float = 0.0, ringing: bool = False,
+                   ring_decay_s: float = 2.0) -> Any:
+    """roll_tau 2.0 settles too slowly; ringing=True adds a ~60 % roll overshoot instead (ring_decay_s 0.5: ~15 %)."""
     log = ft.FlightLog()
     for i in range(1500):
         t = i * 0.04
         d = t - 20
-        roll = 0.0 if t < 20 else 15 * (1 - math.exp(-d / 2.0) * math.cos(3 * d)) if ringing else (
+        roll = 0.0 if t < 20 else 15 * (1 - math.exp(-d / ring_decay_s) * math.cos(3 * d)) if ringing else (
             0.0 if t < 20 else 15 * (1 - math.exp(-d / roll_tau)))
         pitch = 3.0 if t < 40 else 13 - 10 * math.exp(-(t - 40) / 0.3)
         alt = 40 - (transition_dip_m if 5 < t < 8 else 0.0)
@@ -525,12 +526,16 @@ def test_worst_case_takes_each_metric_from_its_worst_case() -> None:
     ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     nominal = sv.score(_synthetic_log(ft, 0.4, transition_dip_m=2.0), 1.0)
+    hot = sv.score(_synthetic_log(ft, 0.4, ringing=True, ring_decay_s=0.5), 1.0)  # rings: overshoot under 20 %
     slow = sv.score(_synthetic_log(ft, 0.9), 1.0)  # slower roll: longer settling, still < 3 s
-    combined = sv.combine(1.0, [sv.CaseScore("nominal", nominal), sv.CaseScore("hot", nominal),
+    assert 0.1 < hot.roll.overshoot < 0.2 and hot.roll.settling_s < slow.roll.settling_s < 3.0
+    combined = sv.combine(1.0, [sv.CaseScore("nominal", nominal), sv.CaseScore("hot", hot),
                                 sv.CaseScore("sluggish", slow)])
-    assert combined.roll.settling_s == pytest.approx(slow.roll.settling_s)
-    assert combined.transition_alt_loss_m == pytest.approx(2.0) and combined.governing_case == "sluggish"
-    assert combined.passed
+    assert combined.roll.overshoot == pytest.approx(hot.roll.overshoot)  # from hot
+    assert combined.roll.settling_s == pytest.approx(slow.roll.settling_s)  # from sluggish
+    larger = max(("hot", hot), ("sluggish", slow), key=lambda c: sv._case_severity(c[1]))[0]
+    assert combined.governing_case == larger
+    assert combined.transition_alt_loss_m == pytest.approx(2.0) and combined.passed
 
 
 def test_a_crashed_perturbed_flight_fails_the_attempt() -> None:
