@@ -584,6 +584,7 @@ def test_every_attempt_flies_nominal_and_both_perturbed_plants(monkeypatch: pyte
     assert len(fcs.perturbation_cases) == 3
     report = json.loads((tmp_path / "sitl_report.json").read_text())
     assert len(report["attempts"][0]["cases"]) == 3 and report["replay_attempt"] == 2
+    assert "different plants" in report["combined_step_note"]  # the combined roll/pitch is a worst-case mix
     header = (tmp_path / "ardupilot.param").read_text().splitlines()[:3]
     assert any(f"worst case: {fcs.governing_case}" in line for line in header)
 

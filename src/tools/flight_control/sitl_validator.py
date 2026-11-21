@@ -55,6 +55,10 @@ TELEMETRY_FILE: Final[str] = "telemetry.json"  # full-rate log of each attempt, 
 TELEMETRY_DECIMATION: Final[int] = 3  # every 3rd 25 Hz sample (~8 Hz) in the report
 PROCESS_KILL_TIMEOUT_S: Final[float] = 10.0
 LOG_TAIL_LINES: Final[int] = 20
+COMBINED_STEP_NOTE: Final[str] = (
+    "Each attempt's roll/pitch is the worst over the plants that flew: overshoot and settling_s can come from "
+    "different plants, while step_deg, target_deg and peak_deg are the governing case's, so peak_deg need not "
+    "match overshoot. The per-plant values are in 'cases'.")
 _SITL_LOCK = threading.Lock()  # one SITL at a time: the physics/MAVLink UDP ports are fixed
 
 
@@ -189,7 +193,10 @@ def _case_severity(result: AttemptResult) -> float:
 
 
 def _worst_step(results: Sequence[AttemptResult], attr: str, governing: AttemptResult) -> Optional[StepResponse]:
-    """Max overshoot and max settling over the completed cases; step geometry from the governing case."""
+    """Max overshoot and max settling over the completed cases; step geometry from the governing case.
+
+    The result is a synthetic mix (COMBINED_STEP_NOTE): peak_deg is the governing case's and need not match the
+    overshoot, which may come from another plant."""
     steps: list[StepResponse] = [s for s in (getattr(r, attr) for r in results) if s is not None]
     if not steps:
         return None
@@ -226,6 +233,7 @@ def _report(attempts: list[AttemptResult], final_log: Optional[FlightLog], param
     return {
         "passed": any(a.passed for a in attempts),
         "replay_attempt": replay_attempt,  # attempt number whose sitl/attempt_N trace is the final flight
+        "combined_step_note": COMBINED_STEP_NOTE,
         "thresholds": {"max_overshoot": MAX_OVERSHOOT, "max_settling_s": MAX_SETTLING_S,
                        "max_transition_alt_loss_m": MAX_TRANSITION_ALT_LOSS_M},
         "attempts": [asdict(a) for a in attempts],
