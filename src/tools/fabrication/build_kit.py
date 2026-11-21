@@ -319,7 +319,8 @@ def _dbox(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, setting
     chord = wing.chord_at(root)
     web_fraction = dbox_web_x_m(chord, spar_member_at(spar, root).od_m, settings) / chord
     faces = bd.Compound([_planform_face(wing, side, root, LE_FRACTION, web_fraction) for side in (1.0, -1.0)])
-    return CoverSurface("dbox_wing", "dbox", faces, dbox_material_m2(spar, airfoil, wing.semi_span_m, wing.chord_at, settings))
+    area_m2 = dbox_material_m2(spar, airfoil, wing.semi_span_m, wing.chord_at, settings)
+    return CoverSurface("dbox_wing", "dbox", faces, area_m2)
 
 
 def _covering(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
