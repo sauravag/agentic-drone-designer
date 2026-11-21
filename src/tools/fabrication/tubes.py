@@ -284,7 +284,8 @@ def _lift_boom_failure(fits: Sequence[TubeStock], thrust_n: float, arm_m: float,
     if not _passes(stiffest, ((thrust_n * max(arm_m, 0.0), 0.0),), settings):
         sigma = bending_stress_pa(stiffest, thrust_n * max(arm_m, 0.0))
         allow = settings.sigma_allow_pa / settings.safety_factor
-        return f"{head}: too weak: even {tube_size_label(stiffest)} sees {sigma / 1e6:.0f} MPa (allowable {allow / 1e6:.0f} MPa)"
+        return (f"{head}: too weak: even {tube_size_label(stiffest)} sees {sigma / 1e6:.0f} MPa "
+                f"(allowable {allow / 1e6:.0f} MPa)")
     deflection = cantilever_deflection_m(stiffest, thrust_n, arm_m, settings)
     return (f"{head}: too flexible: even {tube_size_label(stiffest)} deflects {deflection * 1e3:.1f} mm at the hub "
             f"(limit {limit_m * 1e3:.1f} mm)")

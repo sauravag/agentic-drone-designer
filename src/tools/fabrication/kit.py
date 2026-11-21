@@ -35,7 +35,7 @@ Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local X
 TubeRole = Literal["spar", "socket", "tail_boom", "tail_spar", "lift_boom", "pin", "overwrap"]
 OVERWRAP_LABEL: Final[str] = "OW-1"
 LinearKind = Literal["stringer", "le", "te"]
-CoverKind = Literal["film", "fuselage"]
+CoverKind = Literal["film", "fuselage", "dbox"]
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ class Kit:
     parts: tuple[KitPart, ...]
     tubes: tuple[TubePart, ...]
     linear: tuple[LinearStock, ...]
-    covering: tuple[CoverSurface, ...]  # film and fuselage cover: area and where it lies (mass placement)
+    covering: tuple[CoverSurface, ...]  # film, fuselage cover and D-box: area and where it lies (mass placement)
     spar: SparPlan
     joins: tuple[str, ...]  # human-readable, e.g. "C-1a + C-1b at x = 0.512 m"
     overwrap: Overwrap  # carbon cloth over the centreline socket mitre (R24)
@@ -111,6 +111,11 @@ class Kit:
     def film_area_m2(self) -> float:
         """Film material area: both faces of the exposed wing and tails (2 x exposed planform)."""
         return self._covered_m2("film")
+
+    @property
+    def dbox_area_m2(self) -> float:
+        """Balsa D-box material area (sheet over both faces of the leading edge, plus its shear web): 0 without one."""
+        return self._covered_m2("dbox")
 
     @property
     def fuselage_cover_area_m2(self) -> float:

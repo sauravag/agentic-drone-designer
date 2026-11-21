@@ -9,13 +9,12 @@ from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.layout import QUARTER_CHORD
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
-from src.tools.fabrication.build_kit import kit_spar_plan
+from src.tools.fabrication.build_kit import kit_spar_plan, stiffened_spar_plan
 from src.tools.fabrication.tubes import SEA_LEVEL_DENSITY_KG_M3, KitUnavailable, SparPlan
 from src.tools.fabrication.wing_stiffness import (
     DCell, d_cell, dbox_gj_nm2, dbox_web_x_m, flap_derivatives, lift_slope_per_rad, reversal_speed_ms,
     WingStiffness, stiffen_spar, tip_deflection_m, wing_stiffness,
 )
-from src.tools.fabrication.build_kit import stiffened_spar_plan
 from tests.cad_helpers import _fitted_layout
 
 

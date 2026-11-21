@@ -16,6 +16,7 @@ from src.tools.aero_cad.airfoil_geometry import AirfoilShape, camber_at
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable
 
 MIN_LIGHTENING_DIAMETER_M: Final[float] = 0.006  # smaller holes save too little to be worth cutting
+MIN_OUTLINE_EDGE_M: Final[float] = 0.0003  # shorter edges (offset slivers) make the kerf offset fail, so they go
 CUTTER_REACH_FACTOR: Final[float] = 2.0  # cutting rectangles extend this many chords past the rib
 
 
@@ -56,8 +57,34 @@ def airfoil_face(airfoil: AirfoilShape, chord_m: float) -> bd.Face:
     return bd.Face(bd.Wire.make_polygon(pts, close=True))
 
 
-def notched_profile(airfoil: AirfoilShape, chord_m: float, settings: FabricationSettings) -> bd.Face:
-    """Airfoil with a square LE-stock notch at the nose and cut back to the TE stock."""
+def without_slivers(face: bd.Face) -> bd.Face:
+    """`face` with its outline's edges shorter than MIN_OUTLINE_EDGE_M closed up (polygon outlines only)."""
+    edges = face.outer_wire().edges()
+    if any(e.geom_type != bd.GeomType.LINE for e in edges) or face.inner_wires():
+        return face
+    points = [e.start_point() for e in edges if e.length >= MIN_OUTLINE_EDGE_M]
+    return bd.Face(bd.Wire.make_polygon(points, close=True))
+
+
+def inset_airfoil_face(airfoil: AirfoilShape, chord_m: float, inset_m: float, end_x_m: float) -> bd.Face:
+    """Airfoil with its skin inset by `inset_m` ahead of local x = `end_x_m` (the D-box sheet sits on the step).
+
+    (airfoil, x >= end) joined to (nose, x < end); the nose is the airfoil cut at end + 2 inset and offset inward by
+    inset. Only the nose is offset: an inward offset of the whole airfoil self-intersects at the sharp trailing edge.
+    """
+    reach = CUTTER_REACH_FACTOR * chord_m
+    full = airfoil_face(airfoil, chord_m)
+    nose_cut = largest_face(full.cut(rect_face(end_x_m + 2.0 * inset_m, -reach, reach, reach)))
+    nose = largest_face(bd.offset(nose_cut, amount=-inset_m))
+    inset_nose = largest_face(nose.cut(rect_face(end_x_m, -reach, reach, reach)))
+    aft = largest_face(full.cut(rect_face(-reach, -reach, end_x_m, reach)))
+    return without_slivers(largest_face(inset_nose.fuse(aft).clean()))
+
+
+def notched_profile(airfoil: AirfoilShape, chord_m: float, settings: FabricationSettings,
+                    inset_m: float = 0.0, inset_end_x_m: float = 0.0) -> bd.Face:
+    """Airfoil with a square LE-stock notch at the nose and cut back to the TE stock; with `inset_m` > 0 the skin
+    ahead of `inset_end_x_m` is inset by `inset_m` (D-box)."""
     reach = CUTTER_REACH_FACTOR * chord_m
     le = settings.le_side_m
     le_y = camber_at(airfoil, 0.0) * chord_m
@@ -65,7 +92,9 @@ def notched_profile(airfoil: AirfoilShape, chord_m: float, settings: Fabrication
     te_cut = rect_face(chord_m - settings.te_chord_m, -reach, chord_m + reach, reach)
     if chord_m - settings.te_chord_m <= le:
         raise KitUnavailable(f"a {chord_m * 1e3:.0f} mm rib is too short for its LE and TE stock")
-    return largest_face(airfoil_face(airfoil, chord_m).cut(le_notch, te_cut))
+    outline = inset_airfoil_face(airfoil, chord_m, inset_m, inset_end_x_m) if inset_m > 0.0 \
+        else airfoil_face(airfoil, chord_m)
+    return largest_face(outline.cut(le_notch, te_cut))
 
 
 def split_at(face: bd.Face, x_m: float) -> tuple[bd.Face, bd.Face]:

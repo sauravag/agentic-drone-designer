@@ -85,7 +85,6 @@ from src.tools.fabrication.tubes import (
     tail_boom_check,
 )
 from src.tools.fabrication.wing_box_bosses import BOSS_LABELS
-from src.tools.fabrication.wing_stiffness import WingStiffness, stiffen_spar, wing_stiffness
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
     fin_start_m,
@@ -96,6 +95,7 @@ from src.tools.fabrication.wing_parts import (
     tail_spar_hole,
     tail_spar_tubes,
     panel_rib_stations,
+    spar_member_at,
     wing_ribs,
 )
 from src.tools.fabrication.wing_retention import (
@@ -104,6 +104,14 @@ from src.tools.fabrication.wing_retention import (
     BOLT_WASHER_THICKNESS_M,
     M5_NUT_HEIGHT_M,
     bolt_length_m,
+)
+from src.tools.fabrication.wing_stiffness import (
+    STIFFNESS_INTEGRATION_STEPS,
+    WingStiffness,
+    d_cell,
+    dbox_web_x_m,
+    stiffen_spar,
+    wing_stiffness,
 )
 
 MAX_DOD_GROUP: Final[int] = 2
@@ -277,13 +285,15 @@ def _edge_strips(layout: AircraftLayout, spar: SparPlan, airfoil: AirfoilShape, 
 
 
 # ---------------------------------------------------------------------------------------- covering ---
-def _planform_face(surface: SurfacePlanform, side: float, start_m: float) -> bd.Face:
-    """One panel's exposed planform, from `start_m` (span station, or fin height) to the tip, in its dihedral plane."""
+def _planform_face(surface: SurfacePlanform, side: float, start_m: float, fore: float = LE_FRACTION,
+                   aft: float = TE_FRACTION) -> bd.Face:
+    """One panel's exposed planform between the chord fractions `fore` and `aft`, from `start_m` (span station, or
+    fin height) to the tip, in its dihedral plane."""
     def at(s: float, fraction: float) -> Vec3:
         x = surface.x_le_root_m + fraction * surface.chord_at(s)
         return (x, side * s, surface.z_at(s)) if surface.is_symmetric else (x, 0.0, surface.z_root_m + s)
     span = surface.semi_span_m
-    corners = [at(start_m, LE_FRACTION), at(start_m, TE_FRACTION), at(span, TE_FRACTION), at(span, LE_FRACTION)]
+    corners = [at(start_m, fore), at(start_m, aft), at(span, aft), at(span, fore)]
     return bd.Face(bd.Wire.make_polygon(corners, close=True))
 
 
@@ -303,12 +313,39 @@ def _fuselage_cover(layout: AircraftLayout) -> CoverSurface:
     return CoverSurface("fuselage_cover", "fuselage", shell, shell.area)
 
 
-def _covering(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings) -> tuple[CoverSurface, ...]:
+def _dbox_material_m2(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan,
+                      settings: FabricationSettings) -> float:
+    """Balsa sheet and shear web of both panels' D-boxes: 2 x sum (arc + web) c dy over the midpoint strips from the
+    joint to the tip, each strip's D-cell at its own web fraction."""
+    wing, root = layout.wing, spar.joint_y_m
+    dy = (wing.semi_span_m - root) / STIFFNESS_INTEGRATION_STEPS
+    total = 0.0
+    for i in range(STIFFNESS_INTEGRATION_STEPS):
+        y = root + (i + 0.5) * dy
+        chord = wing.chord_at(y)
+        cell = d_cell(airfoil, dbox_web_x_m(chord, spar_member_at(spar, y).od_m, settings) / chord)
+        total += (cell.arc_ratio + cell.web_ratio) * chord * dy
+    return 2.0 * total
+
+
+def _dbox(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
+          ) -> CoverSurface:
+    """The leading-edge D-box (R45): the planform strip from the leading edge back to the web, on both panels."""
+    wing, root = layout.wing, spar.joint_y_m
+    chord = wing.chord_at(root)
+    web_fraction = dbox_web_x_m(chord, spar_member_at(spar, root).od_m, settings) / chord
+    faces = bd.Compound([_planform_face(wing, side, root, LE_FRACTION, web_fraction) for side in (1.0, -1.0)])
+    return CoverSurface("dbox_wing", "dbox", faces, _dbox_material_m2(layout, airfoil, spar, settings))
+
+
+def _covering(layout: AircraftLayout, airfoil: AirfoilShape, spar: SparPlan, settings: FabricationSettings
+              ) -> tuple[CoverSurface, ...]:
     """Film over the exposed wing (from the skin joint), horizontal tail (from the tail root, R20) and fin (from the
-    fin start), then the fuselage cover."""
-    return (_film("film_wing", layout.wing, spar.joint_y_m),
-            _film("film_htail", layout.htail, tail_root_radius_m(layout)),
-            _film("film_vtail", layout.vtail, fin_start_m(layout, settings)), _fuselage_cover(layout))
+    fin start), the fuselage cover, and the balsa D-box when the spar has one."""
+    covering = (_film("film_wing", layout.wing, spar.joint_y_m),
+                _film("film_htail", layout.htail, tail_root_radius_m(layout)),
+                _film("film_vtail", layout.vtail, fin_start_m(layout, settings)), _fuselage_cover(layout))
+    return (*covering, _dbox(layout, airfoil, spar, settings)) if spar.dbox else covering
 
 
 # -------------------------------------------------------------------------------------------- API ---
@@ -423,5 +460,5 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     assert_unique_labels(parts, tubes)
-    return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout, spar, settings), spar=spar,
+    return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout, airfoil, spar, settings), spar=spar,
                joins=join_notes(parts), overwrap=overwrap, wing_bolt=_wing_bolt(layout, spar, fuselage, settings))

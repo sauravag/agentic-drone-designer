@@ -2,6 +2,7 @@
 Task 9: the build sheet, parts list and kit solids (`export_kit`, `kit_solids`)."""
 
 import csv
+import dataclasses
 import math
 import re
 import time
@@ -18,6 +19,7 @@ from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication import nesting
 from src.tools.fabrication.kit_export import (
     PARTS_CSV_COLUMNS,
+    build_sheet_text,
     carbon_solids,
     export_kit,
     kit_solids,
@@ -265,7 +267,7 @@ def test_build_kit_rejects_duplicate_labels():
 
 # ---------------------------------------------------------------------- Task 9: build sheet, parts list ---
 BUILD_SHEET_SECTIONS = ("Summary", "Parts", "Tubes", "Linear stock", "Joins", "Centreline joint", "Covering",
-                        "Hardware")
+                        "Wing stiffness", "Hardware")
 MASS_TOL_KG = 1e-6
 VOLUME_MASS_REL = 1e-6
 
@@ -440,3 +442,45 @@ def test_overwrap_halves_are_solids_round_the_sockets(kit):
     annulus = math.pi / 4 * (wrap.od_m**2 - socket_od**2)
     assert len(halves) == 2
     assert sum(h.volume for h in halves) == pytest.approx(2 * annulus * wrap.lap_m, rel=VOLUME_MASS_REL)
+
+
+# ---------------------------------------------------------------------------- wing stiffness section ---
+def test_build_sheet_has_a_wing_stiffness_section(g2_kit, g2_kit_files):
+    # Arrange
+    text = g2_kit_files.build_sheet.read_text()
+    report, t_mm = g2_kit.spar.stiffness, S.dbox_sheet_thickness_m * 1000
+    # Act
+    section = _section(text, "Wing stiffness")
+    headings = re.findall(r"^## (.+)$", text, re.M)
+    # Assert
+    assert headings[headings.index("Covering"):headings.index("Covering") + 3] == ["Covering", "Wing stiffness",
+                                                                                   "Hardware"]
+    assert f"{report.tip_deflection_m * 1000:.1f} mm" in section
+    assert f"{report.tip_deflection_limit_m * 1000:.1f} mm" in section
+    assert f"{report.reversal_speed_ms:.1f} m/s" in section
+    assert f"{report.reversal_required_ms:.1f} m/s" in section and "1.15 x V_NE" in section
+    assert "D-box: yes" in section
+    mass_g = g2_kit.dbox_area_m2 * S.dbox_sheet_thickness_m * S.stringer_density_kg_m3 * 1000
+    assert f"{g2_kit.dbox_area_m2:.3f} m²" in section and f"{mass_g:.1f} g" in section
+    assert f"glue {t_mm:g} mm balsa sheet, grain spanwise" in section
+    assert f"Glue a {t_mm:g} mm balsa shear web, grain vertical" in section
+    assert f"Leading-edge D-box (balsa): {g2_kit.dbox_area_m2:.3f} m², {mass_g:.1f} g" in _section(text, "Covering")
+
+
+def test_build_sheet_says_no_dbox_without_one(kit):
+    # Arrange
+    plain = dataclasses.replace(kit, spar=dataclasses.replace(kit.spar, dbox=False))
+    # Act
+    text = build_sheet_text(plain, S, {})
+    # Assert
+    section = _section(text, "Wing stiffness")
+    assert "D-box: no" in section and "Leading-edge D-box" not in text and "balsa sheet" not in section
+
+
+def test_build_sheet_says_not_checked_without_a_report(kit):
+    # Arrange
+    unchecked = dataclasses.replace(kit, spar=dataclasses.replace(kit.spar, stiffness=None, dbox=False))
+    # Act
+    section = _section(build_sheet_text(unchecked, S, {}), "Wing stiffness")
+    # Assert
+    assert section.strip() == "Wing stiffness: not checked"

@@ -12,6 +12,7 @@ from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil
 from src.tools.aero_cad.layout import AILERON_ETA, TAIL_AIRFOIL_NAME, TAIL_CONTROL_ETA
 from src.tools.aero_cad.structure import RIB_PITCH_M
 from src.tools.fabrication.kit import KitPart, KitUnavailable
+from src.tools.fabrication.rib_outline import notched_profile
 from src.tools.fabrication.skin import max_skin_radius_m
 from src.tools.fabrication.tubes import MIN_WEB_M, SparPlan, SparSegment, plan_spar
 from src.tools.fabrication.wing_parts import (
@@ -25,6 +26,7 @@ from src.tools.fabrication.wing_parts import (
     tail_spar_tubes,
     wing_ribs,
 )
+from src.tools.fabrication.wing_stiffness import dbox_web_x_m
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
 
 TOL_M = 1e-6
@@ -378,3 +380,59 @@ def test_a_hole_at_exactly_the_minimum_web_keeps_it():
     exact = 2.0 * (0.005 - MIN_WEB_M) + 2e-12  # 1e-12 m over: the web is short by 1e-12 m
     assert keeps_web(face, Hole(0.01, 0.005, exact), [])
     assert not keeps_web(face, Hole(0.01, 0.005, exact + 2e-6), [])
+
+
+def _thickness_at(face: bd.Face, x_m: float) -> float:
+    """Vertical extent of the (hole-free) outline along the line local x = x_m."""
+    strip = face.intersect(bd.Face(bd.Wire.make_polygon(
+        [(x_m, -1.0, 0.0), (x_m, 1.0, 0.0), (x_m + 1e-6, 1.0, 0.0), (x_m + 1e-6, -1.0, 0.0)], close=True)))
+    box = bd.Compound(list(strip)).bounding_box()
+    return box.max.Y - box.min.Y
+
+
+def test_inset_rib_shrinks_only_ahead_of_the_web(g2_kit_inputs):
+    # Arrange
+    _, _, _, settings = g2_kit_inputs
+    airfoil, chord, inset, end = load_airfoil("naca2412"), 0.25, 0.0015, 0.06
+    plain = notched_profile(airfoil, chord, settings)
+    # Act
+    inset_face = notched_profile(airfoil, chord, settings, inset_m=inset, inset_end_x_m=end)
+    # Assert: ahead of the web both faces shrink by about 2 t; aft of it the outline is identical
+    assert _thickness_at(plain, 0.10 * chord) - _thickness_at(inset_face, 0.10 * chord) == pytest.approx(
+        2.0 * inset, rel=0.1)
+    assert _thickness_at(inset_face, 0.5 * chord) == pytest.approx(_thickness_at(plain, 0.5 * chord), abs=1e-5)
+    assert plain.cut(inset_face).area > 0.0
+    assert inset_face.cut(plain).area < 1e-9  # the inset outline lies inside the plain one
+
+
+def test_every_g2_wing_rib_keeps_its_spar_web(g2_kit_inputs):
+    # Arrange
+    layout, _, spar, settings = g2_kit_inputs
+    assert spar.dbox
+    # Act
+    ribs = wing_ribs(*g2_kit_inputs)
+    # Assert: every spar hole (the first hole of WR-/WL- ribs) keeps MIN_WEB_M to the outline and other holes
+    assert any(p.label.startswith("WL-") for p in ribs)
+    _assert_minimum_webs([p for p in ribs if p.label[:3] in ("WR-", "WL-")])
+
+
+def test_dbox_ribs_are_smaller_than_the_plain_ones(g2_kit_inputs):
+    # Arrange
+    layout, airfoil, spar, settings = g2_kit_inputs
+    plain_spar = dataclasses.replace(spar, dbox=False)
+    # Act
+    boxed, plain = wing_ribs(*g2_kit_inputs), wing_ribs(layout, airfoil, plain_spar, settings)
+    # Assert
+    assert sum(p.area_m2 * p.quantity for p in boxed) < sum(p.area_m2 * p.quantity for p in plain)
+
+
+def test_tail_ribs_are_not_inset(g1_kit_inputs, g1_tail_spars):
+    # Arrange
+    layout, _, _, settings = g1_kit_inputs
+    # Act: the tail rib builder takes no spar plan, so a wing D-box cannot reach it
+    tails = tail_ribs(layout, load_airfoil(TAIL_AIRFOIL_NAME), g1_tail_spars, settings)
+    # Assert: a tail rib's outline is its plain notched airfoil (before holes and splits)
+    root = next(p for p in tails if p.label == "HR-01")
+    plain = notched_profile(load_airfoil(TAIL_AIRFOIL_NAME), layout.htail.chord_at(0.0), settings)
+    assert root.area_m2 <= plain.area
+    assert dbox_web_x_m(0.1, 0.01, settings) > 0.0

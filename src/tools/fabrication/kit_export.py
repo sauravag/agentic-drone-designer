@@ -46,11 +46,12 @@ from src.schemas.kit_files import (
 from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart
 from src.tools.fabrication.kit_labels import CURVE_SAMPLES, label_layout, label_strokes, ordered_edges
 from src.tools.aero_cad import mass_properties as mp
-from src.tools.fabrication.kit_mass import GLUE_NAME, kit_mass_items
+from src.tools.fabrication.kit_mass import GLUE_NAME, areal_density_kg_m2, kit_mass_items
 from src.tools.fabrication.nesting import MM_PER_M, Placement, kerfed_part, nest, place_kerfed
 from src.tools.fabrication.wing_box_bosses import BOSS_LABELS, PIN_BOSS_LABELS
 from src.tools.fabrication.wing_parts import ROOT_PIN_BOSS_LABEL
 from src.tools.fabrication.wing_retention import BOLT_CHORD_FRACTION
+from src.tools.fabrication.wing_stiffness import REVERSAL_MARGIN
 
 __all__ = ["BUILD_SHEET_SECTIONS", "KitFiles", "KitSolids", "PARTS_CSV_COLUMNS", "build_sheet_text", "carbon_solids",
            "export_kit", "kit_solid_sets", "kit_solids", "ply_solids", "remove_kit_files", "write_sheets"]
@@ -65,7 +66,7 @@ LAYER_COLOURS: Final[dict[str, int]] = {LAYER_CUT_OUTER: colors.RED, LAYER_CUT_I
 DXF_VERSION: Final[str] = "R2010"
 METRIC_MEASUREMENT: Final[int] = 1  # $MEASUREMENT: 1 = metric
 BUILD_SHEET_SECTIONS: Final[tuple[str, ...]] = ("Summary", "Parts", "Tubes", "Linear stock", "Joins",
-                                                "Centreline joint", "Covering", "Hardware")
+                                                "Centreline joint", "Covering", "Wing stiffness", "Hardware")
 PARTS_CSV_COLUMNS: Final[tuple[str, ...]] = ("label", "family", "stock", "thickness_mm", "quantity", "area_mm2",
                                              "mass_g", "sheet")
 MM2_PER_M2: Final[float] = 1e6
@@ -95,6 +96,12 @@ RETENTION_STEPS: Final[tuple[str, ...]] = (
     "Plug each wing's spar into its socket with the pin in its holes.",
     "From inside the fuselage, put a washer on the bolt and drive it through `WM-R` (or `WM-L`), the cover and "
     "`WR-01` (or `WL-01`) into the captive nut; tighten by hand, it is nylon.",
+)
+DBOX_NOTE: Final[str] = (
+    "Leading-edge D-box (R45): glue {t} mm balsa sheet, grain spanwise, over the inset rib noses on the top and "
+    "bottom of each panel, from the leading-edge stock back to the step in the ribs ahead of the spar. Butt the "
+    "sheets onto the leading-edge stock, which closes the box. Glue a {t} mm balsa shear web, grain vertical, across "
+    "each rib bay at that step. Sand the leading-edge stock and the sheet edges to blend before covering."
 )
 LINEAR_KINDS: Final[tuple[LinearKind, ...]] = ("stringer", "le", "te")
 
@@ -363,11 +370,35 @@ def _centreline_joint(kit: Kit, settings: FabricationSettings) -> list[str]:
             "Bosses (glue before inserting the sockets and pins):", "", *doublers]
 
 
+def _dbox_mass_g(kit: Kit, settings: FabricationSettings) -> float:
+    return _g(kit.dbox_area_m2 * areal_density_kg_m2("dbox", settings))
+
+
 def _covering(kit: Kit, settings: FabricationSettings) -> list[str]:
     film, cover = kit.film_area_m2, kit.fuselage_cover_area_m2
-    return [f"- Film (both faces of the wing and tails, outside the fuselage): {film:.3f} m², "
-            f"{_g(film * settings.film_kg_m2):.1f} g",
-            f"- Fuselage cover: {cover:.3f} m², {_g(cover * settings.fuselage_cover_kg_m2):.1f} g"]
+    lines = [f"- Film (both faces of the wing and tails, outside the fuselage): {film:.3f} m², "
+             f"{_g(film * settings.film_kg_m2):.1f} g",
+             f"- Fuselage cover: {cover:.3f} m², {_g(cover * settings.fuselage_cover_kg_m2):.1f} g"]
+    if kit.spar.dbox:
+        lines.append(f"- Leading-edge D-box (balsa): {kit.dbox_area_m2:.3f} m², {_dbox_mass_g(kit, settings):.1f} g")
+    return lines
+
+
+def _wing_stiffness(kit: Kit, settings: FabricationSettings) -> list[str]:
+    """R43-R45: tip deflection and aileron reversal against their limits, and the D-box with its build note."""
+    report = kit.spar.stiffness
+    if report is None:
+        return ["Wing stiffness: not checked"]
+    lines = [f"- Tip deflection at 1 g: {_to_mm(report.tip_deflection_m):.1f} mm "
+             f"(limit {_to_mm(report.tip_deflection_limit_m):.1f} mm)",
+             f"- Aileron reversal speed: {report.reversal_speed_ms:.1f} m/s "
+             f"(needs above {report.reversal_required_ms:.1f} m/s = {REVERSAL_MARGIN:.2f} x V_NE)",
+             f"- D-box: {'yes' if kit.spar.dbox else 'no'}"]
+    if kit.spar.dbox:
+        t = f"{_to_mm(settings.dbox_sheet_thickness_m):g}"
+        lines += [f"- D-box area: {kit.dbox_area_m2:.3f} m²", f"- D-box mass: {_dbox_mass_g(kit, settings):.1f} g",
+                  "", DBOX_NOTE.format(t=t)]
+    return lines
 
 
 def _hardware(kit: Kit) -> list[str]:
@@ -387,7 +418,8 @@ def build_sheet_text(kit: Kit, settings: FabricationSettings, placements: Mappin
     caller already has them (the packing's), else they are computed once here."""
     by_name = _items_by_name(kit, settings, items)
     bodies = (_summary(kit, by_name, placements), _parts(kit, settings, by_name), _tubes(kit), _linear(kit, settings),
-              _joins(kit), _centreline_joint(kit, settings), _covering(kit, settings), _hardware(kit))
+              _joins(kit), _centreline_joint(kit, settings), _covering(kit, settings),
+              _wing_stiffness(kit, settings), _hardware(kit))
     lines = ["# Laser-cut kit build sheet", ""]
     for heading, body in zip(BUILD_SHEET_SECTIONS, bodies, strict=True):
         lines += [f"## {heading}", "", *body, ""]

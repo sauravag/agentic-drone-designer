@@ -8,8 +8,9 @@
 - Each `LinearStock`: a slender rod (section x length x density).
 - Each `CoverSurface`: a uniform shell over its surface carrying areal density x covered area.
 - `OW-1`: the centreline overwrap (its own mass, not carbon density), one hollow cylinder per socket half.
-- `glue_hardware`: glue_fraction x the structure (parts, tubes, linear stock; not covering, nor the wet-laid overwrap,
-  which is its own resin), distributed like the structure (its CG, and the same fraction of its inertia).
+- `glue_hardware`: glue_fraction x the structure (parts, tubes, linear stock and the glued balsa D-box; not film or
+  fuselage cover, nor the wet-laid overwrap, which is its own resin), distributed like the structure (its CG, and
+  the same fraction of its inertia).
 """
 
 from typing import Final, Sequence
@@ -21,7 +22,7 @@ from src.schemas.fabrication import FabricationSettings
 from src.schemas.state import SizingOutput
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.layout import AircraftLayout
-from src.tools.fabrication.kit import OVERWRAP_LABEL, CoverSurface, Kit, KitPart, LinearStock, TubePart
+from src.tools.fabrication.kit import OVERWRAP_LABEL, CoverKind, CoverSurface, Kit, KitPart, LinearStock, TubePart
 from src.tools.sizing.mass_model import GEAR_FRACTION
 
 GLUE_NAME: Final[str] = "glue_hardware"
@@ -83,9 +84,19 @@ def _strip(strip: LinearStock) -> mp.MassItem:
     return tube_item(strip.label, mass, strip.start_m, axis, strip.length_m, 0.0, 0.0)
 
 
+def areal_density_kg_m2(kind: CoverKind, settings: FabricationSettings) -> float:
+    """Mass per material area of each covering kind; the D-box is balsa sheet of the kit's stringer wood."""
+    densities: dict[CoverKind, float] = {
+        "film": settings.film_kg_m2,
+        "fuselage": settings.fuselage_cover_kg_m2,
+        "dbox": settings.dbox_sheet_thickness_m * settings.stringer_density_kg_m3,
+    }
+    return densities[kind]
+
+
 def _cover(cover: CoverSurface, settings: FabricationSettings) -> mp.MassItem:
     """`area_m2` of covering spread uniformly over the surface (film: both faces over one planform)."""
-    kg_m2 = settings.film_kg_m2 if cover.kind == "film" else settings.fuselage_cover_kg_m2
+    kg_m2 = areal_density_kg_m2(cover.kind, settings)
     return mp.shell_item(cover.label, cover.surface, kg_m2 * cover.area_m2 / cover.surface.area)
 
 
@@ -110,7 +121,8 @@ def kit_mass_items(kit: Kit, settings: FabricationSettings) -> list[mp.MassItem]
     structure += [_tube(t, settings) for t in kit.tubes]
     structure += [_strip(s) for s in kit.linear]
     covering = [_cover(c, settings) for c in kit.covering]
-    return structure + [overwrap_item(kit)] + covering + [_glue(structure, settings)]
+    glued_wood = [item for cover, item in zip(kit.covering, covering) if cover.kind == "dbox"]  # glued, not ironed on
+    return structure + [overwrap_item(kit)] + covering + [_glue(structure + glued_wood, settings)]
 
 
 def kit_mass_kg(kit: Kit, settings: FabricationSettings) -> float:

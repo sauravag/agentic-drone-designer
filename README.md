@@ -212,7 +212,7 @@ crutch and wing-mount plates cut from sheet, with stock carbon tubes for the spa
 - `kit/sheets/<stock>-<n>.dxf`: one file per sheet of stock, in millimetres, with parts nested on the bed. Layers:
   `CUT_OUTER` (outer outlines), `CUT_INNER` (holes and slots) and `ENGRAVE` (part labels). Outlines are
   kerf-compensated, so slots press-fit.
-- `kit/build_sheet.md`: the parts, the tubes to cut, glued joins, covering and the kit mass. Its centreline joint
+- `kit/build_sheet.md`: the parts, the tubes to cut, glued joins, covering, wing stiffness checks and the kit mass. Its centreline joint
   section gives the carbon overwrap lay-up: cloth, layer count and thickness, lap per side, and the order to wrap
   the glued mitre between the two fuselage socket tubes (the spar roots slide into the sockets unglued, so the wings detach).
 - `kit/parts.csv`: the parts list.

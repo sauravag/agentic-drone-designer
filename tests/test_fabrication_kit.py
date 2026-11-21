@@ -272,6 +272,7 @@ def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(case, request):
     assert len(by) == len(items)
     assert kit_mass_kg(kit, SETTINGS) == pytest.approx(sum(i.mass_kg for i in items), rel=1e-12)
     structure = [by[p.label] for p in kit.parts] + [by[t.label] for t in kit.tubes] + [by[s.label] for s in kit.linear]
+    structure += [by[c.label] for c in kit.covering if c.kind == "dbox"]  # glued balsa joins the glue base
     glue = by["glue_hardware"]
     assert glue.mass_kg == pytest.approx(SETTINGS.glue_fraction * sum(i.mass_kg for i in structure), rel=1e-12)
     assert glue.cg_m == pytest.approx(mp.combine(structure).cg_m, abs=1e-12)
@@ -283,7 +284,8 @@ def test_kit_mass_is_sum_of_parts_tubes_stock_covering_and_glue(case, request):
     cover = SETTINGS.fuselage_cover_kg_m2 * kit.fuselage_cover_area_m2
     assert by["fuselage_cover"].mass_kg == pytest.approx(cover, rel=1e-9)
     named = {p.label for p in kit.parts} | {t.label for t in kit.tubes} | {s.label for s in kit.linear}
-    assert set(by) - named == {"glue_hardware", "fuselage_cover", "film_wing", "film_htail", "film_vtail", "OW-1"}
+    expected_extra = {"glue_hardware", "fuselage_cover", "film_wing", "film_htail", "film_vtail", "OW-1"}
+    assert set(by) - named == expected_extra | ({"dbox_wing"} if kit.spar.dbox else set())
     assert by["OW-1"].mass_kg == pytest.approx(kit.overwrap.mass_kg, rel=1e-12)  # R24: its own mass, glue-free
 
 
@@ -362,3 +364,51 @@ def test_g2_lift_booms_are_stiff_enough(g2_kit):
     """R22: the hand estimate (68.8 N at 0.691 m needs I >= 1.56e-8 m^4) gives 32 x 28 mm."""
     for tube in (t for t in g2_kit.tubes if t.role == "lift_boom"):
         assert (round(tube.tube.od_m * 1e3), round(tube.tube.id_m * 1e3)) == (32, 28)
+
+
+# ------------------------------------------------------------------------------------------- D-box (R45) ---
+def test_dbox_covering_area_and_mass(designs, g2_kit_inputs):
+    # Arrange: a non-default wood density, so a missing areal-density mapping cannot pass by coincidence
+    layout, airfoil, _, _ = g2_kit_inputs
+    settings = SETTINGS.model_copy(update={"stringer_density_kg_m3": 200.0})
+    kit = build_kit(designs["g2"][0], layout, airfoil, _placed(designs, "g2", layout), settings)
+    # Act
+    by = {i.name: i for i in kit_mass_items(kit, settings)}
+    # Assert: area is the material area of the D-cells, 2 x sum (arc + web) c dy
+    from src.tools.fabrication.wing_parts import spar_member_at
+    from src.tools.fabrication.wing_stiffness import STIFFNESS_INTEGRATION_STEPS, d_cell, dbox_web_x_m
+
+    wing, root = layout.wing, kit.spar.joint_y_m
+    dy = (wing.semi_span_m - root) / STIFFNESS_INTEGRATION_STEPS
+    expected = 0.0
+    for i in range(STIFFNESS_INTEGRATION_STEPS):
+        y = root + (i + 0.5) * dy
+        c = wing.chord_at(y)
+        cell = d_cell(airfoil, dbox_web_x_m(c, spar_member_at(kit.spar, y).od_m, settings) / c)
+        expected += (cell.arc_ratio + cell.web_ratio) * c * dy
+    assert kit.spar.dbox and kit.dbox_area_m2 == pytest.approx(2.0 * expected, rel=1e-9)
+    dbox_kg = kit.dbox_area_m2 * settings.dbox_sheet_thickness_m * 200.0
+    assert by["dbox_wing"].mass_kg == pytest.approx(dbox_kg, rel=1e-9)
+    structure = [by[p.label] for p in kit.parts] + [by[t.label] for t in kit.tubes] + [by[s.label] for s in kit.linear]
+    glue_base = sum(i.mass_kg for i in structure) + dbox_kg  # glued wood; film and fuselage cover are not
+    assert by["glue_hardware"].mass_kg == pytest.approx(settings.glue_fraction * glue_base, rel=1e-9)
+
+
+def test_dbox_strip_spans_the_leading_edge_to_the_web_on_both_panels(g2_kit):
+    # Arrange
+    cover = next(c for c in g2_kit.covering if c.kind == "dbox")
+    # Act
+    box = cover.surface.bounding_box()
+    # Assert: both panels, from the joint to the tip, ahead of the spar
+    assert cover.label == "dbox_wing"
+    assert box.min.Y < -g2_kit.spar.joint_y_m and box.max.Y > g2_kit.spar.joint_y_m
+    assert cover.area_m2 > 2.0 * cover.surface.area  # the web and both faces of the sheet
+
+
+def test_kit_without_dbox_has_no_dbox_covering(g1_kit):
+    # Arrange / Act
+    kinds = {c.kind for c in g1_kit.covering}
+    # Assert: g1 passes on its tube alone
+    assert not g1_kit.spar.dbox
+    assert "dbox" not in kinds and g1_kit.dbox_area_m2 == 0.0
+    assert "dbox_wing" not in {i.name for i in kit_mass_items(g1_kit, SETTINGS)}

@@ -64,6 +64,7 @@ from src.tools.fabrication.wing_retention import (
     check_clear_of_holes,
     nut_plate_outline,
 )
+from src.tools.fabrication.wing_stiffness import dbox_web_x_m
 
 AILERON_HINGE_FRACTION: Final[float] = 1.0 - AILERON_CHORD_FRACTION
 TAIL_HINGE_FRACTION: Final[float] = 1.0 - TAIL_CONTROL_CHORD_FRACTION
@@ -188,6 +189,15 @@ def _servo_bay_y(stations: Sequence[float], wing: SurfacePlanform) -> float:
     return 0.5 * sum(AILERON_ETA) * wing.semi_span_m
 
 
+def _wing_rib_profile(airfoil: AirfoilShape, chord: float, member: TubeStock, spar: SparPlan,
+                      settings: FabricationSettings) -> bd.Face:
+    """Rib outline; with the D-box its skin is inset by the sheet thickness ahead of the D-box web (R45)."""
+    if not spar.dbox:
+        return notched_profile(airfoil, chord, settings)
+    return notched_profile(airfoil, chord, settings, inset_m=settings.dbox_sheet_thickness_m,
+                           inset_end_x_m=dbox_web_x_m(chord, member.od_m, settings))
+
+
 def _wing_rib(
     index: int, y: float, servo_y: float, layout: AircraftLayout, airfoil: AirfoilShape,
     spar: SparPlan, settings: FabricationSettings,
@@ -198,8 +208,8 @@ def _wing_rib(
     family: PartFamily = "doubler" if is_root else "rib"
     t = settings.sheet_for(family).thickness_m
     mid = y + t / 2.0 if is_root else y  # slab mid-plane (R8)
-    profile = notched_profile(airfoil, chord, settings)
     member = spar_member_at(spar, y)
+    profile = _wing_rib_profile(airfoil, chord, member, spar, settings)
     holes = [_checked(profile, oblique_hole(wing, airfoil, SPAR_CHORD_STATION, y, mid, member.od_m, t, settings), [], label)]
     keep_out = _root_holes(profile, layout, airfoil, spar, settings, holes, label) if is_root else []
     if y < servo_y:  # aileron servo leads run inboard from the servo bay, clear of the nut plate

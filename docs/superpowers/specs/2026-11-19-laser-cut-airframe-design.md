@@ -266,6 +266,10 @@ New settings (defaults, all adjustable):
 - `overwrap_max_layers` = 12 (R29: raised from 8, which g2 needed 9 of)
 - `epoxy_lap_shear_pa` = 15 MPa
 - `crutch_rail_min_m` = 8 mm
+- `carbon_shear_modulus_pa` = 5 GPa (R43: roll-wrapped carbon tube torsion stiffness, conservative)
+- `balsa_shear_modulus_pa` = 0.13 GPa (R45: balsa D-box shear modulus, G_LT of about 0.037 E_L)
+- `dbox_sheet_thickness_m` = 1.5 mm (R45: balsa D-box sheet and shear web; its areal mass is this thickness x
+  `stringer_density_kg_m3`)
 
 ### UI
 
