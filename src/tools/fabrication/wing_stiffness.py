@@ -20,7 +20,7 @@ from typing import Callable, Final
 
 import numpy as np
 
-from src.schemas.fabrication import FabricationSettings
+from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape
 from src.tools.aero_cad.layout import AILERON_CHORD_FRACTION, AILERON_ETA
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
@@ -38,8 +38,8 @@ HALF: Final[float] = 0.5
 BREDT_FACTOR: Final[float] = 4.0  # GJ = 4 A_m^2 G t / p
 HELMBOLD_SQUARE_OFFSET: Final[float] = 4.0  # a = 2 pi AR / (2 + sqrt(AR^2 + 4))
 HELMBOLD_DENOMINATOR_OFFSET: Final[float] = 2.0
-FLAP_SPAN_OFFSET: Final[float] = 1.0  # theta_h = acos(2E - 1)
-FLAP_SPAN_FACTOR: Final[float] = 2.0
+HINGE_COS_OFFSET: Final[float] = 1.0  # theta_h = acos(2E - 1)
+HINGE_COS_FACTOR: Final[float] = 2.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,8 @@ class DCell:
 
 def d_cell(airfoil: AirfoilShape, web_fraction: float) -> DCell:
     """D-cell of the airfoil ahead of the web (Selig order: upper TE -> LE, then lower LE -> TE)."""
+    if not 0.0 < web_fraction < 1.0:
+        raise ValueError(f"web_fraction must lie strictly between 0 and 1, got {web_fraction}")
     pts = np.asarray(airfoil.coordinates, dtype=float)
     nose = int(np.argmin(pts[:, 0]))
     upper = pts[: nose + 1][::-1]  # LE -> TE
@@ -103,9 +105,9 @@ def lift_slope_per_rad(aspect_ratio: float) -> float:
 
 def flap_derivatives(chord_fraction: float, lift_slope: float) -> tuple[float, float]:
     """Thin-airfoil flap theory: (C_L,delta, C_m,delta about the quarter chord) per radian."""
-    theta = math.acos(FLAP_SPAN_FACTOR * chord_fraction - FLAP_SPAN_OFFSET)
+    theta = math.acos(HINGE_COS_FACTOR * chord_fraction - HINGE_COS_OFFSET)
     cl_delta = lift_slope / math.pi * (math.pi - theta + math.sin(theta))
-    cm_delta = -lift_slope / (FLAP_SPAN_FACTOR * math.pi) * HALF * math.sin(theta) * (1.0 - math.cos(theta))
+    cm_delta = -lift_slope / math.tau * HALF * math.sin(theta) * (1.0 - math.cos(theta))
     return cl_delta, cm_delta
 
 
@@ -118,12 +120,14 @@ def reversal_speed_ms(gj_at: Callable[[float], float], chord_at: Callable[[float
     y, dy = _strips(root_m, semi_span_m)
     chord = np.array([chord_at(v) for v in y])
     gj = np.array([gj_at(v) for v in y])
-    is_aileron = (y >= aileron_m[0]) & (y <= aileron_m[1])
-    moment_strip = np.where(is_aileron, chord**2 * cm_delta * dy, 0.0)
+    # fraction of each strip inside the aileron span (strips straddling an aileron edge count partially)
+    overlap = np.clip(np.minimum(y + HALF * dy, aileron_m[1]) - np.maximum(y - HALF * dy, aileron_m[0]), 0.0, dy)
+    weight = overlap / dy
+    moment_strip = weight * chord**2 * cm_delta * dy
     torque = np.cumsum(moment_strip[::-1])[::-1] - HALF * moment_strip  # tip-inward, half the own strip
     twist_strip = torque / gj * dy
     twist = np.cumsum(twist_strip) - HALF * twist_strip  # midpoint: half the own strip
-    a_term = float(np.sum(np.where(is_aileron, chord * cl_delta * y * dy, 0.0)))
+    a_term = float(np.sum(weight * chord * cl_delta * y * dy))
     b_term = -float(np.sum(chord * lift_slope * twist * y * dy))
     if b_term <= 0.0:
         return math.inf
@@ -133,6 +137,8 @@ def reversal_speed_ms(gj_at: Callable[[float], float], chord_at: Callable[[float
 
 @dataclass(frozen=True)
 class WingStiffness:
+    """Result of the stiffness checks: tip deflection at 1 g (R44) and aileron reversal speed (R43), each with
+    its limit, and whether the balsa D-box (R45) was counted in the torsional stiffness."""
     tip_deflection_m: float
     tip_deflection_limit_m: float
     reversal_speed_ms: float
@@ -158,7 +164,7 @@ def wing_stiffness(spar: SparPlan, airfoil: AirfoilShape, with_dbox: bool, mtow_
     """Tip deflection at 1 g and aileron reversal of the wing built on `spar`, with or without the D-box."""
     segments = spar.segments
 
-    def member_at(y_m: float):
+    def member_at(y_m: float) -> TubeStock:
         # inboard member at a step boundary; stations past the last segment use the last member
         return next((s.tube for s in segments if y_m <= s.y_end_m), segments[-1].tube)
 

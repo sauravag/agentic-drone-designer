@@ -26,6 +26,29 @@ def test_d_cell_of_naca0012_matches_the_analytic_thickness():
     assert cell.arc_ratio > 2 * 0.20
 
 
+def _arc_integrand(x, t=0.12):
+    dt = 5 * t * (0.2969 * 0.5 * x**-0.5 - 0.1260 - 2 * 0.3516 * x + 3 * 0.2843 * x**2 - 4 * 0.1015 * x**3)
+    return math.sqrt(1 + dt**2)
+
+
+def test_d_cell_arc_matches_the_analytic_contour_length():
+    cell = d_cell(load_airfoil("naca0012"), 0.20)
+    assert cell.arc_ratio == pytest.approx(2 * quad(_arc_integrand, 0, 0.20)[0], rel=2e-3)
+
+
+def test_d_cell_of_a_cambered_airfoil_uses_the_thickness_between_the_surfaces():
+    cell = d_cell(load_airfoil("naca2412"), 0.20)
+    assert cell.web_ratio == pytest.approx(2 * _half_t(0.20), rel=0.03)
+    assert cell.area_ratio == pytest.approx(quad(lambda x: 2 * _half_t(x), 0, 0.20)[0], rel=0.03)
+    assert cell.arc_ratio > 2 * 0.20
+
+
+@pytest.mark.parametrize("fraction", [0.0, -0.1, 1.0, 1.5])
+def test_d_cell_rejects_a_web_outside_the_chord(fraction):
+    with pytest.raises(ValueError):
+        d_cell(load_airfoil("naca0012"), fraction)
+
+
 def test_dbox_web_keeps_the_spar_hole_web():
     s = FabricationSettings()
     x = dbox_web_x_m(0.30, 0.014, s)
@@ -66,7 +89,7 @@ def test_reversal_matches_closed_form_for_a_uniform_full_span_aileron():
     cld, cmd = flap_derivatives(0.25, a)
     q_r = 12 * cld * gj / (5 * a * c**2 * abs(cmd) * s**2)
     v = reversal_speed_ms(lambda y: gj, lambda y: c, 0.0, s, (0.0, s), a, cld, cmd)
-    assert v == pytest.approx(math.sqrt(2 * q_r / SEA_LEVEL_DENSITY_KG_M3), rel=2e-3)
+    assert v == pytest.approx(math.sqrt(2 * q_r / SEA_LEVEL_DENSITY_KG_M3), rel=1e-4)
 
 
 def test_reversal_closed_form_with_an_offset_root_uses_the_centreline_arm():
@@ -77,7 +100,22 @@ def test_reversal_closed_form_with_an_offset_root_uses_the_centreline_arm():
     f_int = quad(lambda y: (s * (y - r) - (y**2 - r**2) / 2) * y, r, s)[0]
     q_r = cld * (s**2 - r**2) / 2 * gj / (a * c**2 * abs(cmd) * f_int)
     v = reversal_speed_ms(lambda y: gj, lambda y: c, r, s, (r, s), a, cld, cmd)
-    assert v == pytest.approx(math.sqrt(2 * q_r / SEA_LEVEL_DENSITY_KG_M3), rel=2e-3)
+    assert v == pytest.approx(math.sqrt(2 * q_r / SEA_LEVEL_DENSITY_KG_M3), rel=1e-4)
+
+
+def test_reversal_weights_strips_cut_by_the_aileron_edges():
+    # aileron edges fall mid-strip (strip width 0.0025); theta(y) = integral_0^y T/GJ with
+    # T(y) = c^2 Cmd (a1 - max(y, a0)) inside the span, and B = -c a integral_0^s theta y dy
+    gj, c, s, a, a0, a1 = 40.0, 0.2, 1.0, 5.0, 0.5013, 0.9507
+    cld, cmd = flap_derivatives(0.25, a)
+
+    def theta(y):
+        return c**2 * cmd / gj * quad(lambda u: max(a1 - max(u, a0), 0.0), 0, y, points=[a0, a1])[0]
+
+    b_term = -c * a * quad(lambda y: theta(y) * y, 0, s, points=[a0, a1], limit=200)[0]
+    a_term = c * cld * (a1**2 - a0**2) / 2
+    v = reversal_speed_ms(lambda y: gj, lambda y: c, 0.0, s, (a0, a1), a, cld, cmd)
+    assert v == pytest.approx(math.sqrt(2 * (a_term / b_term) / SEA_LEVEL_DENSITY_KG_M3), rel=1e-4)
 
 
 def test_reversal_speed_scales_with_the_root_of_torsional_stiffness():
