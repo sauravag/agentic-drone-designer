@@ -158,6 +158,14 @@ def test_quadplane_rate_p_is_proportional_to_inertia_over_arm_thrust(g2: Any) ->
     assert heavier == pytest.approx(1.5 * base)
 
 
+def test_quadplane_rate_p_stays_within_its_clamp_at_the_maximum_gain_scale(g2: Any) -> None:
+    _, model = g2
+    heavy = replace(model, ixx_kgm2=100 * model.ixx_kgm2, iyy_kgm2=100 * model.iyy_kgm2)  # raw P past the clamp
+    params = pg.quadplane_params(heavy, gain_scale=1 / 0.75**2)
+    for axis in ("RLL", "PIT"):
+        assert params[f"Q_A_RAT_{axis}_P"] <= pg.Q_RATE_P_BOUNDS[1]
+
+
 def test_fixed_wing_has_no_quadplane_parameters() -> None:
     req, sizing, bom, aero, cad = load_design("g1")
     params = pg.generate_params(build_flight_model(req, sizing, bom, aero, cad), sizing, bom)
@@ -365,6 +373,32 @@ def test_next_gain_scale_stops_when_the_step_would_reverse() -> None:
     slow = sv.score(_synthetic_log(ft, 2.0), 1.0)
     assert sv.next_gain_scale(overshoot, 1.0, sv.DIRECTION_UP) is None
     assert sv.next_gain_scale(slow, 0.75, sv.DIRECTION_DOWN) is None
+
+
+def test_next_gain_scale_stops_instead_of_exceeding_the_maximum() -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    slow = sv.score(_synthetic_log(ft, 2.0), 1.0)
+    assert sv.MAX_GAIN_SCALE == pytest.approx(1 / 0.75**2)
+    assert sv.next_gain_scale(slow, 1 / 0.75, sv.DIRECTION_UP) == (pytest.approx(1 / 0.75**2), sv.DIRECTION_UP)
+    assert sv.next_gain_scale(slow, 1 / 0.75 / 0.75, sv.DIRECTION_UP) is None
+
+
+def test_retry_loop_stops_at_the_maximum_gain_scale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ft = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    scales: list[float] = []
+
+    def fake_attempt(model: Any, params: Any, work: Path, scale: float, config: Any) -> Any:
+        scales.append(scale)
+        log = _synthetic_log(ft, 2.0)  # always settling-only
+        return sv.score(log, scale), log
+
+    monkeypatch.setattr(sv, "_attempt", fake_attempt)
+    monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3 + [1 / 0.75**2] * 3)
+    assert not fcs.passed and fcs.attempts == 3
 
 
 def test_retry_loop_raises_gains_after_a_settling_only_failure(monkeypatch: pytest.MonkeyPatch,

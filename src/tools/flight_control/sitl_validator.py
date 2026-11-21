@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 DAMPING_FACTOR: Final[float] = 0.75  # SRS 5.6
 MAX_ATTEMPTS: Final[int] = 4  # first run + 3 retries
+MAX_GAIN_SCALE: Final[float] = 1.0 / DAMPING_FACTOR**2  # R41: at most two up-steps (~1.78x)
+GAIN_SCALE_TOLERANCE: Final[float] = 1e-9  # relative: 1/0.75/0.75 and 1/0.75**2 differ in the last bit
 DIRECTION_DOWN: Final[int] = -1  # gains lowered: curbs overshoot and crashes
 DIRECTION_UP: Final[int] = 1  # gains raised: speeds up a slow settling
 DIRECTION_NONE: Final[int] = 0  # no step taken yet
@@ -280,14 +282,18 @@ def _param_header(req: OperationalRequirements, result: AttemptResult) -> str:
 def next_gain_scale(result: AttemptResult, scale: float, last_direction: int) -> Optional[tuple[float, int]]:
     """Gain scale and direction for the retry after a failed attempt, or None to stop.
     Overshoot at or over the limit, or a crashed plant, lowers the gains; a settling-only failure raises them.
-    Reversing the previous step means no single scale satisfies both corners, so the loop stops."""
+    Reversing the previous step means no scale on the 0.75 grid satisfies both corners, so the loop stops; so does an
+    up-step past MAX_GAIN_SCALE (R41)."""
     steps: list[StepResponse] = [x for x in (result.roll, result.pitch) if x is not None]
     needs_less: bool = result.error is not None or any(x.overshoot >= MAX_OVERSHOOT for x in steps)
     needs_more: bool = not needs_less and any(x.settling_s >= MAX_SETTLING_S for x in steps)
     direction: int = DIRECTION_UP if needs_more else DIRECTION_DOWN
     if last_direction == -direction:
         return None
-    return (scale / DAMPING_FACTOR if direction == DIRECTION_UP else scale * DAMPING_FACTOR), direction
+    new_scale: float = scale / DAMPING_FACTOR if direction == DIRECTION_UP else scale * DAMPING_FACTOR
+    if new_scale > MAX_GAIN_SCALE * (1.0 + GAIN_SCALE_TOLERANCE):
+        return None
+    return new_scale, direction
 
 
 def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,

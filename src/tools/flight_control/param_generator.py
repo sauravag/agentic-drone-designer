@@ -114,7 +114,7 @@ def hover_throttle(model: FlightModel) -> float:
 
 def _q_axis(name: str, inertia: float, torque_per_unit: float, bandwidth: float, gain_scale: float) -> ParamSet:
     lo, hi = Q_RATE_P_BOUNDS
-    p: float = gain_scale * min(max(bandwidth * inertia / torque_per_unit, lo), hi)
+    p: float = min(max(gain_scale * bandwidth * inertia / torque_per_unit, lo), hi)  # clamp after scaling
     accel_cdeg: float = Q_ACCEL_AUTHORITY * torque_per_unit / inertia * math.degrees(1) * 100
     a_lo, a_hi = Q_ACCEL_BOUNDS_CDEG
     is_yaw: bool = name == "YAW"
