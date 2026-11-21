@@ -155,6 +155,7 @@ def test_stiffness_settings_defaults() -> None:
 
 
 @pytest.mark.parametrize("field", ["carbon_shear_modulus_pa", "balsa_shear_modulus_pa", "dbox_sheet_thickness_m"])
-def test_stiffness_settings_reject_non_positive(field: str) -> None:
+@pytest.mark.parametrize("value", [0.0, -1.0])
+def test_stiffness_settings_reject_non_positive(field: str, value: float) -> None:
     with pytest.raises(ValidationError):
-        FabricationSettings(**{field: 0.0})
+        FabricationSettings(**{field: value})

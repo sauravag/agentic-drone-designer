@@ -376,8 +376,9 @@ def test_rootless_shrinking_map_raises_mass_collapse(monkeypatch: pytest.MonkeyP
         mission_solver._converge(_fake_design())  # type: ignore[arg-type]
 
 
-def test_sizing_output_carries_the_requested_cruise_speed() -> None:
-    assert size_aircraft(CASES["g1"]).v_cruise_ms == CASES["g1"].cruise_speed_ms
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_sizing_output_carries_the_requested_cruise_speed(case: str) -> None:
+    assert size_aircraft(CASES[case]).v_cruise_ms == CASES[case].cruise_speed_ms
 
 
 def test_vne_ratio_is_shared_from_the_aero_model() -> None:
