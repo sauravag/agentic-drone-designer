@@ -21,7 +21,7 @@ Limitations:
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Final, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Final, Optional, Sequence
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.schemas.state import SizingOutput
@@ -29,6 +29,9 @@ from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M, QUARTER_CHORD, Aircra
 from src.tools.aero_cad.structure import RIB_PITCH_M, SPAR_CHORD_STATION
 from src.tools.sizing.aero_model import air_properties
 from src.units import G0
+
+if TYPE_CHECKING:  # wing_stiffness imports this module
+    from src.tools.fabrication.wing_stiffness import WingStiffness
 
 MIN_WEB_M: Final[float] = 0.002  # wood left above and below the spar tube
 FIT_EPS_M: Final[float] = 1e-9  # float tolerance on diameter comparisons
@@ -75,6 +78,8 @@ class SparPlan:
     insertion_m: float
     centre_moment_nm: float  # socket moment at the centreline (worse of flight and hover): sizes the overwrap
     pin: "PinPlan"  # anti-rotation pin sized for the root torque (R31)
+    stiffness: Optional["WingStiffness"] = None  # set by `stiffen_spar` (R43-R45); `plan_spar` is strength-only
+    dbox: bool = False  # the balsa D-box (R45) is fitted
 
 
 @dataclass(frozen=True)
@@ -279,13 +284,14 @@ def _lift_boom_failure(fits: Sequence[TubeStock], thrust_n: float, arm_m: float,
     if not _passes(stiffest, ((thrust_n * max(arm_m, 0.0), 0.0),), settings):
         sigma = bending_stress_pa(stiffest, thrust_n * max(arm_m, 0.0))
         allow = settings.sigma_allow_pa / settings.safety_factor
-        return f"{head}: too weak: even {_size(stiffest)} sees {sigma / 1e6:.0f} MPa (allowable {allow / 1e6:.0f} MPa)"
+        return f"{head}: too weak: even {tube_size_label(stiffest)} sees {sigma / 1e6:.0f} MPa (allowable {allow / 1e6:.0f} MPa)"
     deflection = cantilever_deflection_m(stiffest, thrust_n, arm_m, settings)
-    return (f"{head}: too flexible: even {_size(stiffest)} deflects {deflection * 1e3:.1f} mm at the hub "
+    return (f"{head}: too flexible: even {tube_size_label(stiffest)} deflects {deflection * 1e3:.1f} mm at the hub "
             f"(limit {limit_m * 1e3:.1f} mm)")
 
 
-def _size(tube: TubeStock) -> str:
+def tube_size_label(tube: TubeStock) -> str:
+    """'OD x ID mm' label of a stock tube."""
     return f"{tube.od_m * 1e3:.0f}x{tube.id_m * 1e3:.0f} mm"
 
 

@@ -63,13 +63,13 @@ KitInputs = tuple[AircraftLayout, AirfoilShape, "SparPlan", FabricationSettings]
 def _kit_inputs(designs: dict, case: str) -> KitInputs:
     """(layout, airfoil, spar plan, settings) for a reference design, so `wing_ribs(*inputs)` works. The CAD-stack
     imports live here, not at module level (M5)."""
-    from src.tools.fabrication.build_kit import kit_spar_plan
+    from src.tools.fabrication.build_kit import stiffened_spar_plan
     from tests.cad_helpers import _fitted_layout
 
     sizing, bom = designs[case]
     layout = _fitted_layout(sizing, bom)
     airfoil = load_airfoil(layout.airfoil)
-    spar = kit_spar_plan(sizing, layout, airfoil, DEFAULT_FABRICATION)  # as build_kit plans it (torsion, pin)
+    spar = stiffened_spar_plan(sizing, layout, airfoil, DEFAULT_FABRICATION)  # as build_kit plans it (torsion, pin)
     return layout, airfoil, spar, DEFAULT_FABRICATION
 
 

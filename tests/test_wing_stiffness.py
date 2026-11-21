@@ -1,18 +1,22 @@
 """Wing stiffness model: D-cell geometry, Bredt torsion, tip deflection and aileron reversal (R43-R45)."""
+import dataclasses
 import math
 
 import pytest
 from scipy.integrate import quad
 
-from src.schemas.fabrication import FabricationSettings
+from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.layout import QUARTER_CHORD
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
-from src.tools.fabrication.tubes import SEA_LEVEL_DENSITY_KG_M3
+from src.tools.fabrication.build_kit import kit_spar_plan
+from src.tools.fabrication.tubes import SEA_LEVEL_DENSITY_KG_M3, KitUnavailable, SparPlan
 from src.tools.fabrication.wing_stiffness import (
     DCell, d_cell, dbox_gj_nm2, dbox_web_x_m, flap_derivatives, lift_slope_per_rad, reversal_speed_ms,
-    tip_deflection_m, wing_stiffness,
+    WingStiffness, stiffen_spar, tip_deflection_m, wing_stiffness,
 )
+from src.tools.fabrication.build_kit import stiffened_spar_plan
+from tests.cad_helpers import _fitted_layout
 
 
 def _half_t(x, t=0.12):  # NACA 00xx half thickness
@@ -160,3 +164,71 @@ def test_dbox_raises_reversal_speed_and_leaves_deflection(g2_kit_inputs, designs
     assert box.reversal_speed_ms > tube.reversal_speed_ms
     assert box.tip_deflection_m == pytest.approx(tube.tip_deflection_m)
     assert not tube.reversal_ok and box.reversal_ok and box.deflection_ok and box.passes
+
+
+def _report(deflection_ok: bool, reversal_ok: bool, dbox: bool) -> WingStiffness:
+    return WingStiffness(tip_deflection_m=0.10 if not deflection_ok else 0.04, tip_deflection_limit_m=0.05,
+                         reversal_speed_ms=30.0 if not reversal_ok else 40.0, reversal_required_ms=35.0, dbox=dbox)
+
+
+def _bare_spar() -> SparPlan:
+    return SparPlan(segments=(), socket=None, joint_y_m=0.1, insertion_m=0.1, centre_moment_nm=0.0, pin=None)
+
+
+def _recording_check(tube: WingStiffness, box: WingStiffness):
+    calls: list[bool] = []
+
+    def check(spar: SparPlan, with_dbox: bool) -> WingStiffness:
+        calls.append(with_dbox)
+        return box if with_dbox else tube
+
+    return check, calls
+
+
+def test_stiff_tube_gets_no_dbox():
+    ok = _report(True, True, False)
+    check, calls = _recording_check(ok, _report(True, True, True))
+    spar = stiffen_spar(_bare_spar(), check, DEFAULT_FABRICATION)
+    assert spar.dbox is False and spar.stiffness is ok and calls == [False]
+
+
+def test_reversal_failure_falls_back_to_the_dbox():
+    boxed = _report(True, True, True)
+    check, calls = _recording_check(_report(True, False, False), boxed)
+    spar = stiffen_spar(_bare_spar(), check, DEFAULT_FABRICATION)
+    assert spar.dbox is True and spar.stiffness is boxed and calls == [False, True]
+
+
+def test_deflection_failure_is_refused_without_trying_the_dbox():
+    check, calls = _recording_check(_report(False, False, False), _report(True, True, True))
+    with pytest.raises(KitUnavailable) as err:
+        stiffen_spar(_bare_spar(), check, DEFAULT_FABRICATION)
+    message = str(err.value)
+    assert message.startswith("the wing spar is too flexible")
+    assert "tip deflection" in message and "mm at 1 g" in message and "limit" in message
+    assert calls == [False]
+
+
+def test_dbox_that_still_reverses_is_refused():
+    check, calls = _recording_check(_report(True, False, False), _report(True, False, True))
+    with pytest.raises(KitUnavailable) as err:
+        stiffen_spar(_bare_spar(), check, DEFAULT_FABRICATION)
+    message = str(err.value)
+    assert "even with the 1.5 mm balsa D-box" in message
+    assert "aileron reversal at" in message and "1.15 x V_NE" in message
+    assert calls == [False, True]
+
+
+def test_kit_spar_plan_stays_strength_only(designs):
+    sizing, bom = designs["g2"]
+    layout = _fitted_layout(sizing, bom)
+    spar = kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), DEFAULT_FABRICATION)
+    assert spar.stiffness is None and spar.dbox is False  # kit_pod relies on it
+
+
+def test_sizing_without_cruise_speed_is_refused(designs):
+    sizing, bom = designs["g1"]
+    layout = _fitted_layout(sizing, bom)
+    old = sizing.model_copy(update={"v_cruise_ms": None})
+    with pytest.raises(KitUnavailable, match="re-run"):
+        stiffened_spar_plan(old, layout, load_airfoil(layout.airfoil), DEFAULT_FABRICATION)

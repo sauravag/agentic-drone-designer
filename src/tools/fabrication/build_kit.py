@@ -85,6 +85,7 @@ from src.tools.fabrication.tubes import (
     tail_boom_check,
 )
 from src.tools.fabrication.wing_box_bosses import BOSS_LABELS
+from src.tools.fabrication.wing_stiffness import WingStiffness, stiffen_spar, wing_stiffness
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
     fin_start_m,
@@ -343,6 +344,22 @@ def kit_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: Airfoil
                      torsion=kit_spar_torsion(sizing, layout, settings), pin_arm_m=arm)
 
 
+def stiffened_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
+                        settings: FabricationSettings) -> SparPlan:
+    """`kit_spar_plan` plus the wing stiffness checks (R43-R45): the spar as `build_kit` plans it. Refused when the
+    design has no cruise speed. `kit_spar_plan` stays strength-only: the pod search relies on it."""
+    if sizing.v_cruise_ms is None:
+        raise KitUnavailable("the design has no cruise speed (it predates the wing stiffness checks); "
+                             "re-run it to build a kit")
+    v_cruise_ms = sizing.v_cruise_ms
+
+    def check(spar: SparPlan, with_dbox: bool) -> WingStiffness:
+        return wing_stiffness(spar, airfoil, with_dbox, sizing.mtow_kg, layout.wing.semi_span_m,
+                              layout.wing.chord_at, sizing.aspect_ratio, v_cruise_ms, settings)
+
+    return stiffen_spar(kit_spar_plan(sizing, layout, airfoil, settings), check, settings)
+
+
 def _plate_gap_m(fuselage: Sequence[KitPart], settings: FabricationSettings) -> float:
     """Clear width between the wing-box plates' innermost faces (the socket bosses' when fitted)."""
     t = settings.sheet_for("plate").thickness_m  # plates and bosses extrude toward -y from their origin
@@ -389,7 +406,7 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     """The whole kit for a Group 1-2 design; raises `KitUnavailable` when any part cannot be made from stock."""
     if sizing.dod_group > MAX_DOD_GROUP:
         raise KitUnavailable("laser-cut construction covers Group 1–2 designs only")
-    spar = kit_spar_plan(sizing, layout, airfoil, settings)
+    spar = stiffened_spar_plan(sizing, layout, airfoil, settings)
     _check_tail_boom(sizing, layout, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
     tails = tail_spar_tubes(sizing, layout, tail, settings)

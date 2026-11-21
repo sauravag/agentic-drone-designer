@@ -15,7 +15,7 @@ Limitations (not modelled):
 - Flutter and gust loads are not modelled.
 """
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Final
 
 import numpy as np
@@ -25,7 +25,7 @@ from src.tools.aero_cad.airfoil_geometry import AirfoilShape
 from src.tools.aero_cad.layout import AILERON_CHORD_FRACTION, AILERON_ETA
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.tubes import (
-    DYNAMIC_PRESSURE_FACTOR, MIN_WEB_M, SEA_LEVEL_DENSITY_KG_M3, SparPlan, elliptic_moment_nm,
+    DYNAMIC_PRESSURE_FACTOR, MIN_WEB_M, SEA_LEVEL_DENSITY_KG_M3, KitUnavailable, SparPlan, elliptic_moment_nm,
 )
 from src.tools.sizing.aero_model import VNE_TO_CRUISE
 
@@ -194,3 +194,32 @@ def wing_stiffness(spar: SparPlan, airfoil: AirfoilShape, with_dbox: bool, mtow_
         reversal_required_ms=REVERSAL_MARGIN * VNE_TO_CRUISE * v_cruise_ms,
         dbox=with_dbox,
     )
+
+
+def _failures(report: WingStiffness) -> str:
+    """Each failing check with its value and limit (D18 style), joined with '; '."""
+    found: list[str] = []
+    if not report.deflection_ok:
+        found.append(f"tip deflection {report.tip_deflection_m * 1e3:.0f} mm at {TIP_DEFLECTION_LOAD_FACTOR:.0f} g "
+                     f"(limit {report.tip_deflection_limit_m * 1e3:.0f} mm, "
+                     f"{TIP_DEFLECTION_FRACTION:.0%} of the semi-span)")
+    if not report.reversal_ok:
+        found.append(f"aileron reversal at {report.reversal_speed_ms:.1f} m/s "
+                     f"(needs above {report.reversal_required_ms:.1f} m/s = {REVERSAL_MARGIN:.2f} x V_NE)")
+    return "; ".join(found)
+
+
+def stiffen_spar(spar: SparPlan, check: Callable[[SparPlan, bool], WingStiffness],
+                 settings: FabricationSettings) -> SparPlan:
+    """Spar with its stiffness report: the bare tube when it passes, else with the balsa D-box (R45) when that
+    cures the aileron reversal. A tip deflection failure has no fallback (the D-box adds no bending stiffness)."""
+    report = check(spar, False)
+    if not report.deflection_ok:
+        raise KitUnavailable(f"the wing spar is too flexible: {_failures(report)}")
+    if report.passes:
+        return replace(spar, stiffness=report, dbox=False)
+    boxed = check(spar, True)
+    if boxed.passes:
+        return replace(spar, stiffness=boxed, dbox=True)
+    raise KitUnavailable(f"the wing is too flexible even with the {settings.dbox_sheet_thickness_m * 1e3:.1f} mm "
+                         f"balsa D-box: {_failures(boxed)}")

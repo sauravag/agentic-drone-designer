@@ -8,10 +8,11 @@ import build123d as bd
 import pytest
 
 from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
+from src.tools.aero_cad.airfoil_geometry import load_airfoil
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
 from src.tools.aero_cad.cad_packer import _structure_boxes
 from src.tools.aero_cad.layout import fuselage_radius_at
-from src.tools.fabrication.build_kit import kit_spar_plan, kit_spar_torsion
+from src.tools.fabrication.build_kit import kit_spar_plan, kit_spar_torsion, stiffened_spar_plan
 from src.tools.aero_cad import cad_packer
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.fuselage_parts import former_stations, fuselage_parts, socket_axis_m, wing_box_floor_m
@@ -476,3 +477,18 @@ def test_flight_dynamic_pressure_never_below_the_loiter_speed(designs):
     assert flight_dynamic_pressure_pa(slow_stall, SETTINGS) == pytest.approx(0.5 * rho * sizing.v_loiter_ms**2)
     assert flight_dynamic_pressure_pa(sizing, SETTINGS) == pytest.approx(
         max(manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, SETTINGS), 0.5 * rho * sizing.v_loiter_ms**2))
+
+
+def _stiffened(designs, case):
+    sizing, bom = designs[case]
+    layout = _fitted_layout(sizing, bom)
+    return stiffened_spar_plan(sizing, layout, load_airfoil(layout.airfoil), SETTINGS)
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_reference_kits_pass_both_stiffness_checks(case, designs):
+    assert _stiffened(designs, case).stiffness.passes
+
+
+def test_g2_needs_the_dbox(designs):
+    assert _stiffened(designs, "g2").dbox is True
