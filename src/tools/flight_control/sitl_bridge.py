@@ -22,10 +22,11 @@ import socket
 import struct
 import threading
 from dataclasses import dataclass, field
-from typing import Final, Optional
+from typing import Final, MutableMapping, Optional, Sequence
 
 import jsbsim
 
+from src.tools.flight_control.control_channels import THROTTLE_SERVO, ControlChannel
 from src.tools.flight_control.jsbsim_exporter import JSBSimModel
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ PWM_16: Final[struct.Struct] = struct.Struct("<HHI16H")
 PWM_32: Final[struct.Struct] = struct.Struct("<HHI32H")
 PWM_TRIM: Final[float] = 1500.0
 PWM_HALF_RANGE: Final[float] = 500.0
+STEERING_SURFACE: Final[str] = "rudder"  # nose-wheel steering is driven from this surface's servo
 PWM_MIN: Final[float] = 1000.0
 PWM_RANGE: Final[float] = 1000.0
 FT_TO_M: Final[float] = 0.3048
@@ -86,6 +88,14 @@ class BridgeStats:
 
 def _centred(pwm: int) -> float:
     return min(max((pwm - PWM_TRIM) / PWM_HALF_RANGE, -1.0), 1.0) if pwm else 0.0
+
+
+def _apply_channels(fdm: MutableMapping[str, float], channels: Sequence[ControlChannel], pwm: Sequence[float]) -> None:
+    """Each servo drives its own surface; ArduPilot has already mixed, so nothing is un-mixed here."""
+    for c in channels:
+        fdm[f"fcs/{c.surface}-cmd-norm"] = c.bridge_sign * _centred(pwm[c.servo - 1])
+        if c.surface == STEERING_SURFACE:  # the nose wheel follows the rudder servo
+            fdm["fcs/steer-cmd-norm"] = _centred(pwm[c.servo - 1])
 
 
 def _unit(pwm: int) -> float:
@@ -217,11 +227,8 @@ class JsonPhysicsBridge:
     def _apply(self, pwm: tuple[int, ...]) -> None:
         fdm = self._fdm
         assert fdm is not None
-        fdm["fcs/aileron-cmd-norm"] = _centred(pwm[0])
-        fdm["fcs/elevator-cmd-norm"] = -_centred(pwm[1])  # pitch-up output -> trailing edge up
-        fdm["fcs/cruise-throttle-cmd"] = _unit(pwm[2])
-        fdm["fcs/rudder-cmd-norm"] = -_centred(pwm[3])  # yaw-right output -> trailing edge right
-        fdm["fcs/steer-cmd-norm"] = _centred(pwm[3])
+        _apply_channels(fdm, self._model.channels, pwm)
+        fdm["fcs/cruise-throttle-cmd"] = _unit(pwm[THROTTLE_SERVO - 1])
         for motor in self._model.lift_motor_numbers:
             fdm[f"fcs/lift{motor}-cmd"] = _unit(pwm[LIFT_MOTOR_FIRST_CHANNEL + motor - 1])
 

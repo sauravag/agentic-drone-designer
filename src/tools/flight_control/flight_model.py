@@ -25,6 +25,8 @@ from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_TAPER_RATIO, layout_from_sizing
 from src.tools.aero_cad.stability import cruise_lift_coefficient
+from src.tools.flight_control.control_channels import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,  # noqa: F401 (re-exported)
+                                                       RUDDER_MAX_RAD, ControlChannel, control_channels)
 from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor
 from src.units import G0
 
@@ -36,9 +38,6 @@ FUSELAGE_DAMPING_FACTOR: Final[float] = 1.1  # fuselage/wing contribution to Cmq
 ROLL_YAW_CL_FACTOR_CLR: Final[float] = 0.25  # Clr ~ CL/4 (strip theory)
 ROLL_YAW_CL_FACTOR_CNP: Final[float] = -0.125  # Cnp ~ -CL/8 (strip theory)
 ADVERSE_YAW_FACTOR: Final[float] = -0.2  # Cn_delta_a ~ -0.2 CL Cl_delta_a
-AILERON_MAX_RAD: Final[float] = math.radians(20.0)
-ELEVATOR_MAX_RAD: Final[float] = math.radians(20.0)
-RUDDER_MAX_RAD: Final[float] = math.radians(25.0)
 SERVO_TIME_CONSTANT_S: Final[float] = 0.05
 PROP_FIGURE_OF_MERIT: Final[float] = 0.6  # static figure of merit, cruise propeller
 PROP_EFFICIENCY: Final[float] = 0.75  # in-flight propulsive efficiency
@@ -125,6 +124,11 @@ class FlightModel:
     @property
     def is_quadplane(self) -> bool:
         return bool(self.lift_rotors)
+
+    @property
+    def channels(self) -> tuple[ControlChannel, ...]:
+        """One channel per physical surface, derived from `aero` so a perturbed plant keeps them consistent."""
+        return control_channels(self.aero)
 
     @property
     def weight_n(self) -> float:

@@ -21,8 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Sequence
 
-from src.tools.flight_control.flight_model import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD, ROTOR_TORQUE_PER_THRUST_DIAMETER,
-                                                   RUDDER_MAX_RAD, SERVO_TIME_CONSTANT_S, THRUST_EXPO, FlightModel)
+from src.tools.flight_control.control_channels import ControlChannel
+from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
+                                                   THRUST_EXPO, FlightModel)
 from src.tools.flight_control.param_generator import MOTOR_SPIN_MAX, MOTOR_SPIN_MIN
 from src.tools.gear import GearContact, tricycle_gear
 
@@ -50,6 +51,7 @@ class JSBSimModel:
     xml_path: Path
     rest_height_m: float  # CG height above the gear contact points
     lift_motor_numbers: tuple[int, ...]
+    channels: tuple[ControlChannel, ...]  # the surfaces the bridge drives, one servo each
 
 
 def _sub(parent: ET.Element, tag: str, text: object = None, **attrs: str) -> ET.Element:
@@ -162,9 +164,9 @@ def _flight_control(root: ET.Element, model: FlightModel) -> None:
     for prop in ["fcs/cruise-throttle-cmd", *(f"fcs/lift{r.motor_number}-cmd" for r in model.lift_rotors)]:
         _sub(fcs, "property", prop, value="0")
     surfaces = _sub(fcs, "channel", name="surfaces")
-    _actuator(surfaces, "aileron-pos-rad", "fcs/aileron-cmd-norm", SERVO_TIME_CONSTANT_S, AILERON_MAX_RAD)
-    _actuator(surfaces, "elevator-pos-rad", "fcs/elevator-cmd-norm", SERVO_TIME_CONSTANT_S, ELEVATOR_MAX_RAD)
-    _actuator(surfaces, "rudder-pos-rad", "fcs/rudder-cmd-norm", SERVO_TIME_CONSTANT_S, RUDDER_MAX_RAD)
+    for c in model.channels:
+        _actuator(surfaces, f"{c.surface}-pos-rad", f"fcs/{c.surface}-cmd-norm", SERVO_TIME_CONSTANT_S,
+                  c.max_deflection_rad)
     propulsion = _sub(fcs, "channel", name="propulsion")
     _cruise_propulsion(propulsion, model)
     _lift_propulsion(propulsion, model)
@@ -202,6 +204,20 @@ def lift_table(model: FlightModel) -> tuple[list[float], list[float]]:
     return alphas, [-post, -post, -a.cl_max, a.cl_max, post, post]
 
 
+# (surface, derivative) -> JSBSim coefficient name and the axis it belongs to; the order is the XML order
+SURFACE_COEFFICIENTS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("elevator", "cl", "CLde", "LIFT"), ("aileron", "cl_roll", "Clda", "ROLL"),
+    ("elevator", "cm", "Cmde", "PITCH"), ("rudder", "cn", "Cndr", "YAW"), ("aileron", "cn", "Cnda", "YAW"))
+
+
+def _surface_terms(model: FlightModel, axis_name: str) -> tuple[tuple[str, float, tuple[str, ...]], ...]:
+    """Control-surface coefficients of one axis: one per non-zero derivative of each channel."""
+    by_surface = {c.surface: c for c in model.channels}
+    return tuple((name, value, (f"fcs/{surface}-pos-rad",))
+                 for surface, attr, name, axis in SURFACE_COEFFICIENTS if axis == axis_name and surface in by_surface
+                 if (value := getattr(by_surface[surface].derivatives, attr)) != 0.0)
+
+
 def _moment_axis(aero: ET.Element, axis_name: str, length_prop: str,
                  terms: Sequence[tuple[str, float, tuple[str, ...]]]) -> None:
     axis = _sub(aero, "axis", name=axis_name)
@@ -218,7 +234,8 @@ def _aerodynamics(root: ET.Element, model: FlightModel) -> None:
     _sub(product, "property", "metrics/Sw-sqft")
     _table(product, "aero/alpha-rad", *lift_table(model))
     _coefficient(lift, "CLq", a.cl_q, "aero/ci2vel", "velocities/q-aero-rad_sec")
-    _coefficient(lift, "CLde", a.cl_delta_e, "fcs/elevator-pos-rad")
+    for name, value, props in _surface_terms(model, "LIFT"):
+        _coefficient(lift, name, value, *props)
     drag = _sub(aero, "axis", name="DRAG")
     _coefficient(drag, "CD0", a.cd0)
     _coefficient(drag, "CDi", a.k_induced, "aero/cl-squared")
@@ -226,14 +243,13 @@ def _aerodynamics(root: ET.Element, model: FlightModel) -> None:
     p, q, r = "velocities/p-aero-rad_sec", "velocities/q-aero-rad_sec", "velocities/r-aero-rad_sec"
     _moment_axis(aero, "ROLL", "metrics/bw-ft", (
         ("Clb", a.cl_beta, ("aero/beta-rad",)), ("Clp", a.cl_p, ("aero/bi2vel", p)),
-        ("Clr", a.cl_r, ("aero/bi2vel", r)), ("Clda", a.cl_delta_a, ("fcs/aileron-pos-rad",))))
+        ("Clr", a.cl_r, ("aero/bi2vel", r)), *_surface_terms(model, "ROLL")))
     _moment_axis(aero, "PITCH", "metrics/cbarw-ft", (
         ("Cm0", a.cm0, ()), ("Cmalpha", a.cm_alpha, ("aero/alpha-rad",)),
-        ("Cmq", a.cm_q, ("aero/ci2vel", q)), ("Cmde", a.cm_delta_e, ("fcs/elevator-pos-rad",))))
+        ("Cmq", a.cm_q, ("aero/ci2vel", q)), *_surface_terms(model, "PITCH")))
     _moment_axis(aero, "YAW", "metrics/bw-ft", (
         ("Cnb", a.cn_beta, ("aero/beta-rad",)), ("Cnp", a.cn_p, ("aero/bi2vel", p)),
-        ("Cnr", a.cn_r, ("aero/bi2vel", r)), ("Cndr", a.cn_delta_r, ("fcs/rudder-pos-rad",)),
-        ("Cnda", a.cn_delta_a, ("fcs/aileron-pos-rad",))))
+        ("Cnr", a.cn_r, ("aero/bi2vel", r)), *_surface_terms(model, "YAW")))
 
 
 def export_jsbsim(model: FlightModel, root_dir: Path, name: str = "isr_forge") -> JSBSimModel:
@@ -257,4 +273,5 @@ def export_jsbsim(model: FlightModel, root_dir: Path, name: str = "isr_forge") -
     ET.ElementTree(root).write(xml_path, encoding="utf-8", xml_declaration=True)
     return JSBSimModel(root_dir=root_dir, name=name, xml_path=xml_path,
                        rest_height_m=-min(c.z_m for c in contacts),
-                       lift_motor_numbers=tuple(r.motor_number for r in model.lift_rotors))
+                       lift_motor_numbers=tuple(r.motor_number for r in model.lift_rotors),
+                       channels=model.channels)

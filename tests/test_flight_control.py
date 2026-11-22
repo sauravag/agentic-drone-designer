@@ -683,6 +683,19 @@ def test_sitl_acceptance(case: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.docker
+def test_reversed_elevator_fails_sitl(tmp_path: Path) -> None:
+    """A wrong servo reversal must fail SITL: ArduPilot does the mixing, the bridge never un-mixes it."""
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    if not sv.sitl_available():
+        pytest.skip("arduplane not installed (run in the Docker image)")
+    req, sizing, bom, aero, cad = load_design("g1")
+    model = build_flight_model(req, sizing, bom, aero, cad)
+    params = pg.generate_params(model, sizing, bom)
+    result, _ = sv._attempt(model, params, tmp_path, 1.0, sv.SitlConfig(extra_params={"SERVO2_REVERSED": 1}))
+    assert not result.passed  # a diverged or crashed flight is a failed attempt, not an exception
+
+
+@pytest.mark.docker
 def test_far_out_of_range_plant_fails_the_gate(tmp_path: Path) -> None:
     """The perturbation check can fail: nominal gains on a plant with 0.3x control power are too slow to settle."""
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)

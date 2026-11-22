@@ -201,3 +201,41 @@ def test_gear_is_one_description(tmp_path: Path) -> None:
     assert exported == {c.name: pytest.approx([c.x_m, c.y_m, c.z_m], rel=1e-5, abs=1e-9) for c in gear.contacts}
     assert residual_gear_item(sizing, layout_from_sizing(sizing)).mass_kg == gear_mass_kg(
         sizing.airframe_topology, sizing.mtow_kg)
+
+
+# ------------------------------------------------------- control channels (Task 7) ---
+def test_tractor_channels() -> None:
+    from src.tools.flight_control.control_channels import control_channels
+    from src.tools.flight_control.flight_model import build_flight_model
+    from tests.test_flight_control import load_design
+
+    model = build_flight_model(*load_design("g1"))
+    channels = control_channels(model.aero)
+    assert [(c.surface, c.servo, c.servo_function) for c in channels] == [
+        ("aileron", 1, 4), ("elevator", 2, 19), ("rudder", 4, 21)]
+    assert model.channels == channels
+
+
+def test_servo_functions_come_from_channels() -> None:
+    from src.tools.flight_control.flight_model import build_flight_model
+    from src.tools.flight_control.param_generator import generate_params
+    from tests.test_flight_control import load_design
+
+    inputs = load_design("g1")
+    params = generate_params(build_flight_model(*inputs), inputs[1], inputs[2])
+    assert [params[f"SERVO{n}_FUNCTION"] for n in (1, 2, 3, 4)] == [4, 19, 70, 21]
+
+
+def test_bridge_applies_each_channel() -> None:
+    from src.tools.flight_control.control_channels import control_channels
+    from src.tools.flight_control.flight_model import build_flight_model
+    from src.tools.flight_control.sitl_bridge import PWM_TRIM, _apply_channels, _centred
+    from tests.test_flight_control import load_design
+
+    channels = control_channels(build_flight_model(*load_design("g1")).aero)
+    pwm = [PWM_TRIM] * 16
+    pwm[1] = 1600
+    fdm: dict[str, float] = {}
+    _apply_channels(fdm, channels, tuple(pwm))
+    assert fdm["fcs/elevator-cmd-norm"] == -_centred(1600)
+    assert fdm["fcs/aileron-cmd-norm"] == 0.0 and fdm["fcs/rudder-cmd-norm"] == 0.0

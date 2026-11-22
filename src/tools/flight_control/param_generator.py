@@ -25,6 +25,7 @@ from typing import Final, Mapping, Optional
 
 from src.schemas.components import SelectedBOM
 from src.schemas.state import SizingOutput
+from src.tools.flight_control.control_channels import THROTTLE_SERVO, THROTTLE_SERVO_FUNCTION
 from src.tools.flight_control.flight_model import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,
                                                    ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
                                                    THRUST_EXPO, FlightModel, transition_time_s)
@@ -62,8 +63,6 @@ HYBRID_BUFFER_LOW_FRACTION: Final[float] = 0.30  # hybrid: keep enough buffer fo
 HYBRID_BUFFER_CRITICAL_FRACTION: Final[float] = 0.15
 MAH_PER_AH: Final[float] = 1000.0
 SITL_TAKEOFF_ALT_M: Final[float] = 60.0
-FW_SERVO_FUNCTIONS: Final[dict[str, int]] = {"SERVO1_FUNCTION": 4, "SERVO2_FUNCTION": 19, "SERVO3_FUNCTION": 70,
-                                             "SERVO4_FUNCTION": 21}  # aileron, elevator, throttle, rudder
 QUAD_SERVO_FUNCTIONS: Final[dict[str, int]] = {f"SERVO{5 + i}_FUNCTION": 33 + i for i in range(4)}  # motors 1-4
 
 
@@ -160,8 +159,15 @@ def envelope_params(model: FlightModel) -> ParamSet:
         "ARSPD_USE": 1, "TRIM_THROTTLE": int(round(min(max(trim_pct, lo), hi))), "THR_MAX": 100,
         "ROLL_LIMIT_DEG": ROLL_LIMIT_DEG, "PTCH_LIM_MAX_DEG": PITCH_LIMIT_MAX_DEG,
         "PTCH_LIM_MIN_DEG": PITCH_LIMIT_MIN_DEG, "TKOFF_ROTATE_SPD": round(ROTATE_TO_STALL * model.v_stall_ms, 1),
-        "TKOFF_THR_MAX": 100, **FW_SERVO_FUNCTIONS,
+        "TKOFF_THR_MAX": 100, **fw_servo_functions(model),
     }
+
+
+def fw_servo_functions(model: FlightModel) -> ParamSet:
+    """SERVOn_FUNCTION for every surface channel plus the cruise throttle, in servo order."""
+    functions: dict[int, int] = {c.servo: c.servo_function for c in model.channels}
+    functions[THROTTLE_SERVO] = THROTTLE_SERVO_FUNCTION
+    return {f"SERVO{servo}_FUNCTION": functions[servo] for servo in sorted(functions)}
 
 
 def battery_params(sizing: SizingOutput, bom: SelectedBOM, is_quadplane: bool) -> ParamSet:

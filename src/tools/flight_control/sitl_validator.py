@@ -21,7 +21,7 @@ import threading
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Final, Optional, Sequence
+from typing import Any, Callable, Final, Mapping, Optional, Sequence
 
 from pymavlink import mavutil
 
@@ -75,6 +75,7 @@ class SitlConfig:
     mavlink_port: int = 14550  # SRS
     home: Home = field(default_factory=Home)
     binary: str = ARDUPLANE_BINARY
+    extra_params: Mapping[str, float] = field(default_factory=dict)  # SITL-only parameters layered on top (tests)
 
 
 @dataclass(frozen=True)
@@ -146,9 +147,10 @@ def fly(model: FlightModel, params: pg.ParamSet, work_dir: Path, config: SitlCon
     """One SITL flight. Raises SitlFlightError if a phase cannot complete. Every resource is released by
     the ExitStack even if a later cleanup step fails (arduplane is killed before the logs are written)."""
     pg.write_param_file(params, work_dir / PARAM_FILE)
-    pg.write_param_file(pg.sitl_overrides(), work_dir / SITL_PARAM_FILE, header="SITL-only overrides")
+    overrides: pg.ParamSet = pg.sitl_overrides() | dict(config.extra_params)
+    pg.write_param_file(overrides, work_dir / SITL_PARAM_FILE, header="SITL-only overrides")
     jsb = export_jsbsim(model, work_dir / "jsbsim")
-    merged: pg.ParamSet = params | pg.sitl_overrides()
+    merged: pg.ParamSet = params | overrides
     with _SITL_LOCK, JsonPhysicsBridge(jsb, config.home, config.physics_port) as bridge, ExitStack() as stack:
         stack.callback(_finish, bridge, work_dir)
         proc = _launch(config, work_dir)
