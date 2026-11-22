@@ -93,6 +93,9 @@ class OperationalRequirements(BaseModel):
     group_constraint: Optional[Literal[1, 2, 3]] = None  # Auto-assigned if None
     propulsion_type: Literal["electric", "series_hybrid", "auto"] = "auto"
     airframe_topology: Literal["fixed_wing", "quadplane_vtol", "auto"] = "auto"
+    # Only pod_boom_tractor is built; other ids are rejected with "not available yet" until their phase lands.
+    airframe_layout: Literal["pod_boom_tractor", "single_boom_vtail_pusher", "twin_boom_htail_pusher",
+                             "twin_boom_inverted_v_pusher", "flying_wing"] = "pod_boom_tractor"
     payload_mass_kg: float = Field(..., gt=0, le=200.0)
     payload_power_w: float = Field(..., ge=0, le=5000.0)  # Continuous hotel load (gimbal + compute + comms)
     endurance_hours: float = Field(..., gt=0.1, le=48.0)

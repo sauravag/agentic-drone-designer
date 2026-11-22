@@ -134,6 +134,11 @@ def _speed_ms(draft: RequirementsDraft, notes: list[str]) -> float:
 
 
 def _airframe_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, object]:
+    layout: dict[str, object] = {} if draft.airframe_layout is None else {"airframe_layout": draft.airframe_layout}
+    return {**layout, **_topology_fields(draft, notes)}
+
+
+def _topology_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, object]:
     if draft.vtol_required:
         return {"airframe_topology": "quadplane_vtol", "runway_available": False}
     if draft.vtol_required is False and draft.runway_available is None:

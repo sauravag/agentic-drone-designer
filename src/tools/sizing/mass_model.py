@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
+from src.tools.sizing.layouts import TAIL_ARM_FRACTION
 from src.tools.sizing.topology import Airframe
 from src.units import G0
 
@@ -16,7 +17,6 @@ from src.units import G0
 FUSELAGE_LENGTH_COEFF: Final[float] = 0.55  # m per kg^(1/3)
 FUSELAGE_MIN_LENGTH_M: Final[float] = 0.6
 FUSELAGE_FINENESS: Final[float] = 7.0
-TAIL_ARM_FRACTION: Final[float] = 0.6  # of fuselage length
 
 WING_AREAL_DENSITY_BASE: Final[float] = 0.9  # kg/m^2
 WING_AREAL_DENSITY_PER_LOADING: Final[float] = 0.006  # kg/m^2 per N/m^2 of wing loading

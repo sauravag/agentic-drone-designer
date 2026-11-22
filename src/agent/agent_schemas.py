@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from src.schemas.changes import AssumptionChanges, KnobChanges, RequirementChanges
 from src.schemas.components import SensorType
-from src.schemas.requirements import FlightControllerId
+from src.schemas.requirements import AirframeLayout, FlightControllerId
 
 MAX_WHAT_IFS: Final[int] = 4  # per design-chat round; enforced after parsing (see DesignerTurn)
 # every field a designer change set may touch, generated from the change models so the two cannot drift
@@ -88,6 +88,10 @@ class RequirementsDraft(BaseModel):
     runway_available: Optional[bool] = Field(
         default=None, description="false for runway-independent, VTOL or ship/field operations")
     vtol_required: Optional[bool] = None
+    airframe_layout: Optional[AirframeLayout] = Field(
+        default=None, description="Only if the user names an airframe layout: pod_boom_tractor (conventional pod "
+        "and boom), single_boom_vtail_pusher, twin_boom_htail_pusher, twin_boom_inverted_v_pusher, "
+        "flying_wing (tailless); otherwise null")
     flight_controller: Optional[FlightControllerId] = Field(
         default=None, description="ark_jetson_pab if the user names ARK / PAB / a Jetson carrier with autopilot; "
                                   "cube_orange_plus if they name a Cube; otherwise null")

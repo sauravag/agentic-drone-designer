@@ -11,7 +11,8 @@ from typing import Final, Literal, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
-from src.schemas.requirements import ARK_JETSON_PAB, CUSTOM_PAYLOAD, FlightControllerId, OperationalRequirements
+from src.schemas.requirements import (ARK_JETSON_PAB, CUSTOM_PAYLOAD, LAYOUT_LABELS, AirframeLayout, FlightControllerId,
+                                   OperationalRequirements)
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.payload_catalog import CUSTOM_LABEL, payload_spec
 
@@ -19,7 +20,8 @@ LABEL_MAX_LEN: Final[int] = 120
 
 FIELD_LABELS: Final[dict[str, str]] = {
     # requirements
-    "propulsion_type": "Propulsion", "airframe_topology": "Airframe", "runway_available": "Runway available",
+    "propulsion_type": "Propulsion", "airframe_topology": "Airframe", "airframe_layout": "Airframe layout",
+    "runway_available": "Runway available",
     "group_constraint": "Group limit", "payload_mass_kg": "Payload mass (kg)", "payload_power_w": "Payload power (W)",
     "endurance_hours": "Endurance (h)", "combat_radius_km": "Combat radius (km)",
     "cruise_speed_ms": "Cruise speed (m/s)", "service_ceiling_m": "Service ceiling (m)",
@@ -53,6 +55,7 @@ class RequirementChanges(BaseModel):
 
     propulsion_type: Optional[Literal["electric", "series_hybrid", "auto"]] = None
     airframe_topology: Optional[Literal["fixed_wing", "quadplane_vtol", "auto"]] = None
+    airframe_layout: Optional[AirframeLayout] = None
     runway_available: Optional[bool] = None
     group_constraint: Optional[Literal[1, 2, 3]] = None
     payload_mass_kg: Optional[float] = None
@@ -150,6 +153,8 @@ def _format_requirement(name: str, value: object) -> str:
     """`_format`, except that Custom shows as 'Custom payload' rather than its stored value 'custom'."""
     if name == "payload_model" and value == CUSTOM_PAYLOAD:
         return CUSTOM_LABEL
+    if name == "airframe_layout":
+        return LAYOUT_LABELS.get(str(value), str(value))
     return _format(value)
 
 

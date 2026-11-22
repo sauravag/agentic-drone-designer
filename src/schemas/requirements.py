@@ -11,6 +11,18 @@ CUBE_ORANGE_PLUS: Final[str] = "cube_orange_plus"
 ARK_JETSON_PAB: Final[str] = "ark_jetson_pab"  # carries the Jetson Orin NX on the same board stack
 # Defined here, not in payload_catalog, because components -> requirements; payload_catalog re-exports it.
 CUSTOM_PAYLOAD: Final[str] = "custom"
+AirframeLayout = Literal["pod_boom_tractor", "single_boom_vtail_pusher", "twin_boom_htail_pusher",
+                         "twin_boom_inverted_v_pusher", "flying_wing"]
+LAYOUT_LABELS: Final[dict[str, str]] = {
+    "pod_boom_tractor": "Pod-and-boom tractor",
+    "single_boom_vtail_pusher": "Single-boom V-tail pusher",
+    "twin_boom_htail_pusher": "Twin-boom H-tail pusher",
+    "twin_boom_inverted_v_pusher": "Twin-boom inverted-V pusher",
+    "flying_wing": "Flying wing",
+}
+# (layout, topology) pairs that are built; grows as layouts land.
+ENABLED_LAYOUTS: Final[frozenset[tuple[str, str]]] = frozenset({("pod_boom_tractor", "fixed_wing"),
+                                                                ("pod_boom_tractor", "quadplane_vtol")})
 PAYLOAD_EDIT_TOLERANCE: Final[float] = 1e-6  # kg and W: typed back to the datasheet value counts as unedited
 
 
@@ -24,6 +36,7 @@ class OperationalRequirements(BaseModel):
     group_constraint: Optional[Literal[1, 2, 3]] = None  # auto-assigned if None
     propulsion_type: Literal["electric", "series_hybrid", "auto"] = "auto"
     airframe_topology: Literal["fixed_wing", "quadplane_vtol", "auto"] = "auto"
+    airframe_layout: AirframeLayout = "pod_boom_tractor"
     payload_mass_kg: float = Field(..., gt=0, le=200.0)
     payload_power_w: float = Field(..., ge=0, le=5000.0)  # continuous hotel load
     endurance_hours: float = Field(..., gt=0.1, le=48.0)
@@ -69,7 +82,17 @@ class OperationalRequirements(BaseModel):
         if self.takeoff_altitude_m >= self.service_ceiling_m:
             raise ValueError(f"take-off altitude {self.takeoff_altitude_m} m must be below the service ceiling "
                              f"{self.service_ceiling_m} m (both above mean sea level)")
+        self._check_layout_enabled()
         return self
+
+    def _check_layout_enabled(self) -> None:
+        """A layout must be built for the topology; `auto` can resolve to either, so both must be."""
+        topologies = ("fixed_wing", "quadplane_vtol") if self.airframe_topology == "auto" else (self.airframe_topology,)
+        missing = [t for t in topologies if (self.airframe_layout, t) not in ENABLED_LAYOUTS]
+        if missing:
+            available = sorted({f"{layout} ({topology})" for layout, topology in ENABLED_LAYOUTS})
+            raise ValueError(f"airframe layout {self.airframe_layout!r} is not available yet for "
+                             f"{', '.join(missing)}; available: {', '.join(available)}")
 
     @model_validator(mode="before")
     @classmethod
