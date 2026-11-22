@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from src.schemas.state import TailSurface
+from src.tools.gear import gear_mass_kg
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.layouts import (
     HTAIL_ASPECT_RATIO,
@@ -34,7 +35,6 @@ TAIL_DENSITY_FACTOR: Final[float] = 0.6
 FUSELAGE_AREAL_DENSITY_BASE: Final[float] = 1.0  # kg/m^2 of wetted area
 FUSELAGE_AREAL_DENSITY_PER_KG: Final[float] = 0.002
 
-GEAR_FRACTION: Final[dict[str, float]] = {"fixed_wing": 0.04, "quadplane_vtol": 0.015}
 SYSTEMS_FRACTION: Final[float] = 0.05  # wiring, servos, harness, fasteners
 
 MATCH_MARGIN: Final[float] = 1.15
@@ -157,7 +157,7 @@ def empty_mass_breakdown(
     return {
         **_structure_mass(mtow_kg, geom),
         **_propulsion_mass(mtow_kg, loads),
-        "landing_gear": GEAR_FRACTION[airframe] * mtow_kg,
+        "landing_gear": gear_mass_kg(airframe, mtow_kg),
         "avionics": avionics_mass_kg,
         "systems": SYSTEMS_FRACTION * mtow_kg,
     }

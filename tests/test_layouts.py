@@ -178,3 +178,26 @@ def test_every_reader_uses_the_layout_band(narrow_band: StaticMarginBand, design
                                     _synthetic_oml(layout, tmp_path / "oml.step"))
     assert packed.band == narrow_band
     assert packed.static_margin == pytest.approx(narrow_band.target, abs=BAND_TOLERANCE)
+
+
+def test_gear_is_one_description(tmp_path: Path) -> None:
+    import xml.etree.ElementTree as ET
+
+    from src.tools.fabrication.kit_mass import residual_gear_item
+    from src.tools.flight_control.flight_model import build_flight_model
+    from src.tools.flight_control.jsbsim_exporter import export_jsbsim
+    from src.tools.gear import gear_mass_kg, tricycle_gear
+    from tests.test_flight_control import load_design
+
+    inputs = load_design("g1")
+    sizing, model = inputs[1], build_flight_model(*inputs)
+    gear = tricycle_gear(model.fuselage_length_m, model.fuselage_diameter_m, model.cruise_prop_diameter_m,
+                         model.mean_chord_m, model.wingspan_m, model.x_cg_m)
+    jsb = export_jsbsim(model, tmp_path)
+    xml = ET.parse(jsb.xml_path).getroot()
+    assert gear.kind == "tricycle"
+    exported = {c.get("name"): [float(c.find(f"location/{a}").text) for a in "xyz"]
+                for c in xml.findall("ground_reactions/contact")}
+    assert exported == {c.name: pytest.approx([c.x_m, c.y_m, c.z_m], rel=1e-5, abs=1e-9) for c in gear.contacts}
+    assert residual_gear_item(sizing, layout_from_sizing(sizing)).mass_kg == gear_mass_kg(
+        sizing.airframe_topology, sizing.mtow_kg)

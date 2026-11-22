@@ -20,8 +20,8 @@ from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, S
 from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
-from src.tools.flight_control.jsbsim_exporter import (TIP_BACK_ANGLE_DEG, export_jsbsim, gear_contacts,
-                                                      lift_table, lift_thrust_curve)
+from src.tools.flight_control.jsbsim_exporter import (export_jsbsim, lift_table, lift_thrust_curve)
+from src.tools.gear import TIP_BACK_ANGLE_DEG, tricycle_gear
 from src.tools.flight_control.perturbation import HOT, SLUGGISH, PlantCase, perturbed_model
 from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
@@ -221,7 +221,9 @@ def test_jsbsim_xml_structure(design: Any, tmp_path: Path) -> None:
 
 def test_gear_meets_the_tip_back_rule_and_clears_the_propeller(design: Any) -> None:
     _, _, model = design
-    nose, left, right = gear_contacts(model)
+    nose, left, right = tricycle_gear(model.fuselage_length_m, model.fuselage_diameter_m,
+                                      model.cruise_prop_diameter_m, model.mean_chord_m, model.wingspan_m,
+                                      model.x_cg_m).contacts
     assert nose.x_m < model.x_cg_m < left.x_m == right.x_m
     assert math.degrees(math.atan2(left.x_m - model.x_cg_m, -left.z_m)) >= TIP_BACK_ANGLE_DEG - 1e-9
     assert -left.z_m > model.cruise_prop_diameter_m / 2

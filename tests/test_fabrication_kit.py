@@ -19,7 +19,7 @@ from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual
 from src.tools.fabrication.tubes import SparPlan, SparSegment
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at, spar_member_at
 from src.tools.fabrication.wing_stiffness import dbox_material_m2, dbox_web_x_m
-from src.tools.sizing.mass_model import GEAR_FRACTION
+from src.tools.gear import GEAR_FRACTION
 from tests.cad_helpers import part_solid, tube_solid
 from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components
 
