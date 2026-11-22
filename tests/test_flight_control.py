@@ -141,6 +141,17 @@ def test_gain_scale_damps_p_i_d_but_not_feed_forward(design: Any) -> None:
         pg.generate_params(model, sizing, bom, gain_scale=0.0)
 
 
+def test_raising_the_gain_scale_holds_the_rate_d_gain_at_its_model_value(design: Any) -> None:
+    # Docker SITL, g1 hot plant: D x 1/0.75 drove a ~13 Hz roll-rate oscillation (settling 1.5 s -> 4.7 s);
+    # P and I x 1/0.75 with D held settled in 1.5 s and still fixed the sluggish plant (3.04 s -> 2.76 s).
+    _, (_, sizing, bom, _, _), model = design
+    full, raised = pg.generate_params(model, sizing, bom), pg.generate_params(model, sizing, bom, gain_scale=1 / 0.75)
+    for axis in ("RLL_RATE", "PTCH_RATE"):
+        assert raised[f"{axis}_P"] == pytest.approx(full[f"{axis}_P"] / 0.75)
+        assert raised[f"{axis}_I"] == pytest.approx(full[f"{axis}_I"] / 0.75)
+        assert raised[f"{axis}_D"] == pytest.approx(full[f"{axis}_D"])
+
+
 def test_quadplane_parameters(g2: Any) -> None:
     (_, sizing, bom, _, _), model = g2
     params = pg.generate_params(model, sizing, bom)

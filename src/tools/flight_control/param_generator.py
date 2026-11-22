@@ -77,7 +77,9 @@ def _to_ap_units(deflection_per_rate: float, max_deflection_rad: float) -> float
 
 def _rate_gains(prefix: str, ff_phys: float, damping: float, control_power: float, max_defl: float,
                 gain_scale: float) -> ParamSet:
-    """FF/P/I/D for one fixed-wing axis. damping (1/s, <0) and control_power (rad/s^2 per rad)."""
+    """FF/P/I/D for one fixed-wing axis. damping (1/s, <0) and control_power (rad/s^2 per rad).
+    gain_scale multiplies P and I; D follows it down but never rises above its model value: on the high-control-power
+    corner a raised D drives a ~13 Hz rate-loop oscillation through the 50 Hz loop and the servo lag."""
     lo, hi = FF_BOUNDS
     ff: float = min(max(_to_ap_units(ff_phys, max_defl), lo), hi)
     bandwidth: float = max(RATE_BANDWIDTH_RAD_S, RATE_BANDWIDTH_TO_DAMPING * abs(damping))
@@ -85,7 +87,7 @@ def _rate_gains(prefix: str, ff_phys: float, damping: float, control_power: floa
     p: float = max(_to_ap_units(p_phys, max_defl), P_FLOOR_TO_FF * ff)
     i: float = (ff + p) * INTEGRAL_CORNER_FRACTION / ANGLE_TIME_CONSTANT_S
     return {f"{prefix}_FF": ff, f"{prefix}_P": gain_scale * p, f"{prefix}_I": gain_scale * i,
-            f"{prefix}_D": gain_scale * p * SERVO_TIME_CONSTANT_S}
+            f"{prefix}_D": min(gain_scale, 1.0) * p * SERVO_TIME_CONSTANT_S}
 
 
 def fixed_wing_gains(model: FlightModel, gain_scale: float = 1.0) -> ParamSet:
@@ -175,7 +177,8 @@ def battery_params(sizing: SizingOutput, bom: SelectedBOM, is_quadplane: bool) -
 
 
 def generate_params(model: FlightModel, sizing: SizingOutput, bom: SelectedBOM, gain_scale: float = 1.0) -> ParamSet:
-    """Complete vehicle parameter set. gain_scale multiplies the rate P/I/D gains (SITL damping retry)."""
+    """Complete vehicle parameter set. gain_scale multiplies the rate P/I gains (SITL damping retry); the fixed-wing
+    rate D is only ever scaled down."""
     if gain_scale <= 0:
         raise ParamGenerationError(f"gain_scale must be positive, got {gain_scale}")
     params: ParamSet = envelope_params(model) | fixed_wing_gains(model, gain_scale)
