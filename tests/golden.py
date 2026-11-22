@@ -63,9 +63,25 @@ def canonical(obj: object, decimals: Optional[int] = None, digits: int = SIG_DIG
     return json.dumps(_plain(obj, decimals, digits), sort_keys=True, indent=1)
 
 
+PLANFORM_FIELDS: Final[tuple[str, ...]] = (
+    "x_le_root_m", "z_root_m", "semi_span_m", "root_chord_m", "tip_chord_m", "dihedral_deg", "is_symmetric")
+BOOM_FIELDS: Final[tuple[str, ...]] = ("x_start_m", "length_m", "diameter_m", "y_m", "z_m")
+
+
+def _fields(obj: Any, names: tuple[str, ...]) -> Optional[dict[str, Any]]:
+    """`obj`'s `names` by attribute access (fields added later are ignored, renamed or removed ones raise)."""
+    return None if obj is None else {name: getattr(obj, name) for name in names}
+
+
 def layout_view(layout: AircraftLayout) -> dict[str, Any]:
-    """The layout's geometry by attribute access, so the snapshot survives a reshuffle of the dataclass fields."""
-    return {name: getattr(layout, name) for name in LAYOUT_FIELDS}
+    """The layout's geometry by attribute access and fixed field lists, so the snapshot survives a reshuffle of the
+    dataclass fields and the addition of new ones."""
+    view: dict[str, Any] = {name: getattr(layout, name) for name in LAYOUT_FIELDS}
+    for name in ("wing", "htail", "vtail"):
+        view[name] = _fields(view[name], PLANFORM_FIELDS)
+    view["tail_boom"] = _fields(view["tail_boom"], BOOM_FIELDS)
+    view["vtol_booms"] = [_fields(b, BOOM_FIELDS) for b in view["vtol_booms"]]
+    return view
 
 
 def _sizing(case: str) -> Any:

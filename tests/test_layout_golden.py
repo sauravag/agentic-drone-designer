@@ -8,6 +8,8 @@ import pytest
 
 from tests.golden import GOLDEN_DIR, snapshot
 
+VSP_KEYS = ("sizing", "layout", "params", "jsbsim", "kit", "vsp_geometry")
+EXPECTED = {**{case: set(VSP_KEYS) for case in ("g1", "g2")}, "g3": {"sizing", "layout"}}
 STORED = sorted(GOLDEN_DIR.glob("*/*.json"))
 
 
@@ -24,3 +26,9 @@ def test_reference_outputs_unchanged(path, snapshots):
     if case not in snapshots:
         snapshots[case] = snapshot(case)
     assert snapshots[case][key] == path.read_text()
+
+
+def test_every_expected_snapshot_is_stored():
+    stored = {case: {p.stem for p in (GOLDEN_DIR / case).glob("*.json")} for case in EXPECTED}
+    assert stored == EXPECTED
+    assert {p.name for p in GOLDEN_DIR.iterdir()} == set(EXPECTED)
