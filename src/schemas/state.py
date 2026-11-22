@@ -46,7 +46,7 @@ class TailSurface(_Frozen):
     span_m: Positive  # tip to tip if symmetric, else fin height
     taper_ratio: Positive
     dihedral_deg: float  # 0 horizontal, 90 vertical fin
-    arm_m: Positive  # wing AC to surface AC
+    arm_m: Positive  # sizing tail arm, wing AC to surface AC (one arm for every surface today; later layouts may set per-surface arms)
     is_symmetric: bool
 
 

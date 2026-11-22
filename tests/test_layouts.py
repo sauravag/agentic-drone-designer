@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from src.agent import report
 from src.agent.agent_schemas import RequirementsDraft
 from src.agent.parsing import _airframe_fields
 from src.schemas import requirements as requirements_module
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges, apply_changes
 from src.schemas.requirements import OperationalRequirements
-from src.agent import report
 from src.schemas.state import SizingOutput, effective_tail_areas
 from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
 from src.tools.sizing.mission_solver import size_aircraft

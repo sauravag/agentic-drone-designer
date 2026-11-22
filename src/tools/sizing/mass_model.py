@@ -8,8 +8,8 @@ import math
 from dataclasses import dataclass
 from typing import Final
 
-from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.schemas.state import TailSurface
+from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.layouts import (
     HTAIL_ASPECT_RATIO,
     HTAIL_TAPER_RATIO,
