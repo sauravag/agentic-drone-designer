@@ -259,7 +259,8 @@ def _search_monotone(search: _Search, name: str, lever: Lever) -> Optional[Explo
 
 
 def _cruise_floor(req: OperationalRequirements) -> float:
-    return max(CRUISE_SCAN_FACTOR * req.max_stall_speed_ms, CRUISE_MIN_MS)
+    # the schema needs cruise above the design wind: never spend a probe on a speed it would reject
+    return max(CRUISE_SCAN_FACTOR * req.max_stall_speed_ms, CRUISE_MIN_MS, req.design_wind_ms + CRUISE_MIN_MARGIN_MS)
 
 
 def _cruise_scan_points(req: OperationalRequirements) -> list[float]:

@@ -11,20 +11,22 @@ from typing import Final, Optional
 
 from pydantic import ValidationError
 
-from src.agent.agent_schemas import Altitude, Distance, Duration, Mass, Power, RequirementsDraft, Speed
+from src.agent.agent_schemas import Altitude, Distance, Duration, Mass, Power, RequirementsDraft, Speed, Temperature
 from src.schemas.components import Payload
 from src.schemas.payload_catalog import SENSOR_LABELS, is_custom_name, payload_spec, resolve_payload_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, OperationalRequirements
 from src.tools.database.matcher import ComponentNotFoundError, match_payload
 from src.units import (DAY_TO_S, FT_TO_M, G_TO_KG, HOUR_TO_S, KM_TO_M, KMH_TO_MS, KNOT_TO_MS, KW_TO_W, LB_TO_KG,
-                       MILE_TO_M, MIN_TO_S, MPH_TO_MS, NMI_TO_M, OZ_TO_KG)
+                       MILE_TO_M, MIN_TO_S, MPH_TO_MS, NMI_TO_M, OZ_TO_KG, FAHRENHEIT_OFFSET,
+                       FAHRENHEIT_PER_CELSIUS, ISA_LAPSE_RATE_C_PER_M, ISA_SEA_LEVEL_TEMPERATURE_C)
 
 DEFAULT_CRUISE_SPEED_MS: Final[float] = 22.0  # typical Group 1-3 ISR cruise
 DEFAULT_RADIUS_KM: Final[float] = 50.0
 FALLBACK_PAYLOAD_POWER_W: Final[float] = 50.0  # if the catalog has no matching sensor
 ROUND_TRIP_LEGS: Final[float] = 2.0
 ECHO_FIELDS: Final[tuple[str, ...]] = ("payload_mass", "payload_power", "endurance", "radius", "total_range",
-                                        "cruise_speed", "service_ceiling", "max_stall_speed")
+                                        "cruise_speed", "service_ceiling", "max_stall_speed", "design_wind",
+                                        "takeoff_altitude", "takeoff_air_temperature")
 REQUIRED_FIELDS: Final[dict[str, str]] = {"payload_mass": "payload mass", "endurance": "endurance (time on station)"}
 
 _MASS: Final[dict[str, float]] = {"kg": 1.0, "g": G_TO_KG, "lb": LB_TO_KG, "oz": OZ_TO_KG}
@@ -153,13 +155,37 @@ def _avionics_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, ob
             "companion_computer": True if draft.companion_computer is None else draft.companion_computer}
 
 
+def celsius(q: Temperature) -> float:
+    return q.value if q.unit == "C" else (q.value - FAHRENHEIT_OFFSET) / FAHRENHEIT_PER_CELSIUS
+
+
+def isa_offset_c(air_temperature_c: float, altitude_m: float) -> float:
+    """Deviation of a stated air temperature from the ISA (troposphere) temperature at that altitude."""
+    return air_temperature_c - (ISA_SEA_LEVEL_TEMPERATURE_C - ISA_LAPSE_RATE_C_PER_M * altitude_m)
+
+
+def _site_fields(draft: RequirementsDraft) -> dict[str, float]:
+    """Take-off site: altitude, and an ISA offset stated directly (wins) or from the stated air temperature."""
+    fields: dict[str, float] = {}
+    altitude_m: float = metres(draft.takeoff_altitude) if draft.takeoff_altitude is not None else 0.0
+    if draft.takeoff_altitude is not None:
+        fields["takeoff_altitude_m"] = altitude_m
+    if draft.isa_temperature_offset is not None:
+        fields["isa_temperature_offset_c"] = draft.isa_temperature_offset
+    elif draft.takeoff_air_temperature is not None:
+        fields["isa_temperature_offset_c"] = isa_offset_c(celsius(draft.takeoff_air_temperature), altitude_m)
+    return fields
+
+
 def _optional_fields(draft: RequirementsDraft) -> dict[str, float]:
     fields: dict[str, float] = {}
     if draft.service_ceiling is not None:
         fields["service_ceiling_m"] = metres(draft.service_ceiling)
     if draft.max_stall_speed is not None:
         fields["max_stall_speed_ms"] = ms(draft.max_stall_speed)
-    return fields
+    if draft.design_wind is not None:
+        fields["design_wind_ms"] = ms(draft.design_wind)
+    return {**fields, **_site_fields(draft)}
 
 
 def to_requirements(draft: RequirementsDraft, db_path: Path) -> ParseOutcome:

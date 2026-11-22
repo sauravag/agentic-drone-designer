@@ -32,7 +32,7 @@ class AeroState:
     geom: Geometry
     cd0: float
     k: float
-    rho_sl: float
+    rho_takeoff: float  # take-off site (altitude + ISA offset): hover, VTOL phases and the stall limit
     rho_cruise: float
     disk_area_m2: float  # total lift-rotor disk area; 0 for fixed-wing
 
@@ -96,7 +96,7 @@ def hover_power_w(
     """Momentum theory: P = T^1.5 / sqrt(2*rho*A) / FM / eta_motor.
     Sustained hover (energy) uses T/W = 1; installed peak (motor & C-rate sizing) uses T/W = 1.45."""
     thrust: float = thrust_to_weight * weight_n
-    induced: float = thrust**1.5 / math.sqrt(2.0 * aero.rho_sl * aero.disk_area_m2)
+    induced: float = thrust**1.5 / math.sqrt(2.0 * aero.rho_takeoff * aero.disk_area_m2)
     return induced / figure_of_merit / motor_efficiency
 
 
@@ -121,20 +121,21 @@ def phase_plan(
     req: OperationalRequirements, airframe: Airframe, polar: AirfoilPolar, aero: AeroState, mtow_kg: float
 ) -> tuple[PhaseSpec, ...]:
     weight: float = mtow_kg * G0
-    rho_climb, _ = air_properties(req.service_ceiling_m / 2.0)
+    climb_height_m: float = req.service_ceiling_m - req.takeoff_altitude_m
+    rho_climb, _ = air_properties(req.takeoff_altitude_m + climb_height_m / 2.0, req.isa_temperature_offset_c)
     # Best rate of climb for a prop aircraft ~ minimum-power CL = sqrt(3*CD0/k).
     v_climb: float = max(speed_for_cl(weight, rho_climb, aero, math.sqrt(3.0 * aero.cd0 / aero.k)),
                          _min_speed(weight, rho_climb, aero, polar.cl_max_3d))
-    transit_s: float = req.combat_radius_m / req.cruise_speed_ms
+    transit_s: float = req.combat_radius_m / (req.cruise_speed_ms - req.design_wind_ms)  # headwind both ways
     plan: list[PhaseSpec] = [
-        PhaseSpec("Climb", req.service_ceiling_m / CLIMB_RATE_MS, False, v_climb, rho_climb, CLIMB_RATE_MS),
+        PhaseSpec("Climb", climb_height_m / CLIMB_RATE_MS, False, v_climb, rho_climb, CLIMB_RATE_MS),
         PhaseSpec("Ingress", transit_s, False, req.cruise_speed_ms, aero.rho_cruise),
         PhaseSpec("Loiter", req.endurance_s, False, loiter_speed(weight, aero, polar.cl_max_3d), aero.rho_cruise),
         PhaseSpec("Egress", transit_s, False, req.cruise_speed_ms, aero.rho_cruise),
     ]
     if airframe == "quadplane_vtol":
-        plan.insert(0, PhaseSpec("VTOL_Takeoff", VTOL_PHASE_S, True, 0.0, aero.rho_sl))
-        plan.append(PhaseSpec("VTOL_Land", VTOL_PHASE_S, True, 0.0, aero.rho_sl))
+        plan.insert(0, PhaseSpec("VTOL_Takeoff", VTOL_PHASE_S, True, 0.0, aero.rho_takeoff))
+        plan.append(PhaseSpec("VTOL_Land", VTOL_PHASE_S, True, 0.0, aero.rho_takeoff))
     return tuple(plan)
 
 

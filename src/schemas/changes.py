@@ -23,7 +23,9 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "group_constraint": "Group limit", "payload_mass_kg": "Payload mass (kg)", "payload_power_w": "Payload power (W)",
     "endurance_hours": "Endurance (h)", "combat_radius_km": "Combat radius (km)",
     "cruise_speed_ms": "Cruise speed (m/s)", "service_ceiling_m": "Service ceiling (m)",
-    "max_stall_speed_ms": "Max stall speed (m/s)", "flight_controller": "Flight controller",
+    "max_stall_speed_ms": "Max stall speed (m/s)", "design_wind_ms": "Design headwind (m/s)",
+    "takeoff_altitude_m": "Take-off altitude (m)", "isa_temperature_offset_c": "ISA temperature offset (°C)",
+    "flight_controller": "Flight controller",
     "companion_computer": "Jetson companion computer", "payload_model": "Payload",
     # assumptions
     "liion_specific_energy_wh_kg": "Specific energy (Li-ion, Wh/kg)",
@@ -60,6 +62,9 @@ class RequirementChanges(BaseModel):
     cruise_speed_ms: Optional[float] = None
     service_ceiling_m: Optional[float] = None
     max_stall_speed_ms: Optional[float] = None
+    design_wind_ms: Optional[float] = None
+    takeoff_altitude_m: Optional[float] = None
+    isa_temperature_offset_c: Optional[float] = None
     flight_controller: Optional[FlightControllerId] = None
     companion_computer: Optional[bool] = None
     payload_model: Optional[str] = None  # a catalogue payload name or "custom"; checked when the change is applied

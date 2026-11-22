@@ -159,12 +159,14 @@ def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
 
 
 def build_aero_cad(sizing: SizingOutput, bom: SelectedBOM, cruise_altitude_m: float, out_dir: Path,
-                   settings: FabricationSettings = DEFAULT_FABRICATION) -> tuple[AeroStabilityOutput, CADArtifacts]:
-    """Full Module C run with OpenVSP/VSPAERO (Docker toolchain)."""
+                   settings: FabricationSettings = DEFAULT_FABRICATION,
+                   temperature_offset_c: float = 0.0) -> tuple[AeroStabilityOutput, CADArtifacts]:
+    """Full Module C run with OpenVSP/VSPAERO (Docker toolchain); temperature_offset_c is the ISA offset."""
     from src.tools.aero_cad import openvsp_builder  # needs the compiled OpenVSP API
 
     def analyse(layout: AircraftLayout) -> OmlAnalysis:
-        aero, vsp3, step = openvsp_builder.analyse_layout(layout, sizing, cruise_altitude_m, out_dir)
+        aero, vsp3, step = openvsp_builder.analyse_layout(layout, sizing, cruise_altitude_m, out_dir,
+                                                          temperature_offset_c)
         return OmlAnalysis(aero, vsp3, step)
 
     design: BalancedDesign = balance_design(sizing, bom, analyse, settings=settings)

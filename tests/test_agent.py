@@ -680,13 +680,13 @@ def test_a_kit_warning_is_a_design_warning_exactly_once(tmp_path: Path, db: Path
     assert not any("kit" in w.lower() for w in nodes.run_warnings({**state, "cad_artifacts": _kit_cad(None)}))
 
 
-def test_run_aero_cad_hands_the_settings_to_build_aero_cad(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_aero_cad_hands_the_settings_and_design_day_to_build_aero_cad(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Any] = []
     monkeypatch.setitem(__import__("sys").modules, "src.tools.aero_cad.build", SimpleNamespace(
-        build_aero_cad=lambda *args: seen.append(args[-1]) or ("aero", "cad")))
-    out = pipeline.run_aero_cad("sizing", "bom", SimpleNamespace(service_ceiling_m=1.0), Path("."), lambda _: None,
-                                CUSTOM_FABRICATION)
-    assert out == ("aero", "cad") and seen == [CUSTOM_FABRICATION]
+        build_aero_cad=lambda *args: seen.append(args[-2:]) or ("aero", "cad")))
+    req = SimpleNamespace(service_ceiling_m=1.0, isa_temperature_offset_c=7.0)
+    out = pipeline.run_aero_cad("sizing", "bom", req, Path("."), lambda _: None, CUSTOM_FABRICATION)
+    assert out == ("aero", "cad") and seen == [(CUSTOM_FABRICATION, 7.0)]
 
 
 def test_cli_fabrication_file_reaches_the_run(tmp_path: Path, db: Path) -> None:

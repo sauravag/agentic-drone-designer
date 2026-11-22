@@ -32,7 +32,10 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "combat_radius_km": "Combat radius (km)",
     "cruise_speed_ms": "Cruise speed (m/s)",
     "service_ceiling_m": "Service ceiling (m)",
-    "max_stall_speed_ms": "Max stall speed (m/s)",
+    "max_stall_speed_ms": "Max stall speed at take-off (m/s)",
+    "design_wind_ms": "Design headwind (m/s)",
+    "takeoff_altitude_m": "Take-off altitude (m)",
+    "isa_temperature_offset_c": "ISA temperature offset (°C)",
     "runway_available": "Runway available",
     "flight_controller": "Flight controller",
     "companion_computer": "Jetson companion computer",
@@ -51,8 +54,10 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
     # Payload formats keep every catalogue value exact (0.5335 kg, 3.5 W): the box rounds what it holds.
     "Payload": (("payload_mass_kg", 0.01, 200.0, 0.1, "%.4f"), ("payload_power_w", 0.0, 5000.0, 5.0, "%.1f")),
     "Mission": (("endurance_hours", 0.2, 48.0, 0.5, "%.1f"), ("combat_radius_km", 1.5, 1000.0, 5.0, "%.0f"),
-                ("cruise_speed_ms", 8.5, 120.0, 1.0, "%.1f")),
-    "Envelope": (("service_ceiling_m", 150.0, 10000.0, 100.0, "%.0f"), ("max_stall_speed_ms", 5.5, 45.0, 0.5, "%.1f")),
+                ("cruise_speed_ms", 8.5, 120.0, 1.0, "%.1f"), ("design_wind_ms", 0.0, 40.0, 1.0, "%.1f")),
+    "Envelope": (("service_ceiling_m", 150.0, 10000.0, 100.0, "%.0f"), ("max_stall_speed_ms", 5.5, 45.0, 0.5, "%.1f"),
+                 ("takeoff_altitude_m", 0.0, 5000.0, 100.0, "%.0f"),
+                 ("isa_temperature_offset_c", -40.0, 40.0, 1.0, "%.0f")),
 }
 DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
 SHEET_STEM_NUMBER: Final[re.Pattern[str]] = re.compile(r"-\d+$")
@@ -127,6 +132,8 @@ def sizing_summary(s: SizingOutput) -> list[tuple[str, str]]:
         ("Fuselage (L × D)", f"{s.fuselage_length_m:.2f} × {s.fuselage_diameter_m:.2f} m"),
         ("Cruise L/D", f"{s.assumed_ld_cruise:.1f}"),
         ("Stall speed (SL)", f"{s.v_stall_ms:.1f} m/s"),
+        *([("Stall speed at take-off site", f"{s.v_stall_takeoff_ms:.1f} m/s")]
+          if s.v_stall_takeoff_ms is not None else []),
         ("Loiter speed", f"{s.v_loiter_ms:.1f} m/s"),
         ("Empty mass", f"{s.empty_mass_kg:.2f} kg"),
         ("Battery mass", f"{s.battery_mass_kg:.2f} kg"),

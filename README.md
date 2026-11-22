@@ -242,6 +242,9 @@ reserve fails gate 4 and the critic raises it to 15 %.
   optimistic (set the payload power to the sensor's draw and re-run).
 - As-built mass outside ±3 % of the sized MTOW is reported as a warning, not a gate (the SRS does not gate it).
 - VSPAERO's vortex-lattice drag omits lift-rotor and nacelle drag, so quadplane L/D reads optimistic.
+- The design wind is a steady headwind on ingress and egress only: the loiter and climb ignore it, and gusts are not
+  modelled. Hot-and-high (take-off altitude, ISA offset) sets hover, VTOL and stall density; the SITL check still
+  flies a standard day.
 
 ## Development
 

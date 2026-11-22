@@ -30,7 +30,13 @@ class OperationalRequirements(BaseModel):
     combat_radius_km: float = Field(..., gt=1.0, le=1000.0)
     cruise_speed_ms: float = Field(..., gt=8.0, le=120.0)
     service_ceiling_m: float = Field(default=3000.0, gt=100.0, le=10000.0)
-    max_stall_speed_ms: float = Field(default=16.0, gt=5.0, le=45.0)
+    max_stall_speed_ms: float = Field(default=16.0, gt=5.0, le=45.0)  # true airspeed at the take-off site
+    # Design wind, flown as a headwind on both ingress and egress (ground speed = cruise - wind).
+    design_wind_ms: float = Field(default=0.0, ge=0.0, le=40.0)
+    # Hot-and-high take-off site: altitude AMSL (the service ceiling is AMSL too) and an ISA temperature offset
+    # applied to the whole atmosphere. Hover, VTOL phases and the stall limit use the take-off density.
+    takeoff_altitude_m: float = Field(default=0.0, ge=0.0, le=5000.0)
+    isa_temperature_offset_c: float = Field(default=0.0, ge=-40.0, le=40.0)
     runway_available: bool = False
     # Defaults (Cube, no Jetson) keep requirements written before the avionics choice existed unchanged.
     flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
@@ -54,6 +60,16 @@ class OperationalRequirements(BaseModel):
         from src.schemas.payload_catalog import payload_edited  # deferred: payload_catalog -> components -> here
 
         return payload_edited(self.payload_model, self.payload_mass_kg, self.payload_power_w)
+
+    @model_validator(mode="after")
+    def _flyable_site_and_wind(self) -> "OperationalRequirements":
+        if self.design_wind_ms >= self.cruise_speed_ms:
+            raise ValueError(f"design wind {self.design_wind_ms} m/s must be below the cruise speed "
+                             f"{self.cruise_speed_ms} m/s: the aircraft could not make headway on ingress")
+        if self.takeoff_altitude_m >= self.service_ceiling_m:
+            raise ValueError(f"take-off altitude {self.takeoff_altitude_m} m must be below the service ceiling "
+                             f"{self.service_ceiling_m} m (both above mean sea level)")
+        return self
 
     @model_validator(mode="before")
     @classmethod

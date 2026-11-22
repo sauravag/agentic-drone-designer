@@ -49,6 +49,11 @@ class Altitude(BaseModel):
     unit: Literal["m", "km", "ft"]
 
 
+class Temperature(BaseModel):
+    value: float  # may be negative
+    unit: Literal["C", "F"]
+
+
 class Power(BaseModel):
     value: float = Field(ge=0)
     unit: Literal["W", "kW"]
@@ -72,6 +77,14 @@ class RequirementsDraft(BaseModel):
     cruise_speed: Optional[Speed] = None
     service_ceiling: Optional[Altitude] = None
     max_stall_speed: Optional[Speed] = None
+    design_wind: Optional[Speed] = Field(
+        default=None, description="Design wind or headwind the aircraft must fly against on the way out and back")
+    takeoff_altitude: Optional[Altitude] = Field(
+        default=None, description="Elevation of the launch / take-off site above sea level (hot-and-high operations)")
+    isa_temperature_offset: Optional[float] = Field(
+        default=None, description="Only if the user states an ISA deviation, e.g. 'ISA+20' -> 20 (degC)")
+    takeoff_air_temperature: Optional[Temperature] = Field(
+        default=None, description="Only if the user states the outside air temperature at the take-off site")
     runway_available: Optional[bool] = Field(
         default=None, description="false for runway-independent, VTOL or ship/field operations")
     vtol_required: Optional[bool] = None

@@ -184,7 +184,7 @@ def run_aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequire
         _OPENVSP_LOCK.acquire()
     try:
         progress("Building the OpenVSP OML, running VSPAERO and packing the CAD (this can take a few minutes)")
-        return build_aero_cad(sizing, bom, req.service_ceiling_m, out_dir, settings)
+        return build_aero_cad(sizing, bom, req.service_ceiling_m, out_dir, settings, req.isa_temperature_offset_c)
     finally:
         _OPENVSP_LOCK.release()
 

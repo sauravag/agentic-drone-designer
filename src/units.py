@@ -20,3 +20,9 @@ FT_TO_M: Final[float] = 0.3048
 KMH_TO_MS: Final[float] = 1.0 / 3.6
 MPH_TO_MS: Final[float] = 0.44704
 KW_TO_W: Final[float] = 1_000.0
+
+# Atmosphere (ISA troposphere) and temperature scales
+ISA_SEA_LEVEL_TEMPERATURE_C: Final[float] = 15.0
+ISA_LAPSE_RATE_C_PER_M: Final[float] = 0.0065
+FAHRENHEIT_OFFSET: Final[float] = 32.0
+FAHRENHEIT_PER_CELSIUS: Final[float] = 1.8

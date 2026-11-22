@@ -46,7 +46,10 @@ class SizingOutput(_Frozen):
     fuselage_diameter_m: Positive
     cruise_power_w: Positive  # total electrical power at cruise (propulsion + hotel)
     hover_power_w: NonNegative  # peak electrical hover power; 0 for conventional fixed-wing
-    v_stall_ms: Positive  # sea-level stall speed at MTOW
+    v_stall_ms: Positive  # stall speed at MTOW as an equivalent (sea-level) airspeed, as ArduPilot reads airspeeds
+    # True stall speed at the take-off site (altitude + ISA offset): the speed max_stall_speed_ms limits.
+    # Optional so records sized before hot-and-high existed still load (they were sea-level sites).
+    v_stall_takeoff_ms: Optional[Positive] = None
     v_loiter_ms: Positive
     v_cruise_ms: Optional[Positive] = None  # requested cruise speed; None in records that predate it
     # lift coefficients the sizing L/D assumed at cruise and loiter (the L/D gate evaluates VSPAERO at the same CLs)

@@ -99,7 +99,10 @@ class OperationalRequirements(BaseModel):
     combat_radius_km: float = Field(..., gt=1.0, le=1000.0)
     cruise_speed_ms: float = Field(..., gt=8.0, le=120.0)
     service_ceiling_m: float = Field(default=3000.0, gt=100.0, le=10000.0)
-    max_stall_speed_ms: float = Field(default=16.0, gt=5.0, le=45.0)
+    max_stall_speed_ms: float = Field(default=16.0, gt=5.0, le=45.0)  # True airspeed at the take-off site
+    design_wind_ms: float = Field(default=0.0, ge=0.0, le=40.0)  # Headwind on ingress and egress; < cruise_speed_ms
+    takeoff_altitude_m: float = Field(default=0.0, ge=0.0, le=5000.0)  # AMSL, < service_ceiling_m (also AMSL)
+    isa_temperature_offset_c: float = Field(default=0.0, ge=-40.0, le=40.0)  # Applied to the whole atmosphere
     runway_available: bool = False
 ```
 
@@ -134,12 +137,13 @@ class DesignState(TypedDict):
    * If `propulsion_type == "auto"`: select `"electric"` if estimated $\text{MTOW} < 15\text{ kg}$ and `endurance_hours <= 3.0`; otherwise select `"series_hybrid"`.
 2. **Time-Stepped Mission Solver (`mission_solver.py` using `AeroSandbox`):**
    * Discretize the mission into 6 sequential phases:
-     1. `VTOL_Takeoff` (if QuadPlane: 60s hover/climb at $T/W = 1.45$, induced power calculated via momentum theory + figure of merit $FM = 0.72$).
-     2. `Climb` (climb at best rate-of-climb speed to `service_ceiling_m`).
-     3. `Ingress` (`combat_radius_km` at `cruise_speed_ms`).
+     1. `VTOL_Takeoff` (if QuadPlane: 60s hover/climb at $T/W = 1.45$, induced power calculated via momentum theory + figure of merit $FM = 0.72$, at the take-off site density).
+     2. `Climb` (climb at best rate-of-climb speed from `takeoff_altitude_m` to `service_ceiling_m`).
+     3. `Ingress` (`combat_radius_km` at `cruise_speed_ms` into the design headwind: duration $R / (V_{\text{cruise}} - w)$).
      4. `Loiter` (`endurance_hours` at maximum $L/D$ speed $V_{\text{loiter}}$).
-     5. `Egress` (`combat_radius_km` at `cruise_speed_ms`).
-     6. `VTOL_Land` (if QuadPlane: 60s descent/hover).
+     5. `Egress` (`combat_radius_km` at `cruise_speed_ms`, again into the headwind).
+     6. `VTOL_Land` (if QuadPlane: 60s descent/hover, at the take-off site density).
+   * **Design day:** every density is ISA shifted by `isa_temperature_offset_c` (temperature only, at the same pressure). Hover, the VTOL phases and the stall constraint use the take-off site density; the stall constraint holds `max_stall_speed_ms` as a true airspeed there, so hot-and-high sites grow the wing. `SizingOutput.v_stall_ms` stays the sea-level equivalent airspeed (ArduPilot's airspeed parameters are equivalent airspeeds) and `v_stall_takeoff_ms` records the true stall speed at the site.
    * **Electric Powertrain Model:**
      * Pack-level specific energy: $E_{\text{spec}} = 200\text{ Wh/kg}$ (Li-Ion 21700), drivetrain efficiency $\eta_{\text{prop}} = 0.68$, minimum end-of-mission reserve $\text{SoC} \ge 20\%$.
      * Integrate total energy: $E_{\text{total}} = \sum (P_{\text{prop}, i} + P_{\text{payload}} + P_{\text{avionics}}) \cdot \Delta t_i$.

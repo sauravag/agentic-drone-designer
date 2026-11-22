@@ -51,9 +51,10 @@ def airfoil_polar(name: str, reynolds: float) -> AirfoilPolar:
                         cl_max_2d=float(np.max(aero["CL"])), cd_min=float(np.min(aero["CD"])))
 
 
-def air_properties(altitude_m: float) -> tuple[float, float]:
-    """ISA (density kg/m^3, dynamic viscosity Pa*s) at altitude."""
-    atm = asb.Atmosphere(altitude=altitude_m)
+def air_properties(altitude_m: float, temperature_offset_c: float = 0.0) -> tuple[float, float]:
+    """(density kg/m^3, dynamic viscosity Pa*s) at altitude in an ISA atmosphere shifted by temperature_offset_c
+    (an ISA+20 day is 20 degC warmer at every altitude, at the same pressure)."""
+    atm = asb.Atmosphere(altitude=altitude_m, temperature_deviation=temperature_offset_c)
     return float(atm.density()), float(atm.dynamic_viscosity())
 
 

@@ -196,10 +196,12 @@ def export_oml(out_dir: Path) -> tuple[Path, Path]:
 
 
 # ------------------------------------------------------------------------------------ analysis ---
-def flight_condition(layout: AircraftLayout, sizing: SizingOutput, altitude_m: float) -> FlightCondition:
-    """Loiter (max-L/D) speed at the service ceiling: sets the VSPAERO Reynolds and Mach numbers. The L/D the critic
-    compares is taken from the polar at the sizing CLs (`stability.ld_deviations`), not at this speed."""
-    atm = asb.Atmosphere(altitude=altitude_m)
+def flight_condition(layout: AircraftLayout, sizing: SizingOutput, altitude_m: float,
+                     temperature_offset_c: float = 0.0) -> FlightCondition:
+    """Loiter (max-L/D) speed at the service ceiling on the design day (ISA + temperature_offset_c): sets the VSPAERO
+    Reynolds and Mach numbers. The L/D the critic compares is taken from the polar at the sizing CLs
+    (`stability.ld_deviations`), not at this speed."""
+    atm = asb.Atmosphere(altitude=altitude_m, temperature_deviation=temperature_offset_c)
     rho, mu, a = float(atm.density()), float(atm.dynamic_viscosity()), float(atm.speed_of_sound())
     v: float = sizing.v_loiter_ms
     return FlightCondition(altitude_m=altitude_m, vinf_ms=v, rho=rho, mach=v / a,
@@ -313,13 +315,13 @@ def parasite_cd0(model: VspModel, cond: FlightCondition) -> float:
 
 
 def analyse_layout(layout: AircraftLayout, sizing: SizingOutput, cruise_altitude_m: float,
-                   out_dir: Path) -> tuple[AeroStabilityOutput, Path, Path]:
+                   out_dir: Path, temperature_offset_c: float = 0.0) -> tuple[AeroStabilityOutput, Path, Path]:
     """Build the OML, export vsp3/STEP, run VSPAERO + ParasiteDrag and derive the stability set."""
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[Tool] openvsp_builder: wing station %.3f", layout.wing_station)
     model: VspModel = build_model(layout, out_dir)
     vsp3, step = export_oml(out_dir)
-    cond: FlightCondition = flight_condition(layout, sizing, cruise_altitude_m)
+    cond: FlightCondition = flight_condition(layout, sizing, cruise_altitude_m, temperature_offset_c)
     cases, ref = run_vspaero(model, cond, out_dir / "vspaero")
     cd0: float = parasite_cd0(model, cond)
     if sizing.cl_cruise is None:

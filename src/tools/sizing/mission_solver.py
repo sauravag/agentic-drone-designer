@@ -56,7 +56,7 @@ from src.units import G0, KWH_TO_J
 
 logger = logging.getLogger(__name__)
 
-MU_SEA_LEVEL: Final[float] = air_properties(0.0)[1]
+RHO_SEA_LEVEL: Final[float] = air_properties(0.0)[0]  # SizingOutput.v_stall_ms is an equivalent (sea-level) speed
 MTOW_REL_TOL: Final[float] = 1e-9
 ROOT_ABS_TOL_KG: Final[float] = 1e-12  # brentq absolute tolerance on MTOW
 MAX_ITERATIONS: Final[int] = 1_000
@@ -86,7 +86,7 @@ class _Design:
     params: dict[str, float]  # validated overrides merged over defaults
     assumptions: DesignAssumptions  # technology constants (efficiencies, specific energy, reserves)
     cruise_polar: AirfoilPolar  # profile drag + high-altitude CLmax, at cruise Re
-    stall_polar: AirfoilPolar  # sea-level CLmax for the stall constraint, at stall Re (same airfoil)
+    stall_polar: AirfoilPolar  # CLmax for the stall constraint, at the take-off-site stall Re (same airfoil)
 
 
 @dataclass(frozen=True)
@@ -120,11 +120,11 @@ def _validate_overrides(overrides: dict[str, float]) -> dict[str, float]:
     return {**OVERRIDE_DEFAULTS, **{k: float(v) for k, v in overrides.items()}}
 
 
-def _wing_area_m2(mtow: float, design: _Design, rho_sl: float, rho_c: float) -> float:
-    """Binding of two constraints: sea-level stall at max_stall_speed, and cruise at altitude flown
+def _wing_area_m2(mtow: float, design: _Design, rho_to: float, rho_c: float) -> float:
+    """Binding of two constraints: stall at max_stall_speed at the take-off site, and cruise at altitude flown
     no slower than SPEED_MARGIN_OVER_STALL x local stall (CL <= CLmax / margin^2)."""
     req = design.req
-    by_stall: float = required_wing_area_m2(mtow, rho_sl, req.max_stall_speed_ms, design.stall_polar.cl_max_3d)
+    by_stall: float = required_wing_area_m2(mtow, rho_to, req.max_stall_speed_ms, design.stall_polar.cl_max_3d)
     cruise_cl_limit: float = design.cruise_polar.cl_max_3d / SPEED_MARGIN_OVER_STALL**2
     by_cruise: float = required_wing_area_m2(mtow, rho_c, req.cruise_speed_ms, cruise_cl_limit)
     return max(by_stall, by_cruise)
@@ -133,9 +133,9 @@ def _wing_area_m2(mtow: float, design: _Design, rho_sl: float, rho_c: float) -> 
 def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
     """Geometry + drag polar at this MTOW. Returns (aero, mu at cruise altitude)."""
     req, p = design.req, design.params
-    rho_sl, _ = air_properties(0.0)
-    rho_c, mu_c = air_properties(req.service_ceiling_m)
-    geom = size_geometry(mtow, _wing_area_m2(mtow, design, rho_sl, rho_c), p["aspect_ratio"],
+    rho_to, _ = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
+    rho_c, mu_c = air_properties(req.service_ceiling_m, req.isa_temperature_offset_c)
+    geom = size_geometry(mtow, _wing_area_m2(mtow, design, rho_to, rho_c), p["aspect_ratio"],
                          p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"])
     is_quad: bool = design.airframe == "quadplane_vtol"
     cd0: float = parasite_drag_coefficient(
@@ -144,13 +144,14 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
         reynolds_number(rho_c, req.cruise_speed_ms, geom.fuselage_length_m, mu_c), is_quad,
     )
     disk: float = mtow * G0 / disk_loading_n_m2(mtow) if is_quad else 0.0
-    return AeroState(geom, cd0, induced_drag_factor(p["aspect_ratio"]), rho_sl, rho_c, disk), mu_c
+    return AeroState(geom, cd0, induced_drag_factor(p["aspect_ratio"]), rho_to, rho_c, disk), mu_c
 
 
 def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     req, assumptions = design.req, design.assumptions
     eta: float = assumptions.drivetrain_efficiency
     aero, mu_c = _aero_state(mtow, design)
+    _, mu_to = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
     hotel: float = hotel_power_w(req, mtow, assumptions)
     cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, eta) + hotel
     is_hybrid: bool = design.propulsion == "series_hybrid"
@@ -172,7 +173,7 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
         design=design, aero=aero, trace=trace, storage=storage, generator_power_w=gen_w,
         cruise_total_w=cruise_total,
         wing_reynolds=reynolds_number(aero.rho_cruise, req.cruise_speed_ms, aero.geom.mean_chord_m, mu_c),
-        stall_reynolds=reynolds_number(aero.rho_sl, req.max_stall_speed_ms, aero.geom.mean_chord_m, MU_SEA_LEVEL),
+        stall_reynolds=reynolds_number(aero.rho_takeoff, req.max_stall_speed_ms, aero.geom.mean_chord_m, mu_to),
     )
 
 
@@ -303,7 +304,8 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         fuselage_diameter_m=geom.fuselage_diameter_m, horizontal_tail_area_m2=geom.horizontal_tail_area_m2,
         vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
         cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
-        v_stall_ms=math.sqrt(2.0 * weight / (aero.rho_sl * geom.wing_area_m2 * cl_max)),
+        v_stall_ms=math.sqrt(2.0 * weight / (RHO_SEA_LEVEL * geom.wing_area_m2 * cl_max)),
+        v_stall_takeoff_ms=math.sqrt(2.0 * weight / (aero.rho_takeoff * geom.wing_area_m2 * cl_max)),
         v_cruise_ms=req.cruise_speed_ms, cl_cruise=cl_cruise, cl_loiter=cl_loiter,
         v_loiter_ms=v_loiter,
         assumed_ld_cruise=lift_to_drag(cl_cruise, aero.cd0, aero.k),
