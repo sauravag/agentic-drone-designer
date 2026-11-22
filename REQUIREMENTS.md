@@ -157,6 +157,7 @@ class DesignState(TypedDict):
    * **Airfoil & Structural Scaling:**
      * Assign Reynolds-matched airfoils (`SD7037` for $Re < 3\times 10^5$; `MH 32` for $3\times 10^5 \le Re \le 10^6$; `NACA 4415` for $Re > 10^6$) and evaluate polar curves via `NeuralFoil`.
      * Enforce stall constraint: $S \ge \frac{2 \cdot \text{MTOW} \cdot g}{\rho \cdot V_{\text{stall}}^2 \cdot C_{L,\max}}$.
+     * Layout (`layouts.py`): `LayoutSpec`, `StaticMarginBand` (tailed layouts 8–14 %, target 11 %), `static_margin_band()` and `tail_arm_m()` come from `airframe_layout`. `SizingOutput` also carries `airframe_layout` and `tail_surfaces` (a list of `TailSurface`, each with area, arm and dihedral Γ); the legacy horizontal and vertical tail areas are the effective areas Σ S·cos²Γ and Σ S·sin²Γ. The summary and report show a Layout row.
      * Output converged `SizingOutput`: `mtow_kg`, `empty_mass_kg`, `fuel_mass_kg`, `battery_mass_kg`, `wing_area_m2`, `wingspan_m`, `mean_chord_m`, `aspect_ratio`, `fuselage_length_m`, `fuselage_diameter_m`, `cruise_power_w`, `hover_power_w`, `v_stall_ms`, `v_loiter_ms`.
 
 ### 4.2 Module B: COTS Component Database & Matcher (`src/tools/database/`)
@@ -189,6 +190,8 @@ class DesignState(TypedDict):
    * Join the two fuselage socket tubes (`SK-R`/`SK-L`) at the centreline with a glued mitre and a wet-laid carbon overwrap over it, sized for the socket moment (smallest layer count within the allowed maximum, with the lap sized for epoxy lap shear). The spar roots slide into the sockets unglued, so the wings stay detachable. Also check the tail boom (bending and torsion), socket bearing in the wing-mount plates (adding a boss doubler when needed) and crutch rail width. If a check cannot be met by any stock tube or doubler, or a part cannot fit the bed even when split, the kit is unavailable.
    * Size the fuselage pod kit-aware (wide enough for the crutch rails, battery seated low), and feed the kit masses into the as-built mass and CG in place of the shell-model lump. Without a kit (Group 3 designs or an unavailable kit) the shell model is used and the run reports a warning; the run status is unaffected.
    * Write the kit outputs to `kit/`: nested DXF sheets per stock (`kit/sheets/`, millimetres, layers `CUT_OUTER`, `CUT_INNER`, `ENGRAVE`, kerf-compensated), `kit/build_sheet.md` and `kit/parts.csv`. The kit parts and tubes are also included in `assembly.step` and the viewer model.
+   * `AircraftLayout` holds general `tail_surfaces`, `tail_booms` and a `PropellerStation` (no diameter yet); `htail`, `vtail` and `tail_boom` are derived properties. The static-margin band is the layout's, not a constant.
+   * Landing gear is one shared description (`src/tools/gear.py`: tricycle only, `GEAR_FRACTION`, `gear_mass_kg`) used by sizing, the kit and the JSBSim model.
    * Create parametric solid bounding boxes for every item in `SelectedBOM` plus a cylindrical fuel tank (if hybrid).
    * **1D Longitudinal CG Optimization:** Place the EO/IR gimbal in the forward nose/chin bay and fuel tank centroid directly at $X_{np}$ (so fuel burn causes zero CG shift). Use `scipy.optimize.minimize_scalar` to slide the battery pack and avionics tray along the fuselage $X$-axis until Static Margin:
      $$SM = \frac{X_{np} - X_{cg}}{\bar{c}} \in [0.08, 0.14]$$
@@ -211,6 +214,7 @@ class DesignState(TypedDict):
        * `Q_TRANSITION_MS` = computed from cruise motor acceleration time from $0 \to 1.2 \cdot V_{\text{stall}}$
        * Scale `Q_A_RAT_RLL_P` and `Q_A_RAT_PIT_P` proportional to $\frac{I_{xx}}{L_{\text{arm}} \cdot T_{\max}}$ and $\frac{I_{yy}}{L_{\text{arm}} \cdot T_{\max}}$.
      * **Energy & Failsafes:** Set `BATT_CAPACITY`, `BATT_LOW_MAH`, and `BATT_CRT_MAH` directly from `SelectedBOM`.
+   * **Control channels (`control_channels.py`):** one channel per physical surface (surface, servo, `SERVOn_FUNCTION`, bridge sign, max deflection, own derivatives). `param_generator`, the JSBSim actuators and coefficients, and the SITL bridge are all driven from it; ArduPilot does the mixing and nothing downstream un-mixes, so a wrong servo reversal fails SITL (proven by a reversed-elevator test). `SitlConfig.extra_params` adds SITL-only parameters.
 2. **Headless SITL Robustness Check (`sitl_validator.py`):**
    * `jsbsim_exporter.py`: Write a `JSBSim` aircraft configuration XML using the OpenVSP aerodynamic derivatives, wing geometry, propulsion thrust tables, and Build123d inertia tensor.
    * Launch `arduplane` SITL connected to the JSBSim dynamics model headlessly.
@@ -229,7 +233,7 @@ Build a cyclical `StateGraph(DesignState)` with the following nodes and routing 
 4. **`build_aero_cad` (Tool Node):** Executes Module C (`openvsp_builder.py` $\rightarrow$ `cad_packer.py`).
 5. **`design_critic` (LLM + Deterministic Check Node):**
    * Evaluates 4 hard engineering gates:
-     1. Static Margin $0.08 \le SM \le 0.14$
+     1. Static Margin within the layout's band ($0.08 \le SM \le 0.14$ for tailed layouts)
      2. VSPAERO $L/D$ within $\pm 15\%$ of the sizing $L/D$ at the sizing cruise **and** loiter $C_L$ (both polars evaluated at the same $C_L$; VSPAERO's inviscid $k$ gets Kroo's viscous lift-dependent drag, $k = k_{\text{VLM}} + 0.38\,C_{D_0}$). Only a low VSPAERO $L/D$ triggers the aspect-ratio rule fix; a high one has no automatic fix.
      3. Zero internal CAD component collisions and MTOW within DoD Group limit
      4. Sufficient battery/fuel reserve margin ($\ge 15\%$)

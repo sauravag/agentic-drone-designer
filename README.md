@@ -146,6 +146,14 @@ editing `.env`. OpenRouter requests set
 `provider.require_parameters`, so they only reach hosts that enforce the JSON schema; a model with no such host
 fails with a clear error rather than returning free text.
 
+**Airframe layout.** `OperationalRequirements.airframe_layout` picks the airframe arrangement; the LLM draft
+and the design chat carry it. Phase 1 of the layout work is a pure refactor: only `pod_boom_tractor` (the existing
+pod, tail boom and tractor propeller) is available, for both `fixed_wing` and `quadplane_vtol`. The other ids
+(`single_boom_vtail_pusher`, `twin_boom_htail_pusher`, `twin_boom_inverted_v_pusher`, `flying_wing`) are
+recognised but rejected with "not available yet". The layout supplies the static-margin band (tailed layouts:
+8-14 %, target 11 %) used by the critic, the CAD packer, the pipeline and the SITL perturbation corners, and the
+summary and report show a Layout row. Designs, CAD and SITL results are unchanged from before the refactor.
+
 ### Command line
 
 ```bash
