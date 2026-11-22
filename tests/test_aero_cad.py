@@ -125,7 +125,9 @@ def test_derivatives_from_synthetic_vspaero(g1_layout: AircraftLayout) -> None:
     assert out.cl_delta_a_per_rad == pytest.approx(0.04 / (10 * DEG))  # convention: right roll > 0
     assert out.cm_delta_e_per_rad == pytest.approx(-0.06 / (10 * DEG))
     assert out.cn_delta_r_per_rad == pytest.approx(-0.02 / (10 * DEG))  # convention: TE-left rudder < 0
-    assert out.ld_cruise == pytest.approx(0.6 / (0.03 + 0.04 * 0.36))
+    # VLM k = 0.04 plus Kroo's viscous lift-dependent drag 0.38 x CD0
+    assert out.induced_drag_factor == pytest.approx(0.04 + 0.38 * 0.03)
+    assert out.ld_cruise == pytest.approx(0.6 / (0.03 + (0.04 + 0.38 * 0.03) * 0.36))
     assert out.x_np_m == pytest.approx(0.6 - out.cm_alpha_per_rad / out.cl_alpha_per_rad * 0.3)
 
 
@@ -599,7 +601,7 @@ def test_e2e_vspaero_derivatives_are_physical(built) -> None:
     assert aero.cl_delta_a_per_rad > 1e-4
     assert aero.cm_delta_e_per_rad < -1e-4
     assert aero.cn_delta_r_per_rad < -1e-4
-    assert 0.6 <= aero.ld_cruise / sizing.assumed_ld_cruise <= 1.5
+    assert all(abs(p.deviation) <= stability.LD_DEVIATION_TOLERANCE for p in stability.ld_deviations(sizing, aero))
 
 
 def test_e2e_balanced_collision_free_and_inertia(built) -> None:

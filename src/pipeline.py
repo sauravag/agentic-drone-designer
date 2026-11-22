@@ -21,7 +21,7 @@ from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN, CADPackingError
-from src.tools.aero_cad.stability import AeroAnalysisError
+from src.tools.aero_cad.stability import LD_DEVIATION_TOLERANCE, AeroAnalysisError, ld_deviations
 from src.tools.database.matcher import ComponentNotFoundError, select_bom
 from src.tools.database.seed_data import CATALOG_VERSION, DEFAULT_DB_PATH, catalog_version, seed_database
 from src.tools.flight_control.flight_model import FlightModelError
@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_OUTPUTS_ROOT: Final[Path] = Path(__file__).resolve().parents[1] / "outputs"
 MAX_SLUG_LENGTH: Final[int] = 30  # leaves room for a de-duplication suffix within 40 chars
 MASS_CONVERGENCE_TOLERANCE: Final[float] = 0.03  # SRS 4.2: as-built vs sized MTOW within +/- 3 %
-LD_DEVIATION_TOLERANCE: Final[float] = 0.15
 PAYLOAD_TOLERANCE: Final[float] = 0.05  # catalog sensor vs the mass/power the sizing budgeted
 
 # OpenVSP is a process-wide singleton: serialise runs from concurrent web sessions. The catalog is
@@ -109,6 +108,17 @@ def _governing_note(fcs: FCSArtifacts) -> str:
     return f"worst case: {fcs.governing_case}" + (f", crashed: {crash}" if crash else "")
 
 
+def _ld_notes(sizing: SizingOutput, aero: AeroStabilityOutput) -> list[str]:
+    """VSPAERO vs sizing L/D at the sizing cruise and loiter CLs, for each point outside the tolerance."""
+    try:
+        points = ld_deviations(sizing, aero)
+    except ValueError as exc:
+        return [f"L/D cross-check skipped: {exc}."]
+    return [f"VSPAERO {p.name} L/D {p.vspaero_ld:.1f} vs sizing {p.sizing_ld:.1f} at CL {p.cl:.2f} ({p.deviation:+.0%}); "
+            "the VLM drag build-up omits lift-rotor and nacelle drag." for p in points
+            if abs(p.deviation) > LD_DEVIATION_TOLERANCE]
+
+
 def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
                     cad: Optional[CADArtifacts], fcs: Optional[FCSArtifacts] = None) -> tuple[str, ...]:
     """Cross-checks between sizing, VSPAERO, the as-built CAD and SITL that the critic (M5) will act on."""
@@ -120,10 +130,7 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
                      f"transition altitude loss {fcs.max_transition_altitude_loss_m:.1f} m "
                      f"(limits {MAX_OVERSHOOT:.0%}, {MAX_SETTLING_S:g} s, {MAX_TRANSITION_ALT_LOSS_M:g} m).")
     if aero is not None:
-        dev: float = aero.ld_cruise / sizing.assumed_ld_cruise - 1
-        if abs(dev) > LD_DEVIATION_TOLERANCE:
-            notes.append(f"VSPAERO cruise L/D {aero.ld_cruise:.1f} vs sizing assumption {sizing.assumed_ld_cruise:.1f} "
-                         f"({dev:+.0%}); the VLM drag build-up omits lift-rotor and nacelle drag.")
+        notes.extend(_ld_notes(sizing, aero))
     if cad is not None:
         growth: float = cad.as_built_mass_kg / sizing.mtow_kg - 1
         if abs(growth) > MASS_CONVERGENCE_TOLERANCE:

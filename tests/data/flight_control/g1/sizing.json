@@ -67,5 +67,7 @@
  "vertical_tail_area_m2": 0.0491157367288838,
  "vtol_thrust_per_motor_n": 0.0,
  "wing_area_m2": 0.3267906339894242,
- "wingspan_m": 1.980274629407015
+ "wingspan_m": 1.980274629407015,
+ "cl_cruise": 0.6466570254110235,
+ "cl_loiter": 0.7090147804555041
 }

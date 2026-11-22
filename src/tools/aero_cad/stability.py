@@ -13,16 +13,21 @@ because which way OpenVSP's "positive" group deflection moves each surface is ar
   positive aileron  -> right-wing-down roll   => Cl_da > 0
   positive elevator -> trailing edge down     => Cm_de < 0
   positive rudder   -> trailing edge left     => Cn_dr < 0
+
+Drag polar: VLM is inviscid, so its k misses the profile drag that grows with lift. Kroo's correction
+(Aircraft Design: Synthesis and Analysis, 1/e = 1/e_inviscid + 0.38 CD0 pi AR) adds it: k = k_VLM + 0.38 CD0.
+`ld_deviations` evaluates that polar and the sizing polar at the sizing cruise and loiter CLs (critic gate 2).
 """
 
 import math
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 
-from src.schemas.state import AeroStabilityOutput
+from src.schemas.state import AeroStabilityOutput, SizingOutput
 from src.tools.aero_cad.layout import QUARTER_CHORD, AircraftLayout
+from src.tools.sizing.aero_model import lift_to_drag
 from src.units import G0
 
 SM_MIN: Final[float] = 0.08  # static-margin band the design must land in (fractions of MAC)
@@ -35,6 +40,8 @@ ALPHA_MATCH_TOL_DEG: Final[float] = 1e-6
 AILERON_SIGN: Final[float] = 1.0
 ELEVATOR_SIGN: Final[float] = -1.0
 RUDDER_SIGN: Final[float] = -1.0
+VISCOUS_LIFT_DRAG_FACTOR: Final[float] = 0.38  # Kroo: viscous lift-dependent drag, k += 0.38 * CD0
+LD_DEVIATION_TOLERANCE: Final[float] = 0.15  # VSPAERO vs sizing L/D, either side, at each CL (critic gate 2)
 
 # Nelson Fig. 2.14 (approximate digitisation): Kf vs wing-root quarter-chord position / body length.
 KF_STATION: Final[tuple[float, ...]] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
@@ -157,10 +164,10 @@ def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: Aircra
     _check_control_conventions(cases, base)
     cm_alpha_vlm, _ = _linear_fit(cases.sweep, [c.body_moments()[1] for c in cases.sweep])
     cm_alpha: float = cm_alpha_vlm + fuselage_cm_alpha_per_rad(layout, ref)
-    k: float = _induced_drag_factor(cases.sweep)
+    k: float = _induced_drag_factor(cases.sweep) + VISCOUS_LIFT_DRAG_FACTOR * cd0
     return AeroStabilityOutput(
         cl0=cl0, cl_alpha_per_rad=cl_alpha, cd0=cd0,
-        ld_cruise=cl_cruise / (cd0 + k * cl_cruise**2),
+        ld_cruise=lift_to_drag(cl_cruise, cd0, k), induced_drag_factor=k,
         cm_alpha_per_rad=cm_alpha,
         cn_beta_per_rad=_derivative(cases.beta, base, 2, cases.beta.beta_deg) + fuselage_cn_beta_per_rad(layout, ref),
         cl_beta_per_rad=_derivative(cases.beta, base, 0, cases.beta.beta_deg),
@@ -169,3 +176,29 @@ def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: Aircra
         cn_delta_r_per_rad=_control_derivative(cases.rudder, base, 2, cases.deflection_deg, RUDDER_SIGN),
         x_np_m=ref.x_ref_m - cm_alpha / cl_alpha * ref.cref_m,
     )
+
+
+@dataclass(frozen=True)
+class LDPoint:
+    """Sizing and VSPAERO L/D at one lift coefficient; deviation = VSPAERO / sizing - 1."""
+    name: Literal["cruise", "loiter"]
+    cl: float
+    sizing_ld: float
+    vspaero_ld: float
+
+    @property
+    def deviation(self) -> float:
+        return self.vspaero_ld / self.sizing_ld - 1.0
+
+
+def ld_deviations(sizing: SizingOutput, aero: AeroStabilityOutput) -> tuple[LDPoint, LDPoint]:
+    """Both drag polars at the sizing cruise and loiter CLs. ValueError for a record that predates the fields."""
+    if sizing.cl_cruise is None or sizing.cl_loiter is None or aero.induced_drag_factor is None:
+        raise ValueError("the design predates the same-CL L/D check; re-run it")
+    k_sizing: float = 1.0 / (math.pi * sizing.oswald_e * sizing.aspect_ratio)
+    k_vspaero: float = aero.induced_drag_factor
+
+    def point(name: Literal["cruise", "loiter"], cl: float) -> LDPoint:
+        return LDPoint(name, cl, lift_to_drag(cl, sizing.cd0, k_sizing), lift_to_drag(cl, aero.cd0, k_vspaero))
+
+    return point("cruise", sizing.cl_cruise), point("loiter", sizing.cl_loiter)

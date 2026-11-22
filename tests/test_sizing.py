@@ -126,6 +126,17 @@ def test_stall_constraint_and_geometry(case: str, request: pytest.FixtureRequest
 
 
 @pytest.mark.parametrize("case", list(CASES))
+def test_sizing_records_the_lift_coefficients_its_ld_assumed(case: str, request: pytest.FixtureRequest) -> None:
+    s: SizingOutput = request.getfixturevalue(case)
+    rho, _ = air_properties(CASES[case].service_ceiling_m)
+    weight: float = s.mtow_kg * G0
+    assert s.cl_cruise == pytest.approx(weight / (0.5 * rho * CASES[case].cruise_speed_ms**2 * s.wing_area_m2))
+    assert s.cl_loiter == pytest.approx(weight / (0.5 * rho * s.v_loiter_ms**2 * s.wing_area_m2))
+    k: float = 1.0 / (math.pi * s.oswald_e * s.aspect_ratio)
+    assert s.assumed_ld_cruise == pytest.approx(s.cl_cruise / (s.cd0 + k * s.cl_cruise**2))
+
+
+@pytest.mark.parametrize("case", list(CASES))
 def test_stall_speed_holds_with_independent_low_re_polar(case: str, request: pytest.FixtureRequest) -> None:
     """Re-derive CLmax at the sea-level stall Reynolds number (not cruise Re) and check Vstall."""
     s: SizingOutput = request.getfixturevalue(case)

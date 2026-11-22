@@ -49,6 +49,9 @@ class SizingOutput(_Frozen):
     v_stall_ms: Positive  # sea-level stall speed at MTOW
     v_loiter_ms: Positive
     v_cruise_ms: Optional[Positive] = None  # requested cruise speed; None in records that predate it
+    # lift coefficients the sizing L/D assumed at cruise and loiter (the L/D gate evaluates VSPAERO at the same CLs)
+    cl_cruise: Optional[Positive] = None  # None in records that predate the same-CL L/D gate
+    cl_loiter: Optional[Positive] = None
     # --- extensions consumed by matcher / CAD / critic ---
     assumed_ld_cruise: Positive  # L/D the sizing loop assumed; critic compares to VSPAERO
     payload_mass_kg: Positive
@@ -85,7 +88,9 @@ class AeroStabilityOutput(_Frozen):
     cl0: float
     cl_alpha_per_rad: float
     cd0: Positive
-    ld_cruise: Positive
+    ld_cruise: Positive  # at the sizing cruise CL
+    # k in CD = CD0 + k*CL^2: VLM induced drag plus viscous lift-dependent drag; None in records that predate it
+    induced_drag_factor: Optional[Positive] = None
     cm_alpha_per_rad: float
     cn_beta_per_rad: float
     cl_beta_per_rad: float

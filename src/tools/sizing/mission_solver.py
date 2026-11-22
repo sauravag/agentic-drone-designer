@@ -289,7 +289,9 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         raise SizingDivergenceError(str(exc)) from exc
     weight: float = mtow * G0
     cl_max: float = design.stall_polar.cl_max_3d
-    q_cruise: float = 0.5 * aero.rho_cruise * req.cruise_speed_ms**2
+    v_loiter: float = loiter_speed(weight, aero, design.cruise_polar.cl_max_3d)
+    cl_cruise: float = weight / (0.5 * aero.rho_cruise * req.cruise_speed_ms**2 * geom.wing_area_m2)
+    cl_loiter: float = weight / (0.5 * aero.rho_cruise * v_loiter**2 * geom.wing_area_m2)
     is_quad: bool = design.airframe == "quadplane_vtol"
     return SizingOutput(
         mtow_kg=mtow,
@@ -302,9 +304,9 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
         cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
         v_stall_ms=math.sqrt(2.0 * weight / (aero.rho_sl * geom.wing_area_m2 * cl_max)),
-        v_cruise_ms=req.cruise_speed_ms,
-        v_loiter_ms=loiter_speed(weight, aero, design.cruise_polar.cl_max_3d),
-        assumed_ld_cruise=lift_to_drag(weight / (q_cruise * geom.wing_area_m2), aero.cd0, aero.k),
+        v_cruise_ms=req.cruise_speed_ms, cl_cruise=cl_cruise, cl_loiter=cl_loiter,
+        v_loiter_ms=v_loiter,
+        assumed_ld_cruise=lift_to_drag(cl_cruise, aero.cd0, aero.k),
         dod_group=group, propulsion_type=design.propulsion, airframe_topology=design.airframe,
         airfoil=design.cruise_polar.name, cl_max=cl_max, cd0=aero.cd0, oswald_e=oswald_efficiency(geom.aspect_ratio),
         battery_energy_j=storage.battery_energy_j, battery_peak_power_w=storage.battery_peak_w,

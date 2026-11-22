@@ -223,7 +223,7 @@ Build a cyclical `StateGraph(DesignState)` with the following nodes and routing 
 5. **`design_critic` (LLM + Deterministic Check Node):**
    * Evaluates 4 hard engineering gates:
      1. Static Margin $0.08 \le SM \le 0.14$
-     2. Actual VSPAERO $L/D_{\text{cruise}} \ge 0.90 \times$ sizing assumed $L/D$
+     2. VSPAERO $L/D$ within $\pm 15\%$ of the sizing $L/D$ at the sizing cruise **and** loiter $C_L$ (both polars evaluated at the same $C_L$; VSPAERO's inviscid $k$ gets Kroo's viscous lift-dependent drag, $k = k_{\text{VLM}} + 0.38\,C_{D_0}$). Only a low VSPAERO $L/D$ triggers the aspect-ratio rule fix; a high one has no automatic fix.
      3. Zero internal CAD component collisions and MTOW within DoD Group limit
      4. Sufficient battery/fuel reserve margin ($\ge 15\%$)
    * **Conditional Edge:**

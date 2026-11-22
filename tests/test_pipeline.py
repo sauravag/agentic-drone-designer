@@ -10,6 +10,7 @@ from src import pipeline
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import CADArtifacts, FCSArtifacts
 from tests.reference_designs import G1_ELECTRIC_FW
+from tests.test_flight_control import load_design
 
 RUN_ID_PATTERN = re.compile(r"^\d{8}T\d{6}Z-[a-z0-9-]{1,40}$")
 
@@ -81,6 +82,16 @@ def _cad(as_built: float, sm: float = 0.11, collisions: int = 0) -> CADArtifacts
     return CADArtifacts(oml_vsp3_path="a", oml_step_path="b", assembly_step_path="c", x_cg_m=0.3,
                         static_margin=sm, collision_count=collisions, as_built_mass_kg=as_built,
                         ixx_kgm2=1.0, iyy_kgm2=1.0, izz_kgm2=1.0, ixz_kgm2=0.0, viewer_model_path="d")
+
+
+def test_ld_warning_names_each_point_outside_the_band() -> None:
+    _, sizing, _, aero, cad = load_design("g2")
+    assert not any("L/D" in w for w in pipeline.design_warnings(sizing, aero, cad))
+    lossy = aero.model_copy(update={"induced_drag_factor": 1.5 * aero.induced_drag_factor})  # only the high-CL point
+    notes = [w for w in pipeline.design_warnings(sizing, lossy, cad) if "L/D" in w]
+    assert len(notes) == 1 and "VSPAERO loiter L/D" in notes[0] and f"CL {sizing.cl_loiter:.2f}" in notes[0]
+    old = sizing.model_copy(update={"cl_cruise": None})
+    assert any("L/D cross-check skipped" in w and "re-run" in w for w in pipeline.design_warnings(old, aero, cad))
 
 
 def test_warnings_flag_mass_growth_margin_and_collisions(sizing_only_run: pipeline.DesignRun) -> None:

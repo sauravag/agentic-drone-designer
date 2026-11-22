@@ -226,7 +226,7 @@ model and the report carries a warning saying why.
 ## Critic gates (SRS §5)
 
 1. Static margin 8–14 %
-2. VSPAERO cruise L/D ≥ 0.9 × the sizing assumption
+2. VSPAERO L/D within ±15 % of the sizing L/D at the sizing cruise and loiter CL (VSPAERO's inviscid induced drag gets Kroo's viscous term, k + 0.38·CD0)
 3. Zero CAD collisions and MTOW within the DoD group limit
 4. Energy reserve ≥ 15 % (installed battery margin for electric, fuel reserve for hybrid)
 

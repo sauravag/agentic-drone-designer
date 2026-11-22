@@ -3,6 +3,7 @@
 All run on the host with a scripted LLM and aero/CAD off; tests/test_agent_e2e.py runs the full stack."""
 
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import CADArtifacts
+from src.tools.aero_cad import stability
 from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
@@ -89,13 +91,46 @@ def test_gates_on_a_balanced_design_pass() -> None:
 def test_each_gate_detects_its_failure() -> None:
     req, sizing, bom, aero, cad = load_design("g2")
     bad_cad = cad.model_copy(update={"static_margin": 0.02, "collision_count": 2})
-    bad_aero = aero.model_copy(update={"ld_cruise": 0.5 * sizing.assumed_ld_cruise})
+    bad_aero = aero.model_copy(update={"induced_drag_factor": 3.0 * aero.induced_drag_factor})
     hybrid = sizing.model_copy(update={"propulsion_type": "series_hybrid", "energy_reserve_fraction": 0.10})
     failed = {g.name for g in critic.evaluate_gates(req, hybrid, bom, bad_aero, bad_cad) if not g.passed}
     assert failed == {"static_margin", "lift_to_drag", "collisions_and_group", "reserve"}
     heavy = cad.model_copy(update={"as_built_mass_kg": 30.0})
     group = next(g for g in critic.evaluate_gates(req, sizing, bom, aero, heavy) if g.name == "collisions_and_group")
     assert not group.passed and "Group 2" in group.detail
+
+
+def test_ld_gate_compares_both_models_at_the_sizing_cruise_and_loiter_lift_coefficients() -> None:
+    _, sizing, _, aero, _ = load_design("g2")
+    points = {p.name: p for p in stability.ld_deviations(sizing, aero)}
+    assert set(points) == {"cruise", "loiter"}
+    k_sizing: float = 1.0 / (math.pi * sizing.oswald_e * sizing.aspect_ratio)
+    for name, cl in (("cruise", sizing.cl_cruise), ("loiter", sizing.cl_loiter)):
+        assert points[name].cl == cl
+        assert points[name].sizing_ld == pytest.approx(cl / (sizing.cd0 + k_sizing * cl**2))
+        assert points[name].vspaero_ld == pytest.approx(cl / (aero.cd0 + aero.induced_drag_factor * cl**2))
+
+
+def test_ld_gate_is_two_sided_and_only_a_low_vspaero_ld_raises_the_aspect_ratio() -> None:
+    req, sizing, bom, aero, cad = load_design("g2")
+    low = aero.model_copy(update={"induced_drag_factor": 2.0 * aero.induced_drag_factor})
+    high = aero.model_copy(update={"cd0": 0.5 * aero.cd0, "induced_drag_factor": 0.5 * aero.induced_drag_factor})
+    gate = {name: next(g for g in critic.evaluate_gates(req, sizing, bom, a, cad) if g.name == "lift_to_drag")
+            for name, a in (("low", low), ("high", high))}
+    assert not gate["low"].passed and gate["low"].side == "low" and "loiter" in gate["low"].detail
+    assert not gate["high"].passed and gate["high"].side == "high"
+    _, low_changes = critic.apply_adjustments({}, "electric", [], [gate["low"]], cad)
+    assert [(c.knob, c.direction) for c in low_changes] == [("aspect_ratio", "increase")]
+    assert critic.apply_adjustments({}, "electric", [], [gate["high"]], cad)[1] == []
+    assert critic.unfixable([gate["high"]], cad, None) == ["lift_to_drag"]
+
+
+def test_ld_gate_refuses_a_design_that_predates_the_same_cl_check() -> None:
+    _, sizing, _, aero, _ = load_design("g2")
+    with pytest.raises(ValueError, match="re-run"):
+        stability.ld_deviations(sizing.model_copy(update={"cl_loiter": None}), aero)
+    with pytest.raises(ValueError, match="re-run"):
+        stability.ld_deviations(sizing, aero.model_copy(update={"induced_drag_factor": None}))
 
 
 def test_rule_table_wins_on_failed_gate_knobs_and_llm_adds_extra_moves() -> None:

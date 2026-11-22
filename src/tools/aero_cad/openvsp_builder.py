@@ -37,7 +37,6 @@ from src.tools.aero_cad.stability import (
     AeroCoefficients,
     ReferenceGeometry,
     VspaeroCases,
-    cruise_lift_coefficient,
     derive_stability,
 )
 
@@ -198,7 +197,8 @@ def export_oml(out_dir: Path) -> tuple[Path, Path]:
 
 # ------------------------------------------------------------------------------------ analysis ---
 def flight_condition(layout: AircraftLayout, sizing: SizingOutput, altitude_m: float) -> FlightCondition:
-    """Loiter (max-L/D) speed at the service ceiling, the condition the sizing loop assumed."""
+    """Loiter (max-L/D) speed at the service ceiling: sets the VSPAERO Reynolds and Mach numbers. The L/D the critic
+    compares is taken from the polar at the sizing CLs (`stability.ld_deviations`), not at this speed."""
     atm = asb.Atmosphere(altitude=altitude_m)
     rho, mu, a = float(atm.density()), float(atm.dynamic_viscosity()), float(atm.speed_of_sound())
     v: float = sizing.v_loiter_ms
@@ -322,5 +322,6 @@ def analyse_layout(layout: AircraftLayout, sizing: SizingOutput, cruise_altitude
     cond: FlightCondition = flight_condition(layout, sizing, cruise_altitude_m)
     cases, ref = run_vspaero(model, cond, out_dir / "vspaero")
     cd0: float = parasite_cd0(model, cond)
-    cl_cruise: float = cruise_lift_coefficient(sizing.mtow_kg, cond.rho, cond.vinf_ms, ref.sref_m2)
-    return derive_stability(cases, ref, layout, cd0, cl_cruise), vsp3, step
+    if sizing.cl_cruise is None:
+        raise AeroAnalysisError("the sizing record predates the same-CL L/D check; re-run the sizing")
+    return derive_stability(cases, ref, layout, cd0, sizing.cl_cruise), vsp3, step  # L/D at the sizing CL
