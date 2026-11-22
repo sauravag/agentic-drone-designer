@@ -3,7 +3,7 @@
 Fixed stations come from `components` (tractor motor, chin gimbal, tank on the neutral point so fuel
 burn causes no CG shift, generator aft of the tank). The battery and avionics tray slide along x
 independently - tray scanned, battery solved with scipy `minimize_scalar` inside each free interval -
-until SM = (X_np - X_cg) / MAC is centred in [0.08, 0.14]. A slot is free only if the part clears every
+until SM = (X_np - X_cg) / MAC is centred in the layout's static-margin band. A slot is free only if the part clears every
 other part and boom and fits the local skin radius; the final OML-solid containment check counts any
 skin interference as a collision.
 

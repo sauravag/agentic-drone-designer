@@ -1,5 +1,5 @@
 """Module C orchestration: OML + VSPAERO -> structure + packing, iterating the wing station until the
-static margin lands in [0.08, 0.14] (the `build_aero_cad` tool node of SRS 5).
+static margin lands inside the layout's static-margin band (the `build_aero_cad` tool node of SRS 5).
 
 Static margin has two levers. The packer slides the battery and avionics tray (moves the CG). When
 the fuselage runs out of room for that, this loop slides the wing+tail group (moves the neutral

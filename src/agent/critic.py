@@ -1,6 +1,6 @@
 """Deterministic half of the design critic (SRS 5.5): the four hard gates and how sizing knobs move.
 
-Gates: (1) 0.08 <= SM <= 0.14; (2) VSPAERO L/D within +-15 % of the sizing L/D at the sizing cruise and loiter
+Gates: (1) SM inside the layout's static-margin band; (2) VSPAERO L/D within +-15 % of the sizing L/D at the sizing cruise and loiter
 CLs (VSPAERO with the viscous lift-dependent drag, stability.ld_deviations); (3) zero CAD
 collisions and the as-built mass inside the DoD group limit; (4) end-of-mission energy reserve >= 15 %
 (installed battery margin for electric, fuel reserve for series hybrid). A failed tool stage (e.g. the
@@ -114,7 +114,7 @@ def pipeline_gate(stage: str, message: str) -> GateResult:
 
 
 def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
-                band: Optional[StaticMarginBand] = None) -> list[Adjustment]:
+                band: Optional[StaticMarginBand]) -> list[Adjustment]:
     """Textbook response to each failed gate (the safety net under the LLM's choices)."""
     fixes: list[Adjustment] = []
     for gate in (g for g in gates if not g.passed):
@@ -156,8 +156,8 @@ def _step(knob: str, direction: str, value: float) -> float:
 def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices: list[Adjustment],
                       gates: list[GateResult], cad: Optional[CADArtifacts],
                       stage: Optional[str] = None,
-                      assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS,
-                      band: Optional[StaticMarginBand] = None) -> tuple[dict[str, float], list[AppliedChange]]:
+                      assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS, *,
+                      band: Optional[StaticMarginBand]) -> tuple[dict[str, float], list[AppliedChange]]:
     """New overrides (a copy) plus the changes made. One move per knob. The rule table wins on every knob
     a failed gate governs (so a poor or prompt-injected LLM choice cannot push a knob the wrong way); the
     LLM may add moves on other knobs. The designer's reserve is a floor: a reserve step that would cross
@@ -180,7 +180,7 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
 
 
 def unfixable(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
-              band: Optional[StaticMarginBand] = None) -> list[str]:
+              band: Optional[StaticMarginBand]) -> list[str]:
     """Failed gates the rule table has no automatic fix for (e.g. a mass overrun, a sizing divergence)."""
     fixed_by_rule: set[str] = set()
     for gate in (g for g in gates if not g.passed):
