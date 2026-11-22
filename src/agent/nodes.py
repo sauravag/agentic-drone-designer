@@ -25,6 +25,7 @@ from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import DEFAULT_DB_PATH
+from src.tools.sizing import layouts
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
 from src.viewer.build import viewer_warning
 
@@ -212,11 +213,12 @@ def _adjust(state: DesignState, gates: list[critic.GateResult], failed: list[cri
             entry: dict[str, Any], ctx: AgentContext) -> Update:
     decision = _llm_choices(state, failed, ctx)
     stage = (state.get("stage_error") or {}).get("stage")
-    cad = state.get("cad_artifacts")
+    cad, sizing = state.get("cad_artifacts"), state.get("sizing_results")
+    band = None if sizing is None else layouts.static_margin_band(sizing.airframe_layout)
     overrides, changes = critic.apply_adjustments(state.get("sizing_overrides") or {}, _propulsion(state),
                                                   decision.adjustments, gates, cad, stage,
-                                                  _assumptions(state))
-    stuck: list[str] = critic.unfixable(gates, cad, stage)
+                                                  _assumptions(state), band)
+    stuck: list[str] = critic.unfixable(gates, cad, stage, band)
     entry["summary"] = decision.summary + (f" No automatic fix for: {', '.join(stuck)}." if stuck else "")
     entry["changes"] = [f"{c.knob} {c.old:.3g} -> {c.new:.3g} ({c.source}: {c.reason})" for c in changes]
     entry["applied"] = [asdict(c) for c in changes]

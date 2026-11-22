@@ -23,6 +23,7 @@ from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel
 from src.tools.flight_control.jsbsim_exporter import (TIP_BACK_ANGLE_DEG, export_jsbsim, gear_contacts,
                                                       lift_table, lift_thrust_curve)
 from src.tools.flight_control.perturbation import HOT, SLUGGISH, PlantCase, perturbed_model
+from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
 
 DATA = Path(__file__).parent / "data"
@@ -688,7 +689,8 @@ def test_far_out_of_range_plant_fails_the_gate(tmp_path: Path) -> None:
     req, sizing, bom, aero, cad = load_design("g1")
     model = build_flight_model(req, sizing, bom, aero, cad)
     params = pg.generate_params(model, sizing, bom)
-    extreme = perturbed_model(model, PlantCase("extreme", 0.3, 1.0, 1.0, model.static_margin))
+    extreme = perturbed_model(model, PlantCase("extreme", 0.3, 1.0, 1.0, "minimum"),
+                              StaticMarginBand(model.static_margin, model.static_margin, model.static_margin))
     result, _ = sv._attempt(extreme, params, tmp_path, 1.0, sv.SitlConfig())
     assert not result.passed
 
@@ -748,7 +750,7 @@ def test_runtime_errors_become_failed_attempts(monkeypatch: pytest.MonkeyPatch, 
 @pytest.mark.parametrize("case", [HOT, SLUGGISH], ids=lambda c: c.name)
 def test_perturbed_model_scales_only_the_listed_terms(design: Any, case: PlantCase) -> None:
     _, _, model = design
-    hot = perturbed_model(model, case)
+    hot = perturbed_model(model, case, TAILED_BAND)
     a, h = model.aero, hot.aero
     cp, dm, ine = case.control_power, case.damping, case.inertia
     assert h.cl_delta_a == pytest.approx(cp * a.cl_delta_a) and h.cm_delta_e == pytest.approx(cp * a.cm_delta_e)
@@ -764,30 +766,32 @@ def test_perturbed_model_scales_only_the_listed_terms(design: Any, case: PlantCa
 def test_perturbed_model_moves_the_cg_to_the_case_margin(design: Any) -> None:
     _, _, model = design
     for case in (HOT, SLUGGISH):
-        p = perturbed_model(model, case)
-        assert p.static_margin == case.static_margin
-        assert p.aero.cm_alpha == pytest.approx(-model.aero.cl_alpha * case.static_margin)
-        assert p.aero.cm0 == pytest.approx(model.aero.cm0 + model.aero.cl0 * (model.static_margin - case.static_margin))
+        margin = getattr(TAILED_BAND, case.margin_end)
+        p = perturbed_model(model, case, TAILED_BAND)
+        assert p.static_margin == margin
+        assert p.aero.cm_alpha == pytest.approx(-model.aero.cl_alpha * margin)
+        assert p.aero.cm0 == pytest.approx(model.aero.cm0 + model.aero.cl0 * (model.static_margin - margin))
 
 
 def test_a_case_at_the_current_margin_leaves_pitch_stiffness_alone(design: Any) -> None:
     _, _, model = design
-    same = PlantCase("same", 1.0, 1.0, 1.0, model.static_margin)
-    assert perturbed_model(model, same) == model
+    same = PlantCase("same", 1.0, 1.0, 1.0, "minimum")
+    flat_band = StaticMarginBand(model.static_margin, model.static_margin, model.static_margin)
+    assert perturbed_model(model, same, flat_band) == model
 
 
 def test_aft_cg_is_less_stable_and_forward_cg_more_stable(design: Any) -> None:
     _, _, model = design
-    assert perturbed_model(model, HOT).aero.cm_alpha >= model.aero.cm_alpha
-    assert perturbed_model(model, SLUGGISH).aero.cm_alpha <= model.aero.cm_alpha
+    assert perturbed_model(model, HOT, TAILED_BAND).aero.cm_alpha >= model.aero.cm_alpha
+    assert perturbed_model(model, SLUGGISH, TAILED_BAND).aero.cm_alpha <= model.aero.cm_alpha
 
 
 @pytest.mark.parametrize("kwargs", [
     {"control_power": 0.0}, {"damping": -1.0}, {"inertia": float("nan")},
-    {"static_margin": float("inf")}, {"static_margin": float("nan")},
+    {"margin_end": "middle"},
     {"control_power": float("inf")}, {"damping": float("inf")}, {"inertia": float("inf")},
 ])
 def test_plant_case_rejects_invalid_values(kwargs: dict[str, float]) -> None:
-    valid = {"control_power": 1.0, "damping": 1.0, "inertia": 1.0, "static_margin": 0.1}
+    valid = {"control_power": 1.0, "damping": 1.0, "inertia": 1.0, "margin_end": "minimum"}
     with pytest.raises(ValueError):
         PlantCase("bad", **{**valid, **kwargs})

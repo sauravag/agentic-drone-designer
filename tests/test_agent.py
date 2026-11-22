@@ -25,6 +25,7 @@ from src.schemas.state import CADArtifacts
 from src.tools.aero_cad import stability
 from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
+from src.tools.sizing.layouts import TAILED_BAND
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
 from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
@@ -158,8 +159,9 @@ def test_knobs_stop_at_their_bounds() -> None:
 def test_static_margin_fix_direction_follows_the_error() -> None:
     _, _, _, _, cad = load_design("g2")
     gates = [critic.GateResult("static_margin", False, "")]
-    _, low = critic.apply_adjustments({}, "electric", [], gates, cad.model_copy(update={"static_margin": 0.02}))
-    _, high = critic.apply_adjustments({}, "electric", [], gates, cad.model_copy(update={"static_margin": 0.3}))
+    low_cad, high_cad = (cad.model_copy(update={"static_margin": m}) for m in (0.02, 0.3))
+    _, low = critic.apply_adjustments({}, "electric", [], gates, low_cad, band=TAILED_BAND)
+    _, high = critic.apply_adjustments({}, "electric", [], gates, high_cad, band=TAILED_BAND)
     assert (low[0].knob, low[0].direction) == ("tail_volume_h", "increase") and high[0].direction == "decrease"
 
 

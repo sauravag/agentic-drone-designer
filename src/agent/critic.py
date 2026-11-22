@@ -20,8 +20,9 @@ from src.schemas.components import SelectedBOM
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
-from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN
 from src.tools.aero_cad.stability import LD_DEVIATION_TOLERANCE, ld_deviations
+from src.tools.sizing import layouts
+from src.tools.sizing.layouts import StaticMarginBand
 from src.tools.sizing.mission_solver import reserve_fraction
 from src.tools.sizing.topology import GROUP1_UPPER_KG, GROUP2_UPPER_KG, GROUP3_UPPER_KG
 from src.units import WH_TO_J
@@ -68,11 +69,13 @@ def installed_reserve(sizing: SizingOutput, bom: SelectedBOM) -> float:
 def evaluate_gates(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                    aero: AeroStabilityOutput, cad: CADArtifacts) -> list[GateResult]:
     sm: float = cad.static_margin
+    band: StaticMarginBand = layouts.static_margin_band(sizing.airframe_layout)
     group: int = req.group_constraint or sizing.dod_group
     limit: float = GROUP_UPPER_KG[group]
     reserve: float = installed_reserve(sizing, bom)
     return [
-        GateResult("static_margin", SM_MIN <= sm <= SM_MAX, f"SM {sm:.3f} (band {SM_MIN}-{SM_MAX})"),
+        GateResult("static_margin", band.minimum <= sm <= band.maximum,
+                   f"SM {sm:.3f} (band {band.minimum}-{band.maximum})"),
         _ld_gate(sizing, aero),
         GateResult("collisions_and_group", cad.collision_count == 0 and cad.as_built_mass_kg < limit,
                    f"{cad.collision_count} collision(s); as-built mass {cad.as_built_mass_kg:.2f} kg vs Group {group} "
@@ -110,12 +113,15 @@ def pipeline_gate(stage: str, message: str) -> GateResult:
     return GateResult("pipeline", False, f"{stage} failed: {message}")
 
 
-def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str]) -> list[Adjustment]:
+def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
+                band: Optional[StaticMarginBand] = None) -> list[Adjustment]:
     """Textbook response to each failed gate (the safety net under the LLM's choices)."""
     fixes: list[Adjustment] = []
     for gate in (g for g in gates if not g.passed):
         if gate.name == "static_margin" and cad is not None:
-            direction = "increase" if cad.static_margin < SM_MIN else "decrease"
+            if band is None:
+                raise ValueError("the static-margin fix needs the layout's band")
+            direction = "increase" if cad.static_margin < band.minimum else "decrease"
             fixes.append(Adjustment(knob="tail_volume_h", direction=direction,
                                     reason="horizontal tail volume moves the neutral point and hence the SM"))
         elif gate.name == "lift_to_drag" and gate.side != "high":  # a VSPAERO L/D above sizing has no knob fix
@@ -150,13 +156,14 @@ def _step(knob: str, direction: str, value: float) -> float:
 def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices: list[Adjustment],
                       gates: list[GateResult], cad: Optional[CADArtifacts],
                       stage: Optional[str] = None,
-                      assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS) -> tuple[dict[str, float], list[AppliedChange]]:
+                      assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS,
+                      band: Optional[StaticMarginBand] = None) -> tuple[dict[str, float], list[AppliedChange]]:
     """New overrides (a copy) plus the changes made. One move per knob. The rule table wins on every knob
     a failed gate governs (so a poor or prompt-injected LLM choice cannot push a knob the wrong way); the
     LLM may add moves on other knobs. The designer's reserve is a floor: a reserve step that would cross
     it is dropped (the critic may only raise the reserve)."""
     chosen: dict[Knob, tuple[Adjustment, Literal["llm", "rule"]]] = {}
-    for adj in _rule_fixes(gates, cad, stage):
+    for adj in _rule_fixes(gates, cad, stage, band):
         chosen.setdefault(adj.knob, (adj, "rule"))
     for adj in llm_choices:
         chosen.setdefault(adj.knob, (adj, "llm"))
@@ -172,11 +179,12 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
     return updated, changes
 
 
-def unfixable(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str]) -> list[str]:
+def unfixable(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
+              band: Optional[StaticMarginBand] = None) -> list[str]:
     """Failed gates the rule table has no automatic fix for (e.g. a mass overrun, a sizing divergence)."""
     fixed_by_rule: set[str] = set()
     for gate in (g for g in gates if not g.passed):
-        if _rule_fixes([gate], cad, stage):
+        if _rule_fixes([gate], cad, stage, band):
             fixed_by_rule.add(gate.name)
     return [g.name for g in gates if not g.passed and g.name not in fixed_by_rule]
 

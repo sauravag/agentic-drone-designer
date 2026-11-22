@@ -44,6 +44,11 @@ def layout_spec(layout: str) -> LayoutSpec:
     return spec
 
 
+def static_margin_band(layout: str) -> StaticMarginBand:
+    """The static-margin band every reader (packer, critic, pipeline, flight-control cases) takes from the layout."""
+    return layout_spec(layout).static_margin
+
+
 def tail_arm_m(spec: LayoutSpec, fuselage_length_m: float) -> float:
     """Distance from the wing to the tail aerodynamic centre."""
     if spec.booms != "centre":

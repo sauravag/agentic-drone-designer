@@ -131,3 +131,50 @@ def test_tail_booms_reject_empty_surfaces() -> None:
 
     with pytest.raises(ValueError, match="no tail surfaces"):
         _tail_booms(1.0, 0.1, ())
+
+
+# ---------------------------------------------------------------- static-margin band ---
+NARROW_BAND = StaticMarginBand(0.05, 0.10, 0.07)
+BAND_TOLERANCE = 0.01  # how closely the battery slide can reach the target on a real packing
+
+
+@pytest.fixture
+def narrow_band(monkeypatch: pytest.MonkeyPatch) -> StaticMarginBand:
+    """Every reader asks `layouts.layout_spec`; one patch point swaps the band for all of them."""
+    from src.tools.sizing import layouts
+
+    spec = dataclasses.replace(layouts.layout_spec("pod_boom_tractor"), static_margin=NARROW_BAND)
+    monkeypatch.setattr(layouts, "layout_spec", lambda layout: spec)
+    return NARROW_BAND
+
+
+def test_every_reader_uses_the_layout_band(narrow_band: StaticMarginBand, designs: dict, tmp_path: Path) -> None:
+    from src import pipeline
+    from src.agent import critic
+    from src.tools.aero_cad import cad_packer
+    from src.tools.flight_control.flight_model import build_flight_model
+    from src.tools.flight_control.perturbation import HOT, SLUGGISH, perturbed_model
+    from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml
+    from tests.test_flight_control import load_design
+
+    req, sizing, bom, aero, cad = load_design("g2")
+    inside, outside = (cad.model_copy(update={"static_margin": m}) for m in (0.06, 0.12))
+
+    def margin_gate(candidate):
+        return next(g for g in critic.evaluate_gates(req, sizing, bom, aero, candidate) if g.name == "static_margin")
+
+    assert margin_gate(inside).passed and not margin_gate(outside).passed
+    assert "band 0.05-0.1" in margin_gate(outside).detail
+    assert not any("static margin" in n for n in pipeline.design_warnings(sizing, aero, inside))
+    assert any("outside 0.05-0.1" in n for n in pipeline.design_warnings(sizing, aero, outside))
+
+    flight_model = build_flight_model(req, sizing, bom, aero, cad)
+    assert perturbed_model(flight_model, HOT, narrow_band).static_margin == 0.05
+    assert perturbed_model(flight_model, SLUGGISH, narrow_band).static_margin == 0.10
+
+    g1_sizing, g1_bom = designs["g1"]
+    layout = _fitted_layout(g1_sizing, g1_bom)
+    packed = cad_packer.pack_layout(g1_sizing, g1_bom, _synthetic_aero(layout), layout,
+                                    _synthetic_oml(layout, tmp_path / "oml.step"))
+    assert packed.band == narrow_band
+    assert packed.static_margin == pytest.approx(narrow_band.target, abs=BAND_TOLERANCE)

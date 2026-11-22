@@ -40,6 +40,8 @@ from src.tools.flight_control.runtime import (ARDUPLANE_BINARY, MAX_OVERSHOOT, M
 from src.tools.flight_control.perturbation import NOMINAL_CASE, PERTURBED_CASES, perturbed_model
 from src.tools.flight_control.sitl_bridge import Home, JsonPhysicsBridge
 from src.tools.flight_control.step_metrics import StepAnalysisError, StepResponse, altitude_loss_m, analyse_step
+from src.tools.sizing import layouts
+from src.tools.sizing.layouts import StaticMarginBand
 
 logger = logging.getLogger(__name__)
 
@@ -260,13 +262,13 @@ def _attempt(model: FlightModel, params: pg.ParamSet, work: Path, scale: float,
 
 
 def _fly_cases(model: FlightModel, params: pg.ParamSet, work: Path, scale: float,
-               config: SitlConfig) -> tuple[AttemptResult, Optional[FlightLog]]:
+               config: SitlConfig, band: StaticMarginBand) -> tuple[AttemptResult, Optional[FlightLog]]:
     """Fly one parameter set against the nominal plant (in `work`) and each perturbed plant (`work/<case>`).
     Returns the combined attempt and the nominal log, which is the one replayed in the viewer."""
     nominal, nominal_log = _attempt(model, params, work, scale, config)
     scores: list[CaseScore] = [CaseScore(NOMINAL_CASE, nominal)]
     for case in PERTURBED_CASES:
-        result, _ = _attempt(perturbed_model(model, case), params, work / case.name, scale, config)
+        result, _ = _attempt(perturbed_model(model, case, band), params, work / case.name, scale, config)
         scores.append(CaseScore(case.name, result))
     return combine(scale, scores), nominal_log
 
@@ -335,13 +337,14 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
         raise SitlUnavailableError(f"{config.binary} not found: run inside the ISR-Forge Docker image")
     model: FlightModel = build_flight_model(req, sizing, bom, aero, cad)
     attempts: list[AttemptResult] = []
+    band: StaticMarginBand = layouts.static_margin_band(sizing.airframe_layout)
     flown: list[FlownAttempt] = []
     params: pg.ParamSet = {}
     scale: float = 1.0
     direction: int = DIRECTION_NONE
     for index in range(max_attempts):
         params = pg.generate_params(model, sizing, bom, gain_scale=scale)
-        result, log = _fly_cases(model, params, out_dir / "sitl" / f"attempt_{index + 1}", scale, config)
+        result, log = _fly_cases(model, params, out_dir / "sitl" / f"attempt_{index + 1}", scale, config, band)
         attempts.append(result)
         if log is not None:
             flown.append((result, log, params, index + 1))

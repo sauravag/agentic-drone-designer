@@ -131,5 +131,5 @@ def test_design_warnings_flag_a_missing_viewer_model() -> None:
     cad = CADArtifacts(oml_vsp3_path="a", oml_step_path="b", assembly_step_path="c", x_cg_m=1.0, static_margin=0.1,
                        collision_count=0, as_built_mass_kg=10.0, ixx_kgm2=1.0, iyy_kgm2=1.0, izz_kgm2=1.0,
                        ixz_kgm2=0.0, viewer_model_path=None)
-    sizing = types.SimpleNamespace(mtow_kg=10.0, assumed_ld_cruise=10.0)
+    sizing = types.SimpleNamespace(mtow_kg=10.0, assumed_ld_cruise=10.0, airframe_layout="pod_boom_tractor")
     assert any("3D viewer" in w for w in design_warnings(sizing, None, cad))

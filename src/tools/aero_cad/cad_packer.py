@@ -41,19 +41,19 @@ from src.tools.aero_cad.components import (  # noqa: F401  (re-exported for call
 )
 from src.tools.aero_cad.layout import AircraftLayout
 from src.tools.aero_cad.mesh_export import export_viewer_model
-from src.tools.aero_cad.stability import SM_MAX, SM_MIN  # noqa: F401  (re-exported for callers)
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
 from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart
 from src.tools.fabrication.kit_export import KitFiles, KitSolids, export_kit, kit_solid_sets, remove_kit_files
 from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
+from src.tools.sizing import layouts
+from src.tools.sizing.layouts import StaticMarginBand
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
 
 logger = logging.getLogger(__name__)
 
-SM_TARGET: Final[float] = 0.5 * (SM_MIN + SM_MAX)
 SLIDER_SCAN_POINTS: Final[int] = 400
 TRAY_SCAN_POINTS: Final[int] = 80
 STEP_IMPORT_TO_M: Final[float] = 1e-3  # OCC's STEP reader always returns millimetres
@@ -81,6 +81,7 @@ class PackingResult:
     components: tuple[PlacedComponent, ...]
     mass: mp.MassProperties
     static_margin: float
+    band: StaticMarginBand  # the layout's band the margin is judged against
     collision_count: int  # part-part and part-boom overlaps
     containment_violations: int  # internal parts poking through the OML
     shell_areal_density_kg_m2: float  # 0.0 with a kit
@@ -98,7 +99,7 @@ class PackingResult:
 
     @property
     def is_balanced(self) -> bool:
-        return SM_MIN <= self.static_margin <= SM_MAX and self.interference_count == 0
+        return self.band.minimum <= self.static_margin <= self.band.maximum and self.interference_count == 0
 
 
 # ------------------------------------------------------------------------------- slider solver ---
@@ -110,10 +111,11 @@ class _Balance:
     static_moment: float
     x_np: float
     mac: float
+    target: float  # static margin the sliders aim for
 
     def sm_error(self, extra_mass: float, extra_moment: float) -> float:
         x_cg: float = (self.static_moment + extra_moment) / (self.static_mass + extra_mass)
-        return ((self.x_np - x_cg) / self.mac - SM_TARGET) ** 2
+        return ((self.x_np - x_cg) / self.mac - self.target) ** 2
 
 
 def _component_box(item: PlacedComponent) -> Box3:
@@ -177,7 +179,7 @@ def _clear_intervals(grid: np.ndarray, clear: np.ndarray) -> list[tuple[float, f
 def _solve_slider(item: PlacedComponent, obstacles: Sequence[PlacedComponent], balance: _Balance,
                   layout: AircraftLayout, extra: tuple[float, float] = (0.0, 0.0),
                   kit: Optional[_KitRules] = None) -> float:
-    """Centre x of `item` closest to SM_TARGET among free positions: scan for free intervals, then
+    """Centre x of `item` closest to the balance's target margin among free positions: scan for free intervals, then
     bounded Brent (`minimize_scalar`) inside each. `extra` = (mass, x-moment) of other placed sliders."""
     lo, hi = _center_bounds(item, layout)
 
@@ -338,12 +340,12 @@ def _sliders(sizing: SizingOutput, bom: SelectedBOM, layout: AircraftLayout,
 
 
 def _place_sliders(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, layout: AircraftLayout,
-                   fixed: Sequence[PlacedComponent], airframe: _Airframe,
-                   settings: FabricationSettings) -> tuple[PlacedComponent, PlacedComponent]:
+                   fixed: Sequence[PlacedComponent], airframe: _Airframe, settings: FabricationSettings,
+                   band: StaticMarginBand) -> tuple[PlacedComponent, PlacedComponent]:
     """Solve battery + tray for static margin against `airframe`'s mass, under its rules (kit or shell)."""
     static_items = [*airframe.items, *(c.mass_item() for c in fixed)]
     balance = _Balance(sum(i.mass_kg for i in static_items), sum(i.mass_kg * i.cg_m[0] for i in static_items),
-                       aero.x_np_m, layout.wing.mac_m)
+                       aero.x_np_m, layout.wing.mac_m, band.target)
     booms = parts.boom_obstacles(layout)
     on_axis = [c for c in (*fixed, *booms) if abs(c.center_m[1]) < layout.fuselage_diameter_m / 2]
     rules = None if airframe.kit is None else _KitRules(airframe.boxes, settings)
@@ -358,20 +360,21 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     pass 2 rebuilds it around every placed part for exact openings and the final mass. If that rebuild fails, the
     sliders are re-solved for the shell model it falls back to. The static margin and `is_balanced` use the final
     mass."""
+    band: StaticMarginBand = layouts.static_margin_band(sizing.airframe_layout)
     oml: bd.Shape = _load_oml(oml_step)
     airfoil: AirfoilShape = load_airfoil(layout.airfoil)
     fixed = [parts.cruise_motor(bom), parts.payload(bom, layout),
              *parts.hybrid_parts(sizing, bom, layout, aero.x_np_m), *parts.vtol_motors(bom, layout)]
     estimate: _Airframe = _airframe(sizing, layout, airfoil, oml, fixed, settings)
-    placed = _place_sliders(sizing, bom, aero, layout, fixed, estimate, settings)
+    placed = _place_sliders(sizing, bom, aero, layout, fixed, estimate, settings, band)
     final = estimate if estimate.kit is None else _airframe(sizing, layout, airfoil, oml, (*fixed, *placed), settings)
     if estimate.kit is not None and final.kit is None:
-        placed = _place_sliders(sizing, bom, aero, layout, fixed, final, settings)
+        placed = _place_sliders(sizing, bom, aero, layout, fixed, final, settings, band)
     components = (*fixed, *placed)
     mass_items = (*final.items, *(c.mass_item() for c in components))
     mass = mp.combine(list(mass_items))
     result = PackingResult(
-        components=components, mass=mass, static_margin=(aero.x_np_m - mass.cg_m[0]) / layout.wing.mac_m,
+        components=components, mass=mass, static_margin=(aero.x_np_m - mass.cg_m[0]) / layout.wing.mac_m, band=band,
         collision_count=count_collisions(components, parts.boom_obstacles(layout)),
         containment_violations=parts.containment_violations(components, oml),
         shell_areal_density_kg_m2=final.shell_areal_density_kg_m2, oml=oml, structure=final.structure,
@@ -380,7 +383,7 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     )
     if not result.is_balanced:
         logger.warning("packing unbalanced: SM %.3f (band %.2f-%.2f), %d collisions, %d skin interferences",
-                       result.static_margin, SM_MIN, SM_MAX, result.collision_count, result.containment_violations)
+                       result.static_margin, band.minimum, band.maximum, result.collision_count, result.containment_violations)
     return result
 
 

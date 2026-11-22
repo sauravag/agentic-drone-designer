@@ -287,7 +287,7 @@ def test_g1_g2_still_build_kits_with_positive_margin(case, designs, tmp_path):
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(layout), layout,
                                     _synthetic_oml(layout, tmp_path / "oml.step"))
     assert result.kit is not None, result.kit_warning
-    assert cad_packer.SM_MIN <= result.static_margin <= cad_packer.SM_MAX and result.static_margin > 0.0
+    assert result.band.minimum <= result.static_margin <= result.band.maximum and result.static_margin > 0.0
     assert result.interference_count == 0
     assert result.kit.overwrap.layers == {"g1": 5, "g2": 9}[case]
     assert layout.fuselage_diameter_m == pytest.approx({"g1": 0.1658, "g2": 0.2701}[case], abs=POD_D_TOL_M)

@@ -21,11 +21,10 @@ from src.tools.fabrication import kit_export  # noqa: E402
 from src.tools.fabrication.kit import KitUnavailable  # noqa: E402
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
+from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
 from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml, part_solid, tube_solid  # noqa: E402
 from tests.reference_designs import CASES  # noqa: E402
 
-SM_MIN: float = 0.08
-SM_MAX: float = 0.14
 DEG: float = math.pi / 180.0
 
 
@@ -246,7 +245,7 @@ def test_balancing_hits_static_margin_without_collisions(case: str, designs: dic
     sizing, bom = designs[case]
     design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
     result = design.packing
-    assert SM_MIN <= result.static_margin <= SM_MAX
+    assert TAILED_BAND.minimum <= result.static_margin <= TAILED_BAND.maximum
     assert result.collision_count == 0
     names = {c.name for c in result.components}
     assert {"payload", "battery", "avionics_tray", "cruise_motor"} <= names
@@ -375,7 +374,7 @@ def test_unreachable_margin_is_reported_not_hidden(designs: dict, tmp_path: Path
     lay = _fitted_layout(sizing, bom)
     aero = _synthetic_aero(lay, np_offset_mac=-1.0)  # NP ahead of anything the battery can balance
     result = cad_packer.pack_layout(sizing, bom, aero, lay, _synthetic_oml(lay, tmp_path / "oml.step"))
-    assert result.static_margin < SM_MIN
+    assert result.static_margin < TAILED_BAND.minimum
     assert not result.is_balanced
 
 
@@ -607,7 +606,7 @@ def test_e2e_vspaero_derivatives_are_physical(built) -> None:
 
 def test_e2e_balanced_collision_free_and_inertia(built) -> None:
     _, _, cad = built
-    assert SM_MIN <= cad.static_margin <= SM_MAX
+    assert TAILED_BAND.minimum <= cad.static_margin <= TAILED_BAND.maximum
     assert cad.collision_count == 0
     tensor = np.array([[cad.ixx_kgm2, 0, -cad.ixz_kgm2], [0, cad.iyy_kgm2, 0], [-cad.ixz_kgm2, 0, cad.izz_kgm2]])
     assert mass_properties.is_positive_definite(tensor)

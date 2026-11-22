@@ -16,7 +16,6 @@ from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import (
-    SM_TARGET,
     CADPackingError,
     PackingResult,
     PackingSlotError,
@@ -51,7 +50,7 @@ class BalancedDesign:
 
     def score(self) -> tuple[int, float]:
         """Lexicographic: fewest interferences first, then smallest static-margin error."""
-        return self.packing.interference_count, abs(self.packing.static_margin - SM_TARGET)
+        return self.packing.interference_count, abs(self.packing.static_margin - self.packing.band.target)
 
     def signature(self) -> tuple[str, ...]:
         """Packing configuration: internal parts in fore-to-aft order. SM(station) is continuous
@@ -110,7 +109,7 @@ def _bracket(search: _Search) -> tuple[BalancedDesign, BalancedDesign] | None:
     pairs = [
         (a, b) for a, b in zip(feasible, feasible[1:])
         if a.signature() == b.signature()
-        and (a.packing.static_margin - SM_TARGET) * (b.packing.static_margin - SM_TARGET) < 0
+        and (a.packing.static_margin - a.packing.band.target) * (b.packing.static_margin - b.packing.band.target) < 0
     ]
     return min(pairs, key=lambda p: p[1].layout.wing_station - p[0].layout.wing_station) if pairs else None
 
@@ -122,7 +121,7 @@ def _refine(search: _Search) -> None:
         if pair is None:
             return
         (a, b) = pair
-        sa, sb = a.packing.static_margin - SM_TARGET, b.packing.static_margin - SM_TARGET
+        sa, sb = a.packing.static_margin - a.packing.band.target, b.packing.static_margin - b.packing.band.target
         xa, xb = a.layout.wing_station, b.layout.wing_station
         x_new: float = xa - sa * (xb - xa) / (sb - sa)
         if min(abs(x_new - xa), abs(x_new - xb)) < STATION_TOLERANCE:

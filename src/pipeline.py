@@ -20,7 +20,8 @@ from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
-from src.tools.aero_cad.cad_packer import SM_MAX, SM_MIN, CADPackingError
+from src.tools.aero_cad.cad_packer import CADPackingError
+from src.tools.sizing import layouts
 from src.tools.aero_cad.stability import LD_DEVIATION_TOLERANCE, AeroAnalysisError, ld_deviations
 from src.tools.database.matcher import ComponentNotFoundError, select_bom
 from src.tools.database.seed_data import CATALOG_VERSION, DEFAULT_DB_PATH, catalog_version, seed_database
@@ -139,8 +140,9 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
                          f"enlarged pod differ from the sizing estimate).")
         if cad.kit_warning:
             notes.append(f"Laser-cut kit: {cad.kit_warning}")
-        if not SM_MIN <= cad.static_margin <= SM_MAX:
-            notes.append(f"Final static margin {cad.static_margin:.3f} is outside {SM_MIN}-{SM_MAX}.")
+        band = layouts.static_margin_band(sizing.airframe_layout)
+        if not band.minimum <= cad.static_margin <= band.maximum:
+            notes.append(f"Final static margin {cad.static_margin:.3f} is outside {band.minimum}-{band.maximum}.")
         if cad.collision_count:
             notes.append(f"{cad.collision_count} interference(s) between parts, booms or the skin.")
         if cad.viewer_model_path is None:
