@@ -284,7 +284,8 @@ def test_fin_sits_on_a_mount_saddle_on_the_boom_where_the_boom_is_the_limit(g1_k
     """R9 / R20: a fin whose root chord lies aft of the fuselage sits on TM-1 on top of the boom."""
     layout, _, _, settings = g1_kit_inputs
     vt = dataclasses.replace(layout.vtail, x_le_root_m=layout.fuselage_length_m)
-    aft = dataclasses.replace(layout, vtail=vt)
+    moved = tuple(dataclasses.replace(t, planform=vt) if t.name == "vtail" else t for t in layout.tail_surfaces)
+    aft = dataclasses.replace(layout, tail_surfaces=moved)
     by = ribs_by_label(tail_ribs(aft, load_airfoil(TAIL_AIRFOIL_NAME), g1_tail_spars, settings))
     r_boom = aft.tail_boom.z_m + aft.tail_boom.diameter_m / 2
     t_plate = settings.sheet_for("plate").thickness_m

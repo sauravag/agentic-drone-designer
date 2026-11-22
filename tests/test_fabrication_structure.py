@@ -219,7 +219,7 @@ def test_reference_tail_booms_pass(case, designs, request):
 
 
 def test_no_tail_boom_needs_no_check(designs, g1_kit_inputs):
-    layout = dataclasses.replace(g1_kit_inputs[0], tail_boom=None)
+    layout = dataclasses.replace(g1_kit_inputs[0], tail_booms=())
     tail_boom_check(boom_tube(0.0, SETTINGS), designs["g1"][0], layout, SETTINGS)
     assert tail_boom_ratio(boom_tube(0.0, SETTINGS), designs["g1"][0], layout, SETTINGS) == 0.0
 

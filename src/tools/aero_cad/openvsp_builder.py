@@ -58,6 +58,10 @@ COMPUTE_GEOMETRY: Final[str] = "VSPAEROComputeGeometry"
 HISTORY: Final[str] = "VSPAERO_History"
 
 
+# Component names OpenVSP shows for the conventional tail (kept stable for stored models).
+VSP_TAIL_NAMES: Final[dict[str, str]] = {"htail": "HTail", "vtail": "VTail"}
+
+
 @dataclass(frozen=True)
 class VspModel:
     wing: str
@@ -157,22 +161,24 @@ def build_model(layout: AircraftLayout, out_dir: Path) -> VspModel:
     dat: Path = write_selig_dat(load_airfoil(layout.airfoil), out_dir / "airfoils" / f"{layout.airfoil}.dat")
     fuselage = _add_fuselage(layout)
     wing = _add_surface("Wing", layout.wing, dat)
-    htail = _add_surface("HTail", layout.htail, None)
-    vtail = _add_surface("VTail", layout.vtail, None, vertical=True)
+    tail: dict[str, str] = {
+        t.name: _add_surface(VSP_TAIL_NAMES.get(t.name, t.name), t.planform, None, vertical=t.is_vertical)
+        for t in layout.tail_surfaces
+    }
     _add_control(wing, AILERON_ETA, AILERON_CHORD_FRACTION)
-    _add_control(htail, TAIL_CONTROL_ETA, TAIL_CONTROL_CHORD_FRACTION)
-    _add_control(vtail, TAIL_CONTROL_ETA, TAIL_CONTROL_CHORD_FRACTION)
-    booms = [_add_boom("TailBoom", layout.tail_boom)] if layout.tail_boom else []
+    for gid in tail.values():
+        _add_control(gid, TAIL_CONTROL_ETA, TAIL_CONTROL_CHORD_FRACTION)
+    booms = [_add_boom("TailBoom" if i == 0 else f"TailBoom{i}", b) for i, b in enumerate(layout.tail_booms)]
     booms += [_add_boom(f"VtolBoom{i}", b) for i, b in enumerate(layout.vtol_booms)]
     for i, hub in enumerate(layout.rotor_positions):
         _add_rotor(i, hub, layout.rotor_diameter_m)  # shown in the .vsp3; not part of the OML or VLM
-    for gid in (wing, htail, vtail):
+    for gid in (wing, *tail.values()):
         vsp.SetSetFlag(gid, LIFT_SET, True)
-    for gid in (fuselage, wing, htail, vtail, *booms):
+    for gid in (fuselage, wing, *tail.values(), *booms):
         vsp.SetSetFlag(gid, OML_SET, True)
     vsp.Update()
     vsp.AutoGroupVSPAEROControlSurfaces()
-    return VspModel(wing=wing, htail=htail, vtail=vtail)
+    return VspModel(wing=wing, htail=tail["htail"], vtail=tail["vtail"])
 
 
 def export_oml(out_dir: Path) -> tuple[Path, Path]:

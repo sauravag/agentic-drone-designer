@@ -173,8 +173,7 @@ def sliders(sizing: SizingOutput, bom: SelectedBOM) -> tuple[PlacedComponent, Pl
 
 def boom_obstacles(layout: AircraftLayout) -> list[PlacedComponent]:
     """Zero-mass solids for the tail boom (incl. its buried root) and the VTOL booms."""
-    booms = [layout.tail_boom] if layout.tail_boom is not None else []
-    booms += list(layout.vtol_booms)
+    booms = [*layout.tail_booms, *layout.vtol_booms]
     return [
         PlacedComponent(f"boom_{i}", "cylinder", 0.0, (b.length_m, b.diameter_m, b.diameter_m),
                         (b.x_start_m + b.length_m / 2, b.y_m, b.z_m), False)

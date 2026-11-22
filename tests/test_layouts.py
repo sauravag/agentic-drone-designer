@@ -1,5 +1,6 @@
 """Airframe layout ids, the layout spec and the requirement validation that gates unbuilt layouts."""
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges, apply_changes
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import SizingOutput, effective_tail_areas
+from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
 from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui import presenters
@@ -99,3 +101,26 @@ def test_sizing_summary_shows_layout() -> None:
 
     assert ("Layout", "Pod-and-boom tractor") in rows
     assert "| Layout | Pod-and-boom tractor |" in report.pairs(rows)
+
+
+def test_layout_places_every_tail_surface(g1_layout: AircraftLayout) -> None:
+    assert [t.name for t in g1_layout.tail_surfaces] == ["htail", "vtail"]
+    assert g1_layout.htail is g1_layout.tail_surfaces[0].planform
+    assert len(g1_layout.tail_booms) == 1
+    assert g1_layout.propeller.is_pusher is False
+    assert g1_layout.propeller.x_m == 0.0
+
+
+def test_missing_surface_property_fails_loudly(g1_layout: AircraftLayout) -> None:
+    bare = dataclasses.replace(g1_layout, tail_surfaces=())
+    with pytest.raises(ValueError, match="htail"):
+        bare.htail
+
+
+def test_legacy_record_without_tail_surfaces_gives_same_layout(designs: dict) -> None:
+    sizing = designs["g1"][0]
+    legacy = sizing.model_copy(update={"tail_surfaces": ()})
+    new, old = layout_from_sizing(sizing), layout_from_sizing(legacy)
+    assert old.tail_booms == new.tail_booms
+    assert old.htail.area_m2 == pytest.approx(new.htail.area_m2, rel=1e-12)
+    assert old.vtail.semi_span_m == pytest.approx(new.vtail.semi_span_m, rel=1e-12)

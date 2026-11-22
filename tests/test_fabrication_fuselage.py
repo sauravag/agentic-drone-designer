@@ -283,7 +283,7 @@ def test_boom_mounts_closer_than_30mm_are_unavailable(g1_kit_inputs):
     layout, airfoil, spar, settings = g1_kit_inputs
     late = dataclasses.replace(layout.tail_boom, x_start_m=0.96 * layout.fuselage_length_m)
     with pytest.raises(KitUnavailable, match="BM-"):
-        fuselage_parts(dataclasses.replace(layout, tail_boom=late), spar, (), settings, loads=NO_PLATE_LOADS)
+        fuselage_parts(dataclasses.replace(layout, tail_booms=(late,)), spar, (), settings, loads=NO_PLATE_LOADS)
 
 
 def _real_components(designs, case: str, layout) -> tuple[PlacedComponent, ...]:
@@ -429,7 +429,7 @@ def test_crutch_stops_at_the_boom_root(g1_kit_inputs):
     t = settings.sheet_for("former").thickness_m
     last = max(x for x in former_stations(layout, spar, settings) if x < layout.tail_boom.x_start_m)
     boom = dataclasses.replace(layout.tail_boom, x_start_m=last + t + 0.005)
-    parts = fuselage_parts(dataclasses.replace(layout, tail_boom=boom), spar, (), settings, loads=NO_PLATE_LOADS)
+    parts = fuselage_parts(dataclasses.replace(layout, tail_booms=(boom,)), spar, (), settings, loads=NO_PLATE_LOADS)
     crutch = part_solid(ribs_by_label(parts)["C-1"], settings).bounding_box()
     assert crutch.max.X <= boom.x_start_m + 1e-9
 
