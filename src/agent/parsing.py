@@ -193,6 +193,20 @@ def _optional_fields(draft: RequirementsDraft) -> dict[str, float]:
     return {**fields, **_site_fields(draft)}
 
 
+PYDANTIC_VALUE_ERROR_PREFIX: Final[str] = "Value error, "  # pydantic prepends this to a validator's ValueError
+
+
+def issue_message(msg: str) -> str:
+    """A validator's own wording, without pydantic's "Value error, " prefix."""
+    return msg.removeprefix(PYDANTIC_VALUE_ERROR_PREFIX)
+
+
+def _issue_text(error: dict[str, object], where: str) -> str:
+    """"field: message", or just the message for a model-level error that names no field."""
+    message: str = issue_message(str(error["msg"]))
+    return f"{where}: {message}" if where else message
+
+
 def to_requirements(draft: RequirementsDraft, db_path: Path) -> ParseOutcome:
     """Convert a draft; returns a clarification question instead if the SRS-required facts are missing
     or the stated values are outside the supported envelope."""
@@ -211,7 +225,7 @@ def to_requirements(draft: RequirementsDraft, db_path: Path) -> ParseOutcome:
     try:
         req = OperationalRequirements(**fields)
     except ValidationError as exc:
-        problems = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+        problems = "; ".join(_issue_text(e, ".".join(map(str, e["loc"]))) for e in exc.errors())
         return ParseOutcome(None, f"Some requirements are outside the supported envelope ({problems}). "
                                   "Please revise them.")
     notes.insert(0, _parsed_echo(draft))

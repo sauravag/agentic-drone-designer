@@ -119,6 +119,11 @@ class PlacedTailSurface:
     planform: SurfacePlanform
     is_vertical: bool = False
 
+    @property
+    def dihedral_deg(self) -> float:
+        """The true dihedral (what TailSurface.dihedral_deg says): 90 for a fin, else the planform dihedral."""
+        return VERTICAL_DIHEDRAL_DEG if self.is_vertical else self.planform.dihedral_deg
+
 
 @dataclass(frozen=True)
 class PropellerStation:

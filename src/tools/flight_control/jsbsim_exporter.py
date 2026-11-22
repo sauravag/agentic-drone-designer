@@ -210,8 +210,19 @@ SURFACE_COEFFICIENTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ("elevator", "cm", "Cmde", "PITCH"), ("rudder", "cn", "Cndr", "YAW"), ("aileron", "cn", "Cnda", "YAW"))
 
 
+def _require_mapped_derivatives(model: FlightModel) -> None:
+    """A non-zero derivative with no coefficient name would be silently dropped from the plant."""
+    mapped: set[tuple[str, str]] = {(surface, attr) for surface, attr, _, _ in SURFACE_COEFFICIENTS}
+    for channel in model.channels:
+        for attr, value in vars(channel.derivatives).items():
+            if value != 0.0 and (channel.surface, attr) not in mapped:
+                raise ValueError(f"{channel.surface} has a non-zero {attr} derivative but no JSBSim coefficient "
+                                 "is mapped for it (add it to SURFACE_COEFFICIENTS)")
+
+
 def _surface_terms(model: FlightModel, axis_name: str) -> tuple[tuple[str, float, tuple[str, ...]], ...]:
     """Control-surface coefficients of one axis: one per non-zero derivative of each channel."""
+    _require_mapped_derivatives(model)
     by_surface = {c.surface: c for c in model.channels}
     return tuple((name, value, (f"fcs/{surface}-pos-rad",))
                  for surface, attr, name, axis in SURFACE_COEFFICIENTS if axis == axis_name and surface in by_surface

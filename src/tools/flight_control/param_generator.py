@@ -26,8 +26,7 @@ from typing import Final, Mapping, Optional
 from src.schemas.components import SelectedBOM
 from src.schemas.state import SizingOutput
 from src.tools.flight_control.control_channels import THROTTLE_SERVO, THROTTLE_SERVO_FUNCTION
-from src.tools.flight_control.flight_model import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,
-                                                   ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
+from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
                                                    THRUST_EXPO, FlightModel, transition_time_s)
 
 ParamSet = dict[str, float]
@@ -63,7 +62,10 @@ HYBRID_BUFFER_LOW_FRACTION: Final[float] = 0.30  # hybrid: keep enough buffer fo
 HYBRID_BUFFER_CRITICAL_FRACTION: Final[float] = 0.15
 MAH_PER_AH: Final[float] = 1000.0
 SITL_TAKEOFF_ALT_M: Final[float] = 60.0
-QUAD_SERVO_FUNCTIONS: Final[dict[str, int]] = {f"SERVO{5 + i}_FUNCTION": 33 + i for i in range(4)}  # motors 1-4
+QUAD_SERVO_NUMBERS: Final[tuple[int, ...]] = (5, 6, 7, 8)  # outputs reserved for lift motors 1-4
+QUAD_MOTOR_FIRST_FUNCTION: Final[int] = 33
+QUAD_SERVO_FUNCTIONS: Final[dict[str, int]] = {
+    f"SERVO{servo}_FUNCTION": QUAD_MOTOR_FIRST_FUNCTION + i for i, servo in enumerate(QUAD_SERVO_NUMBERS)}
 
 
 class ParamGenerationError(ValueError):
@@ -100,8 +102,9 @@ def fixed_wing_gains(model: FlightModel, gain_scale: float = 1.0) -> ParamSet:
     alpha_per_q: float = model.mass_kg * v / (qs * a.cl_alpha)  # steady pull-up: dn = V q / g
     ff_pitch: float = abs((a.cm_alpha * alpha_per_q + a.cm_q * c / (2 * v)) / a.cm_delta_e)
     gains: ParamSet = {"RLL2SRV_TCONST": ANGLE_TIME_CONSTANT_S, "PTCH2SRV_TCONST": ANGLE_TIME_CONSTANT_S}
-    gains |= _rate_gains("RLL_RATE", -l_p / l_da, l_p, l_da, AILERON_MAX_RAD, gain_scale)
-    gains |= _rate_gains("PTCH_RATE", ff_pitch, m_q, m_de, ELEVATOR_MAX_RAD, gain_scale)
+    max_defl: dict[str, float] = {c.surface: c.max_deflection_rad for c in model.channels}  # the JSBSim limits
+    gains |= _rate_gains("RLL_RATE", -l_p / l_da, l_p, l_da, max_defl["aileron"], gain_scale)
+    gains |= _rate_gains("PTCH_RATE", ff_pitch, m_q, m_de, max_defl["elevator"], gain_scale)
     return gains
 
 
@@ -164,7 +167,13 @@ def envelope_params(model: FlightModel) -> ParamSet:
 
 
 def fw_servo_functions(model: FlightModel) -> ParamSet:
-    """SERVOn_FUNCTION for every surface channel plus the cruise throttle, in servo order."""
+    """SERVOn_FUNCTION for every surface channel plus the cruise throttle, in servo order. Every output number
+    must be unique across the surfaces, the throttle and the QuadPlane motors, or one function would silently
+    overwrite another."""
+    servos: list[int] = [*(c.servo for c in model.channels), THROTTLE_SERVO, *QUAD_SERVO_NUMBERS]
+    clashes: list[int] = sorted({servo for servo in servos if servos.count(servo) > 1})
+    if clashes:
+        raise ValueError(f"servo output(s) {clashes} are assigned to more than one function")
     functions: dict[int, int] = {c.servo: c.servo_function for c in model.channels}
     functions[THROTTLE_SERVO] = THROTTLE_SERVO_FUNCTION
     return {f"SERVO{servo}_FUNCTION": functions[servo] for servo in sorted(functions)}

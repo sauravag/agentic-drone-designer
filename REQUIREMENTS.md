@@ -194,7 +194,7 @@ class DesignState(TypedDict):
    * Landing gear is one shared description (`src/tools/gear.py`: tricycle only, `GEAR_FRACTION`, `gear_mass_kg`) used by sizing, the kit and the JSBSim model.
    * Create parametric solid bounding boxes for every item in `SelectedBOM` plus a cylindrical fuel tank (if hybrid).
    * **1D Longitudinal CG Optimization:** Place the EO/IR gimbal in the forward nose/chin bay and fuel tank centroid directly at $X_{np}$ (so fuel burn causes zero CG shift). Use `scipy.optimize.minimize_scalar` to slide the battery pack and avionics tray along the fuselage $X$-axis until Static Margin:
-     $$SM = \frac{X_{np} - X_{cg}}{\bar{c}} \in [0.08, 0.14]$$
+     $$SM = \frac{X_{np} - X_{cg}}{\bar{c}} \in \text{the layout's band (tailed layouts: } [0.08, 0.14])$$
      while enforcing zero 3D bounding-box intersections (`shape1.intersect(shape2).volume == 0`).
    * Compute full 3D inertia tensor ($I_{xx}, I_{yy}, I_{zz}, I_{xz}$) combining composite shell mass ($\rho = 1600\text{ kg/m}^3$) and discrete component point/box masses, and export `assembly.step`.
 

@@ -34,6 +34,7 @@ STEPS: Final[dict[str, tuple[Literal["mul", "add"], float]]] = {
     "aspect_ratio": ("mul", 1.15), "fuselage_length_factor": ("mul", 1.15),
     "tail_volume_h": ("add", 0.10), "tail_volume_v": ("add", 0.01), "reserve_fraction": ("add", 0.05),
 }
+TAILED_SM_KNOB: Final[str] = "tail_volume_h"  # the static-margin knob of the tailed layouts
 VALUE_TOLERANCE: Final[float] = 1e-9
 STEP_DECIMALS: Final[int] = 6
 
@@ -113,17 +114,26 @@ def pipeline_gate(stage: str, message: str) -> GateResult:
     return GateResult("pipeline", False, f"{stage} failed: {message}")
 
 
+def static_margin_basis(layout: str) -> tuple[StaticMarginBand, str]:
+    """The layout's static-margin band and the knob that moves the margin (both come from its spec)."""
+    spec = layouts.layout_spec(layout)
+    return spec.static_margin, spec.static_margin_knob
+
+
 def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
-                band: Optional[StaticMarginBand]) -> list[Adjustment]:
-    """Textbook response to each failed gate (the safety net under the LLM's choices)."""
+                band: Optional[StaticMarginBand], knob: str = TAILED_SM_KNOB) -> list[Adjustment]:
+    """Textbook response to each failed gate (the safety net under the LLM's choices). `knob` is the layout's
+    static-margin knob; one the step table cannot move yet is an error, not a silent no-op."""
     fixes: list[Adjustment] = []
     for gate in (g for g in gates if not g.passed):
         if gate.name == "static_margin" and cad is not None:
             if band is None:
                 raise ValueError("the static-margin fix needs the layout's band")
+            if knob not in STEPS:
+                raise ValueError(f"the static-margin knob {knob!r} cannot be adjusted yet")
             direction = "increase" if cad.static_margin < band.minimum else "decrease"
-            fixes.append(Adjustment(knob="tail_volume_h", direction=direction,
-                                    reason="horizontal tail volume moves the neutral point and hence the SM"))
+            fixes.append(Adjustment(knob=knob, direction=direction,
+                                    reason=f"{knob} moves the neutral point and hence the SM"))
         elif gate.name == "lift_to_drag" and gate.side != "high":  # a VSPAERO L/D above sizing has no knob fix
             fixes.append(Adjustment(knob="aspect_ratio", direction="increase", reason="higher AR cuts induced drag"))
         elif gate.name == "collisions_and_group" and cad is not None and cad.collision_count:
@@ -157,13 +167,13 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
                       gates: list[GateResult], cad: Optional[CADArtifacts],
                       stage: Optional[str] = None,
                       assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS, *,
-                      band: Optional[StaticMarginBand]) -> tuple[dict[str, float], list[AppliedChange]]:
+                      band: Optional[StaticMarginBand], sm_knob: str = TAILED_SM_KNOB) -> tuple[dict[str, float], list[AppliedChange]]:
     """New overrides (a copy) plus the changes made. One move per knob. The rule table wins on every knob
     a failed gate governs (so a poor or prompt-injected LLM choice cannot push a knob the wrong way); the
     LLM may add moves on other knobs. The designer's reserve is a floor: a reserve step that would cross
     it is dropped (the critic may only raise the reserve)."""
     chosen: dict[Knob, tuple[Adjustment, Literal["llm", "rule"]]] = {}
-    for adj in _rule_fixes(gates, cad, stage, band):
+    for adj in _rule_fixes(gates, cad, stage, band, sm_knob):
         chosen.setdefault(adj.knob, (adj, "rule"))
     for adj in llm_choices:
         chosen.setdefault(adj.knob, (adj, "llm"))
@@ -180,11 +190,11 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
 
 
 def unfixable(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
-              band: Optional[StaticMarginBand]) -> list[str]:
+              band: Optional[StaticMarginBand], sm_knob: str = TAILED_SM_KNOB) -> list[str]:
     """Failed gates the rule table has no automatic fix for (e.g. a mass overrun, a sizing divergence)."""
     fixed_by_rule: set[str] = set()
     for gate in (g for g in gates if not g.passed):
-        if _rule_fixes([gate], cad, stage, band):
+        if _rule_fixes([gate], cad, stage, band, sm_knob):
             fixed_by_rule.add(gate.name)
     return [g.name for g in gates if not g.passed and g.name not in fixed_by_rule]
 

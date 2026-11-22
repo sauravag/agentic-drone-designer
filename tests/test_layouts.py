@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from src.agent import report
 from src.agent.agent_schemas import RequirementsDraft
+from src.agent.design_chat import _concise
 from src.agent.parsing import _airframe_fields
 from src.schemas import requirements as requirements_module
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
@@ -65,6 +66,20 @@ def test_parser_maps_flying_wing_and_validation_explains() -> None:
     assert fields["airframe_layout"] == "flying_wing"
     with pytest.raises(ValidationError, match="not available yet"):
         _with(**fields)
+
+
+def test_design_chat_error_text_drops_the_pydantic_prefix() -> None:
+    with pytest.raises(ValidationError) as err:
+        _with(airframe_layout="flying_wing")
+    text = _concise(err.value)
+    assert "not available yet" in text and "Value error" not in text
+
+
+def test_placed_tail_true_dihedral_matches_the_sizing_convention() -> None:
+    sizing = size_aircraft(G1_ELECTRIC_FW)
+    placed = layout_from_sizing(sizing).tail_surfaces
+    assert tuple(t.dihedral_deg for t in placed) == tuple(t.dihedral_deg for t in sizing.tail_surfaces) == (0.0, 90.0)
+    assert placed[1].planform.dihedral_deg == 0.0  # the stored geometry keeps the OpenVSP convention
 
 
 def test_design_chat_change_carries_layout() -> None:

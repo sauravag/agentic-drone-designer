@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 from src.agent.agent_schemas import MAX_WHAT_IFS, DesignerTurn, ProposedChange
 from src.agent.evaluator import Evaluation, evaluate, with_reserve_floor
 from src.agent.llm import StructuredLLM
+from src.agent.parsing import issue_message
 from src.agent.prompts import DESIGNER_SYSTEM
 from src.agent.report import citable, stray_numbers
 from src.schemas.assumptions import DesignAssumptions
@@ -120,7 +121,7 @@ def _concise(exc: ValidationError) -> str:
     def where(loc: tuple[Any, ...]) -> str:
         named = [FIELD_LABELS[str(p)] for p in loc if str(p) in FIELD_LABELS]
         return named[0] if named else ".".join(str(p) for p in loc) or "design"
-    return "; ".join(f"{where(err['loc'])}: {err['msg']}" for err in exc.errors())
+    return "; ".join(f"{where(err['loc'])}: {issue_message(err['msg'])}" for err in exc.errors())
 
 
 def _label(text: str) -> str:

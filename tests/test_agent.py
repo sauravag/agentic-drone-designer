@@ -25,6 +25,7 @@ from src.schemas.state import CADArtifacts
 from src.tools.aero_cad import stability
 from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
+from src.tools.sizing import layouts
 from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
@@ -57,6 +58,13 @@ def test_draft_units_are_converted_to_si(db: Path) -> None:
     assert req.payload_mass_kg == pytest.approx(4.9895, abs=1e-3) and req.payload_power_w == pytest.approx(100.0)
     assert req.endurance_hours == pytest.approx(1.5) and req.combat_radius_km == pytest.approx(74.08)
     assert req.cruise_speed_ms == pytest.approx(25.72, abs=0.01) and req.runway_available
+
+
+def test_unbuilt_layout_is_explained_without_pydantic_noise(db: Path) -> None:
+    outcome = to_requirements(SRS_DRAFT.model_copy(update={"airframe_layout": "flying_wing"}), db)
+    assert outcome.requirements is None and outcome.clarification is not None
+    assert "not available yet" in outcome.clarification and "flying_wing" in outcome.clarification
+    assert "Value error" not in outcome.clarification and "(:" not in outcome.clarification
 
 
 def test_unstated_values_become_reported_assumptions(db: Path) -> None:
@@ -170,12 +178,28 @@ def test_static_margin_direction_uses_the_given_non_default_band() -> None:
     gates = [critic.GateResult("static_margin", False, "")]
     narrow = StaticMarginBand(minimum=0.05, maximum=0.10, target=0.075)
     directions = []
+    # The gate is forced failed so only the direction is under test: SM 0.06 lies inside the narrow band, so the narrow
+    # band (not the default 0.08-0.14) is what makes the rule say "decrease"
     # 0.06 is below the default 0.08 minimum but not below the narrow 0.05 minimum, so only the narrow band says decrease
     for margin in (0.04, 0.06, 0.12):
         _, changes = critic.apply_adjustments({}, "electric", [], gates, cad.model_copy(update={"static_margin": margin}),
                                               band=narrow)
         directions.append(changes[0].direction)
     assert directions == ["increase", "decrease", "decrease"]
+
+
+def test_static_margin_knob_comes_from_the_layout_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = layouts.layout_spec("pod_boom_tractor")
+    assert critic.static_margin_basis("pod_boom_tractor") == (spec.static_margin, "tail_volume_h")
+    monkeypatch.setitem(layouts._SPECS, "pod_boom_tractor",
+                        replace(spec, static_margin_knob="wing_sweep_deg"))
+    band, knob = critic.static_margin_basis("pod_boom_tractor")
+    assert knob == "wing_sweep_deg"
+    _, _, _, _, cad = load_design("g2")
+    gates = [critic.GateResult("static_margin", False, "")]
+    with pytest.raises(ValueError, match="wing_sweep_deg.*cannot be adjusted yet"):  # the step table has no such knob
+        critic.apply_adjustments({}, "electric", [], gates, cad.model_copy(update={"static_margin": 0.04}),
+                                 band=band, sm_knob=knob)
 
 
 # --------------------------------------------------------------------- graph ---
