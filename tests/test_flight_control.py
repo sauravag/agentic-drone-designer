@@ -691,8 +691,14 @@ def test_reversed_elevator_fails_sitl(tmp_path: Path) -> None:
     req, sizing, bom, aero, cad = load_design("g1")
     model = build_flight_model(req, sizing, bom, aero, cad)
     params = pg.generate_params(model, sizing, bom)
-    result, _ = sv._attempt(model, params, tmp_path, 1.0, sv.SitlConfig(extra_params={"SERVO2_REVERSED": 1}))
-    assert not result.passed  # a diverged or crashed flight is a failed attempt, not an exception
+    baseline, _ = sv._attempt(model, params, tmp_path / "baseline", 1.0, sv.SitlConfig())
+    assert baseline.passed and baseline.error is None, baseline  # same harness and plant flies fine unreversed
+    reversed_, _ = sv._attempt(model, params, tmp_path / "reversed", 1.0,
+                               sv.SitlConfig(extra_params={"SERVO2_REVERSED": 1}))
+    # a diverged or crashed flight is a failed attempt, and the error names a flight failure, not a setup problem
+    assert not reversed_.passed and reversed_.error is not None
+    assert "SitlFlightError" in reversed_.error
+    assert "Floating point exception" in reversed_.error or "timed out" in reversed_.error  # divergence / no climb
 
 
 @pytest.mark.docker

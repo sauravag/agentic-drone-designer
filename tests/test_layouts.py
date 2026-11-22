@@ -15,10 +15,14 @@ from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, Requi
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import SizingOutput, effective_tail_areas
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
+from src.tools.flight_control.control_channels import control_channels
+from src.tools.flight_control.flight_model import build_flight_model
+from src.tools.flight_control.param_generator import generate_params
 from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
 from src.tools.sizing.mission_solver import size_aircraft
 from src.ui import presenters
 from tests.reference_designs import G1_ELECTRIC_FW
+from tests.test_flight_control import load_design
 
 G1_SIZING_RECORD = Path(__file__).parent / "data" / "flight_control" / "g1" / "sizing.json"
 
@@ -205,10 +209,6 @@ def test_gear_is_one_description(tmp_path: Path) -> None:
 
 # ------------------------------------------------------- control channels (Task 7) ---
 def test_tractor_channels() -> None:
-    from src.tools.flight_control.control_channels import control_channels
-    from src.tools.flight_control.flight_model import build_flight_model
-    from tests.test_flight_control import load_design
-
     model = build_flight_model(*load_design("g1"))
     channels = control_channels(model.aero)
     assert [(c.surface, c.servo, c.servo_function) for c in channels] == [
@@ -217,9 +217,6 @@ def test_tractor_channels() -> None:
 
 
 def test_servo_functions_come_from_channels() -> None:
-    from src.tools.flight_control.flight_model import build_flight_model
-    from src.tools.flight_control.param_generator import generate_params
-    from tests.test_flight_control import load_design
 
     inputs = load_design("g1")
     params = generate_params(build_flight_model(*inputs), inputs[1], inputs[2])
@@ -227,15 +224,12 @@ def test_servo_functions_come_from_channels() -> None:
 
 
 def test_bridge_applies_each_channel() -> None:
-    from src.tools.flight_control.control_channels import control_channels
-    from src.tools.flight_control.flight_model import build_flight_model
-    from src.tools.flight_control.sitl_bridge import PWM_TRIM, _apply_channels, _centred
-    from tests.test_flight_control import load_design
-
+    # imports jsbsim, which only the Docker image is guaranteed to have
+    bridge = pytest.importorskip("src.tools.flight_control.sitl_bridge", exc_type=ImportError)
     channels = control_channels(build_flight_model(*load_design("g1")).aero)
-    pwm = [PWM_TRIM] * 16
+    pwm = [bridge.PWM_TRIM] * 16
     pwm[1] = 1600
     fdm: dict[str, float] = {}
-    _apply_channels(fdm, channels, tuple(pwm))
-    assert fdm["fcs/elevator-cmd-norm"] == -_centred(1600)
+    bridge._apply_channels(fdm, channels, tuple(pwm))
+    assert fdm["fcs/elevator-cmd-norm"] == -bridge._centred(1600)
     assert fdm["fcs/aileron-cmd-norm"] == 0.0 and fdm["fcs/rudder-cmd-norm"] == 0.0

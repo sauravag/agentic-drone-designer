@@ -90,7 +90,8 @@ def _centred(pwm: int) -> float:
     return min(max((pwm - PWM_TRIM) / PWM_HALF_RANGE, -1.0), 1.0) if pwm else 0.0
 
 
-def _apply_channels(fdm: MutableMapping[str, float], channels: Sequence[ControlChannel], pwm: Sequence[float]) -> None:
+def _apply_channels(fdm: MutableMapping[str, float], channels: Sequence[ControlChannel],
+                    pwm: Sequence[float]) -> None:
     """Each servo drives its own surface; ArduPilot has already mixed, so nothing is un-mixed here."""
     for c in channels:
         fdm[f"fcs/{c.surface}-cmd-norm"] = c.bridge_sign * _centred(pwm[c.servo - 1])

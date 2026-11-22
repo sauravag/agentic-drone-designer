@@ -21,6 +21,7 @@ import threading
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Final, Mapping, Optional, Sequence
 
 from pymavlink import mavutil
@@ -75,7 +76,7 @@ class SitlConfig:
     mavlink_port: int = 14550  # SRS
     home: Home = field(default_factory=Home)
     binary: str = ARDUPLANE_BINARY
-    extra_params: Mapping[str, float] = field(default_factory=dict)  # SITL-only parameters layered on top (tests)
+    extra_params: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))  # SITL-only, on top
 
 
 @dataclass(frozen=True)
