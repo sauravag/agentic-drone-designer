@@ -1,0 +1,105 @@
+[
+ {
+  "name": "Fuselage",
+  "parms": {
+   "XForm.X_Rel_Location": 0.0,
+   "XForm.Z_Rel_Location": 0.0
+  },
+  "type": "Fuselage"
+ },
+ {
+  "name": "Wing",
+  "parms": {
+   "XForm.X_Rel_Location": 0.443051654,
+   "XForm.Z_Rel_Location": 0.0527442445,
+   "XSec_1.Dihedral": 3.0,
+   "XSec_1.Root_Chord": 0.402164794,
+   "XSec_1.Span": 1.80974157,
+   "XSec_1.Sweep": 0.0,
+   "XSec_1.Tip_Chord": 0.201082397
+  },
+  "type": "Wing"
+ },
+ {
+  "name": "HTail",
+  "parms": {
+   "XForm.X_Rel_Location": 1.35234942,
+   "XForm.Z_Rel_Location": 0.0,
+   "XSec_1.Dihedral": 0.0,
+   "XSec_1.Root_Chord": 0.269408586,
+   "XSec_1.Span": 0.431053737,
+   "XSec_1.Sweep": 0.0,
+   "XSec_1.Tip_Chord": 0.161645151
+  },
+  "type": "Wing"
+ },
+ {
+  "name": "VTail",
+  "parms": {
+   "XForm.X_Rel_Location": 1.31934687,
+   "XForm.Z_Rel_Location": 0.0,
+   "XSec_1.Dihedral": 0.0,
+   "XSec_1.Root_Chord": 0.431053737,
+   "XSec_1.Span": 0.517264484,
+   "XSec_1.Sweep": 0.0,
+   "XSec_1.Tip_Chord": 0.258632242
+  },
+  "type": "Wing"
+ },
+ {
+  "name": "TailBoom",
+  "parms": {
+   "XForm.X_Rel_Location": 1.32915496,
+   "XForm.Z_Rel_Location": 0.0
+  },
+  "type": "Pod"
+ },
+ {
+  "name": "VtolBoom0",
+  "parms": {
+   "XForm.X_Rel_Location": -0.250859318,
+   "XForm.Z_Rel_Location": 0.0531606387
+  },
+  "type": "Pod"
+ },
+ {
+  "name": "VtolBoom1",
+  "parms": {
+   "XForm.X_Rel_Location": -0.250859318,
+   "XForm.Z_Rel_Location": 0.0531606387
+  },
+  "type": "Pod"
+ },
+ {
+  "name": "LiftRotor0",
+  "parms": {
+   "XForm.X_Rel_Location": -0.161230599,
+   "XForm.Z_Rel_Location": 0.0770616306
+  },
+  "type": "Propeller"
+ },
+ {
+  "name": "LiftRotor1",
+  "parms": {
+   "XForm.X_Rel_Location": 1.20373133,
+   "XForm.Z_Rel_Location": 0.0770616306
+  },
+  "type": "Propeller"
+ },
+ {
+  "name": "LiftRotor2",
+  "parms": {
+   "XForm.X_Rel_Location": -0.161230599,
+   "XForm.Z_Rel_Location": 0.0770616306
+  },
+  "type": "Propeller"
+ },
+ {
+  "name": "LiftRotor3",
+  "parms": {
+   "XForm.X_Rel_Location": 1.20373133,
+   "XForm.Z_Rel_Location": 0.0770616306
+  },
+  "type": "Propeller"
+ }
+]
