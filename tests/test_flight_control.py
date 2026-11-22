@@ -682,6 +682,16 @@ def test_sitl_acceptance(case: str, tmp_path: Path) -> None:
     assert (tmp_path / "sitl" / f"attempt_{len(report['attempts'])}" / "hot" / "jsbsim_truth.json").exists()
 
 
+def test_sitl_config_freezes_a_plain_dict_of_extra_params() -> None:
+    from src.tools.flight_control import sitl_validator as sv
+    extra = {"SERVO2_REVERSED": 1}
+    config = sv.SitlConfig(extra_params=extra)
+    extra["SERVO2_REVERSED"] = 0
+    assert config.extra_params["SERVO2_REVERSED"] == 1
+    with pytest.raises(TypeError):
+        config.extra_params["X"] = 1  # type: ignore[index]
+
+
 @pytest.mark.docker
 def test_reversed_elevator_fails_sitl(tmp_path: Path) -> None:
     """A wrong servo reversal must fail SITL: ArduPilot does the mixing, the bridge never un-mixes it."""

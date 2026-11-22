@@ -217,7 +217,6 @@ def test_tractor_channels() -> None:
 
 
 def test_servo_functions_come_from_channels() -> None:
-
     inputs = load_design("g1")
     params = generate_params(build_flight_model(*inputs), inputs[1], inputs[2])
     assert [params[f"SERVO{n}_FUNCTION"] for n in (1, 2, 3, 4)] == [4, 19, 70, 21]

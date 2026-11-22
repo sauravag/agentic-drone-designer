@@ -78,6 +78,10 @@ class SitlConfig:
     binary: str = ARDUPLANE_BINARY
     extra_params: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))  # SITL-only, on top
 
+    def __post_init__(self) -> None:
+        # Freeze a caller-passed plain dict too, so the frozen config cannot be changed through it.
+        object.__setattr__(self, "extra_params", MappingProxyType(dict(self.extra_params)))
+
 
 @dataclass(frozen=True)
 class AttemptResult:
