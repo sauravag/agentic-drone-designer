@@ -124,3 +124,10 @@ def test_legacy_record_without_tail_surfaces_gives_same_layout(designs: dict) ->
     assert old.tail_booms == new.tail_booms
     assert old.htail.area_m2 == pytest.approx(new.htail.area_m2, rel=1e-12)
     assert old.vtail.semi_span_m == pytest.approx(new.vtail.semi_span_m, rel=1e-12)
+
+
+def test_tail_booms_reject_empty_surfaces() -> None:
+    from src.tools.aero_cad.layout import _tail_booms
+
+    with pytest.raises(ValueError, match="no tail surfaces"):
+        _tail_booms(1.0, 0.1, ())

@@ -144,7 +144,7 @@ class AircraftLayout:
     airfoil: str
     wing_station: float
 
-    def _tail_planform(self, name: str) -> SurfacePlanform:
+    def _planform_named(self, name: str) -> SurfacePlanform:
         for surface in self.tail_surfaces:
             if surface.name == name:
                 return surface.planform
@@ -152,11 +152,11 @@ class AircraftLayout:
 
     @property
     def htail(self) -> SurfacePlanform:
-        return self._tail_planform("htail")
+        return self._planform_named("htail")
 
     @property
     def vtail(self) -> SurfacePlanform:
-        return self._tail_planform("vtail")
+        return self._planform_named("vtail")
 
     @property
     def tail_boom(self) -> Optional[Boom]:
@@ -211,7 +211,7 @@ def _place_tail(sizing: SizingOutput, wing: SurfacePlanform) -> tuple[PlacedTail
     surfaces = sizing.tail_surfaces or _legacy_tail_surfaces(sizing)
     placed: list[PlacedTailSurface] = []
     for t in surfaces:
-        is_vertical: bool = t.dihedral_deg == VERTICAL_DIHEDRAL_DEG
+        is_vertical: bool = math.isclose(t.dihedral_deg, VERTICAL_DIHEDRAL_DEG)
         planform = _tail_planform(t.area_m2, t.span_m, t.taper_ratio, wing.x_ac_m + t.arm_m, t.is_symmetric)
         if not is_vertical:
             planform = dataclasses.replace(planform, dihedral_deg=t.dihedral_deg)
@@ -220,6 +220,8 @@ def _place_tail(sizing: SizingOutput, wing: SurfacePlanform) -> tuple[PlacedTail
 
 
 def _tail_booms(length: float, diameter_fus: float, tail: tuple[PlacedTailSurface, ...]) -> tuple[Boom, ...]:
+    if not tail:
+        raise ValueError("layout has no tail surfaces to size a tail boom for")
     start: float = TAIL_BOOM_START_FRACTION * length
     end: float = max(t.planform.x_le_root_m + t.planform.root_chord_m for t in tail)
     if end <= length:

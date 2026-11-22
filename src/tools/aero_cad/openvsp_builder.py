@@ -178,6 +178,9 @@ def build_model(layout: AircraftLayout, out_dir: Path) -> VspModel:
         vsp.SetSetFlag(gid, OML_SET, True)
     vsp.Update()
     vsp.AutoGroupVSPAEROControlSurfaces()
+    missing: list[str] = [name for name in ("htail", "vtail") if name not in tail]
+    if missing:
+        raise ValueError(f"layout has no tail surface named {missing[0]!r}; it has {sorted(tail)}")
     return VspModel(wing=wing, htail=tail["htail"], vtail=tail["vtail"])
 
 
