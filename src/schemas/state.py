@@ -1,5 +1,7 @@
 """LangGraph DesignState and the tool-output schemas each node writes into it (all SI)."""
 
+import math
+from collections.abc import Sequence
 from typing import Annotated, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -8,7 +10,7 @@ from src.schemas.assumptions import DesignAssumptions
 from src.schemas.changes import ChangeSet
 from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import FabricationSettings
-from src.schemas.requirements import OperationalRequirements
+from src.schemas.requirements import AirframeLayout, OperationalRequirements
 
 Positive = Annotated[float, Field(gt=0)]
 NonNegative = Annotated[float, Field(ge=0)]
@@ -30,6 +32,29 @@ class PhaseResult(_Frozen):
     total_power_w: NonNegative  # mean propulsion + payload + avionics
     energy_j: NonNegative  # electrical energy consumed
     fuel_burned_kg: NonNegative = 0.0
+
+
+TAIL_AREA_REL_TOLERANCE: float = 1e-9
+
+
+class TailSurface(_Frozen):
+    """One tail surface as sizing defines it; the CAD layout and the flight model read it."""
+
+    name: str  # "htail", "vtail"
+    control: Literal["elevator", "rudder", "ruddervator"]
+    area_m2: Positive  # whole surface (both panels if symmetric)
+    span_m: Positive  # tip to tip if symmetric, else fin height
+    taper_ratio: Positive
+    dihedral_deg: float  # 0 horizontal, 90 vertical fin
+    arm_m: Positive  # wing AC to surface AC
+    is_symmetric: bool
+
+
+def effective_tail_areas(surfaces: Sequence[TailSurface]) -> tuple[float, float]:
+    """(horizontal, vertical) projected areas: sum of S cos^2(dihedral) and S sin^2(dihedral)."""
+    horizontal: float = sum(t.area_m2 * math.cos(math.radians(t.dihedral_deg)) ** 2 for t in surfaces)
+    vertical: float = sum(t.area_m2 * math.sin(math.radians(t.dihedral_deg)) ** 2 for t in surfaces)
+    return horizontal, vertical
 
 
 class SizingOutput(_Frozen):
@@ -65,9 +90,11 @@ class SizingOutput(_Frozen):
     cl_max: Positive  # 3D wing CLmax used for the stall constraint
     cd0: Positive
     oswald_e: Positive
-    horizontal_tail_area_m2: Positive
-    vertical_tail_area_m2: Positive
-    tail_arm_m: Positive
+    horizontal_tail_area_m2: NonNegative  # 0 for a layout without a horizontal tail
+    vertical_tail_area_m2: NonNegative
+    tail_arm_m: NonNegative
+    airframe_layout: AirframeLayout = "pod_boom_tractor"  # records that predate layouts were all tractors
+    tail_surfaces: tuple[TailSurface, ...] = ()  # empty in records that predate layouts
     battery_energy_j: Positive  # installed capacity
     battery_peak_power_w: Positive
     generator_power_w: NonNegative  # 0 for pure electric
@@ -84,6 +111,17 @@ class SizingOutput(_Frozen):
         total: float = self.empty_mass_kg + self.payload_mass_kg + self.fuel_mass_kg + self.battery_mass_kg
         if abs(total - self.mtow_kg) > MASS_CLOSURE_TOLERANCE * self.mtow_kg:
             raise ValueError(f"mass closure failed: components sum to {total:.3f} kg vs mtow {self.mtow_kg:.3f} kg")
+        return self
+
+    @model_validator(mode="after")
+    def _tail_areas_match_surfaces(self) -> "SizingOutput":
+        if not self.tail_surfaces:
+            return self
+        horizontal, vertical = effective_tail_areas(self.tail_surfaces)
+        for name, legacy, effective in (("horizontal", self.horizontal_tail_area_m2, horizontal),
+                                        ("vertical", self.vertical_tail_area_m2, vertical)):
+            if not math.isclose(legacy, effective, rel_tol=TAIL_AREA_REL_TOLERANCE, abs_tol=0.0):
+                raise ValueError(f"{name} tail area {legacy} does not match its tail surfaces ({effective})")
         return self
 
 

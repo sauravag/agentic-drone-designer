@@ -29,6 +29,7 @@ from src.tools.sizing.aero_model import (
     reynolds_number,
     select_airfoil,
 )
+from src.tools.sizing.layouts import layout_spec
 from src.tools.sizing.mass_model import (
     PropulsionLoads,
     empty_mass_breakdown,
@@ -136,7 +137,8 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
     rho_to, _ = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
     rho_c, mu_c = air_properties(req.service_ceiling_m, req.isa_temperature_offset_c)
     geom = size_geometry(mtow, _wing_area_m2(mtow, design, rho_to, rho_c), p["aspect_ratio"],
-                         p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"])
+                         p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"],
+                         layout_spec(req.airframe_layout))
     is_quad: bool = design.airframe == "quadplane_vtol"
     cd0: float = parasite_drag_coefficient(
         geom.wing_area_m2, geom.tail_area_m2, design.cruise_polar.cd_min, geom.fuselage_length_m,
@@ -303,6 +305,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         aspect_ratio=geom.aspect_ratio, fuselage_length_m=geom.fuselage_length_m,
         fuselage_diameter_m=geom.fuselage_diameter_m, horizontal_tail_area_m2=geom.horizontal_tail_area_m2,
         vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
+        airframe_layout=req.airframe_layout, tail_surfaces=geom.tail_surfaces,
         cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
         v_stall_ms=math.sqrt(2.0 * weight / (RHO_SEA_LEVEL * geom.wing_area_m2 * cl_max)),
         v_stall_takeoff_ms=math.sqrt(2.0 * weight / (aero.rho_takeoff * geom.wing_area_m2 * cl_max)),

@@ -15,7 +15,7 @@ from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import FabricationSettings
 from src.schemas.kit_files import KIT_DOWNLOADS, KIT_SUBDIR, SHEET_GLOB, SHEETS_DIR, stock_slug
 from src.schemas.payload_catalog import payload_display_name
-from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, OperationalRequirements
+from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, LAYOUT_LABELS, OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, PlantCaseResult, SizingOutput
 from src.tools.flight_control.runtime import MAX_OVERSHOOT, MAX_SETTLING_S, MAX_TRANSITION_ALT_LOSS_M
 from src.units import WH_TO_J
@@ -124,6 +124,7 @@ def sizing_summary(s: SizingOutput) -> list[tuple[str, str]]:
         ("MTOW", f"{s.mtow_kg:.2f} kg"),
         ("DoD group", f"Group {s.dod_group}"),
         ("Airframe", s.airframe_topology.replace("_", " ")),
+        ("Layout", LAYOUT_LABELS[s.airframe_layout]),
         ("Propulsion", s.propulsion_type.replace("_", " ")),
         ("Airfoil", s.airfoil),
         ("Wingspan", f"{s.wingspan_m:.2f} m"),

@@ -1,5 +1,7 @@
 """Airframe layout ids, the layout spec and the requirement validation that gates unbuilt layouts."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,8 +11,14 @@ from src.schemas import requirements as requirements_module
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges, apply_changes
 from src.schemas.requirements import OperationalRequirements
+from src.agent import report
+from src.schemas.state import SizingOutput, effective_tail_areas
 from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
+from src.tools.sizing.mission_solver import size_aircraft
+from src.ui import presenters
 from tests.reference_designs import G1_ELECTRIC_FW
+
+G1_SIZING_RECORD = Path(__file__).parent / "data" / "flight_control" / "g1" / "sizing.json"
 
 FUSELAGE_LENGTH_M = 1.5
 EXPECTED_TAIL_ARM_M = 0.9
@@ -58,3 +66,36 @@ def test_design_chat_change_carries_layout() -> None:
                        assumptions=AssumptionChanges(), knobs=KnobChanges())
     new_req, _, _ = apply_changes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, change)
     assert new_req.airframe_layout == "pod_boom_tractor"
+
+
+def test_tractor_sizing_has_htail_and_fin() -> None:
+    sizing = size_aircraft(G1_ELECTRIC_FW)
+
+    assert [t.name for t in sizing.tail_surfaces] == ["htail", "vtail"]
+    assert tuple(t.dihedral_deg for t in sizing.tail_surfaces) == (0.0, 90.0)
+    assert tuple(t.control for t in sizing.tail_surfaces) == ("elevator", "rudder")
+    assert sizing.airframe_layout == "pod_boom_tractor"
+    assert effective_tail_areas(sizing.tail_surfaces) == pytest.approx(
+        (sizing.horizontal_tail_area_m2, sizing.vertical_tail_area_m2), rel=1e-12)
+
+
+def test_effective_areas_must_match_surfaces() -> None:
+    sizing = size_aircraft(G1_ELECTRIC_FW)
+
+    with pytest.raises(ValidationError):
+        SizingOutput.model_validate({**sizing.model_dump(), "horizontal_tail_area_m2": 9.9})
+
+
+def test_pre_layout_sizing_record_loads() -> None:
+    sizing = SizingOutput.model_validate_json(G1_SIZING_RECORD.read_text())
+
+    assert sizing.airframe_layout == "pod_boom_tractor"
+    assert sizing.tail_surfaces == ()
+
+
+def test_sizing_summary_shows_layout() -> None:
+    sizing = size_aircraft(G1_ELECTRIC_FW)
+    rows = presenters.sizing_summary(sizing)
+
+    assert ("Layout", "Pod-and-boom tractor") in rows
+    assert "| Layout | Pod-and-boom tractor |" in report.pairs(rows)

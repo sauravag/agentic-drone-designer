@@ -9,7 +9,15 @@ from dataclasses import dataclass
 from typing import Final
 
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
-from src.tools.sizing.layouts import TAIL_ARM_FRACTION
+from src.schemas.state import TailSurface
+from src.tools.sizing.layouts import (
+    HTAIL_ASPECT_RATIO,
+    HTAIL_TAPER_RATIO,
+    VTAIL_ASPECT_RATIO,
+    VTAIL_TAPER_RATIO,
+    LayoutSpec,
+    tail_arm_m,
+)
 from src.tools.sizing.topology import Airframe
 from src.units import G0
 
@@ -49,6 +57,7 @@ class Geometry:
     horizontal_tail_area_m2: float
     vertical_tail_area_m2: float
     tail_arm_m: float
+    tail_surfaces: tuple[TailSurface, ...] = ()
 
     @property
     def tail_area_m2(self) -> float:
@@ -75,18 +84,30 @@ def size_geometry(
     tail_volume_h: float,
     tail_volume_v: float,
     fuselage_length_factor: float,
+    spec: LayoutSpec,
 ) -> Geometry:
     """Planform from wing area + AR; fuselage from MTOW scaling; tail from volume coefficients."""
     span: float = math.sqrt(wing_area * aspect_ratio)
     chord: float = wing_area / span
     fus_length: float = max(FUSELAGE_MIN_LENGTH_M, FUSELAGE_LENGTH_COEFF * mtow_kg ** (1 / 3)) * fuselage_length_factor
-    tail_arm: float = TAIL_ARM_FRACTION * fus_length
+    tail_arm: float = tail_arm_m(spec, fus_length)
+    h_area: float = tail_volume_h * wing_area * chord / tail_arm
+    v_area: float = tail_volume_v * wing_area * span / tail_arm
     return Geometry(
         wing_area_m2=wing_area, aspect_ratio=aspect_ratio, wingspan_m=span, mean_chord_m=chord,
         fuselage_length_m=fus_length, fuselage_diameter_m=fus_length / FUSELAGE_FINENESS,
-        horizontal_tail_area_m2=tail_volume_h * wing_area * chord / tail_arm,
-        vertical_tail_area_m2=tail_volume_v * wing_area * span / tail_arm,
-        tail_arm_m=tail_arm,
+        horizontal_tail_area_m2=h_area, vertical_tail_area_m2=v_area, tail_arm_m=tail_arm,
+        tail_surfaces=_conventional_tail(h_area, v_area, tail_arm),
+    )
+
+
+def _conventional_tail(h_area: float, v_area: float, arm: float) -> tuple[TailSurface, TailSurface]:
+    """H-tail plus a single fin; span = sqrt(AR * area), the planform the CAD layout draws."""
+    return (
+        TailSurface(name="htail", control="elevator", area_m2=h_area, span_m=math.sqrt(HTAIL_ASPECT_RATIO * h_area),
+                    taper_ratio=HTAIL_TAPER_RATIO, dihedral_deg=0.0, arm_m=arm, is_symmetric=True),
+        TailSurface(name="vtail", control="rudder", area_m2=v_area, span_m=math.sqrt(VTAIL_ASPECT_RATIO * v_area),
+                    taper_ratio=VTAIL_TAPER_RATIO, dihedral_deg=90.0, arm_m=arm, is_symmetric=False),
     )
 
 

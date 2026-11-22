@@ -25,6 +25,10 @@ class LayoutSpec:
 
 TAILED_BAND: Final[StaticMarginBand] = StaticMarginBand(0.08, 0.14, 0.11)
 TAIL_ARM_FRACTION: Final[float] = 0.6  # of fuselage length, centre boom
+HTAIL_ASPECT_RATIO: Final[float] = 4.0  # span^2 / area of the horizontal tail
+HTAIL_TAPER_RATIO: Final[float] = 0.6
+VTAIL_ASPECT_RATIO: Final[float] = 1.5  # height^2 / area of the single fin
+VTAIL_TAPER_RATIO: Final[float] = 0.6
 
 _SPECS: Final[dict[str, LayoutSpec]] = {
     "pod_boom_tractor": LayoutSpec("conventional", "centre", "tractor_nose", "straight", "tail_volume_h",

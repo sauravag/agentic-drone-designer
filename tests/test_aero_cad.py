@@ -274,9 +274,10 @@ def test_unbalanceable_design_is_returned_for_the_critic(designs: dict, tmp_path
 
 def test_airframe_mass_round_trips_the_sizing_breakdown() -> None:
     from src.tools.sizing import mass_model as mm
+    from src.tools.sizing.layouts import layout_spec
 
     mtow: float = 20.0
-    geom = mm.size_geometry(mtow, 1.0, 12.0, 0.5, 0.04, 1.0)
+    geom = mm.size_geometry(mtow, 1.0, 12.0, 0.5, 0.04, 1.0, layout_spec("pod_boom_tractor"))
     loads = mm.PropulsionLoads(cruise_motor_power_w=800.0, vtol_total_thrust_n=280.0, generator_power_w=0.0)
     avionics: float = DEFAULT_ASSUMPTIONS.avionics_mass_kg(mtow, "cube_orange_plus", False)
     parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads, avionics)

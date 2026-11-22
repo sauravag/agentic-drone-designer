@@ -12,6 +12,7 @@ from typing import Final, Optional
 import numpy as np
 
 from src.schemas.state import SizingOutput
+from src.tools.sizing.layouts import HTAIL_ASPECT_RATIO, HTAIL_TAPER_RATIO, VTAIL_ASPECT_RATIO, VTAIL_TAPER_RATIO
 
 WING_TAPER_RATIO: Final[float] = 0.5
 WING_DIHEDRAL_DEG: Final[float] = 3.0
@@ -21,10 +22,6 @@ WING_STATION_BOUNDS: Final[tuple[float, float]] = (0.10, 0.70)
 WING_STATION_SCAN: Final[tuple[float, ...]] = (0.15, 0.20, 0.25, 0.35, 0.40, 0.45, 0.50, 0.55)  # balance search
 QUARTER_CHORD: Final[float] = 0.25
 
-HTAIL_ASPECT_RATIO: Final[float] = 4.0
-HTAIL_TAPER_RATIO: Final[float] = 0.6
-VTAIL_ASPECT_RATIO: Final[float] = 1.5  # height^2 / area of the single fin
-VTAIL_TAPER_RATIO: Final[float] = 0.6
 
 # Pod profile (x/L, d/D) between the nose and tail points: long constant section for internal bays.
 FUSELAGE_PROFILE: Final[tuple[tuple[float, float], ...]] = ((0.15, 0.90), (0.25, 1.00), (0.80, 1.00), (0.95, 0.50))
