@@ -1,7 +1,7 @@
 """Deterministic half of the design critic (SRS 5.5): the four hard gates and how sizing knobs move.
 
-Gates: (1) SM inside the layout's static-margin band; (2) VSPAERO L/D within +-15 % of the sizing L/D at the sizing cruise and loiter
-CLs (VSPAERO with the viscous lift-dependent drag, stability.ld_deviations); (3) zero CAD
+Gates: (1) SM inside the layout's static-margin band; (2) VSPAERO L/D within +-15 % of the sizing L/D at the
+sizing cruise and loiter CLs (VSPAERO with the viscous lift-dependent drag, stability.ld_deviations); (3) zero CAD
 collisions and the as-built mass inside the DoD group limit; (4) end-of-mission energy reserve >= 15 %
 (installed battery margin for electric, fuel reserve for series hybrid). A failed tool stage (e.g. the
 CAD cannot be packed) is reported as a failed "pipeline" gate so the critic can react to it too.

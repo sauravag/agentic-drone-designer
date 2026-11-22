@@ -3,8 +3,8 @@
 Fixed stations come from `components` (tractor motor, chin gimbal, tank on the neutral point so fuel
 burn causes no CG shift, generator aft of the tank). The battery and avionics tray slide along x
 independently - tray scanned, battery solved with scipy `minimize_scalar` inside each free interval -
-until SM = (X_np - X_cg) / MAC is centred in the layout's static-margin band. A slot is free only if the part clears every
-other part and boom and fits the local skin radius; the final OML-solid containment check counts any
+until SM = (X_np - X_cg) / MAC is centred in the layout's static-margin band. A slot is free only if the part
+clears every other part and boom and fits the local skin radius; the final OML-solid containment check counts any
 skin interference as a collision.
 
 Airframe mass comes from the laser-cut kit when one can be built (Group 1-2): kit parts, tubes, stock,
@@ -134,7 +134,8 @@ def _clear_of_structure(item: PlacedComponent, boxes: Sequence[Box3]) -> bool:
 
 @dataclass(frozen=True)
 class _KitRules:
-    """Slot rules when the airframe is a kit: structure boxes to clear, former openings and crutch rails to fit (R23, R28)."""
+    """Slot rules when the airframe is a kit: structure boxes to clear, former openings and crutch rails to fit
+    (R23, R28)."""
 
     boxes: tuple[Box3, ...]
     settings: FabricationSettings
@@ -243,7 +244,8 @@ def _shell_areal_density(airframe_kg: float, wing: WingStructure, oml: bd.Shape)
     structure_kg: float = wing.rib_mass_kg + wing.spar_mass_kg
     if airframe_kg <= structure_kg:
         raise CADPackingError(
-            f"no mass left for the airframe shell: sized airframe {airframe_kg:.3f} kg <= ribs/spars {structure_kg:.3f} kg"
+            f"no mass left for the airframe shell: sized airframe {airframe_kg:.3f} kg <= "
+            f"ribs/spars {structure_kg:.3f} kg"
         )
     return (airframe_kg - structure_kg) / oml.area
 
@@ -383,7 +385,8 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     )
     if not result.is_balanced:
         logger.warning("packing unbalanced: SM %.3f (band %.2f-%.2f), %d collisions, %d skin interferences",
-                       result.static_margin, band.minimum, band.maximum, result.collision_count, result.containment_violations)
+                       result.static_margin, band.minimum, band.maximum, result.collision_count,
+                       result.containment_violations)
     return result
 
 

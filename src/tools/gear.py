@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Final, Literal
+from types import MappingProxyType
+from typing import Final, Literal, Mapping
 
 GEAR_CLEARANCE_FRACTION: Final[float] = 0.25  # extra ground clearance, fraction of the larger radius
 NOSE_GEAR_STATION: Final[float] = 0.12  # fraction of fuselage length
 MAIN_GEAR_AFT_OF_CG_CHORDS: Final[float] = 0.15
 TIP_BACK_ANGLE_DEG: Final[float] = 15.0  # main gear aft of the CG by at least h_cg * tan(15 deg)
 MAIN_GEAR_TRACK_FRACTION: Final[float] = 0.15  # of wingspan, each side
-GEAR_FRACTION: Final[dict[str, float]] = {"fixed_wing": 0.04, "quadplane_vtol": 0.015}  # of MTOW, by topology
+GEAR_FRACTION: Final[Mapping[str, float]] = MappingProxyType(
+    {"fixed_wing": 0.04, "quadplane_vtol": 0.015})  # of MTOW, by topology
 
 
 @dataclass(frozen=True)
@@ -44,4 +46,6 @@ def tricycle_gear(fuselage_length_m: float, fuselage_diameter_m: float, prop_dia
 
 def gear_mass_kg(airframe_topology: str, mtow_kg: float) -> float:
     """Landing-gear mass: GEAR_FRACTION of MTOW for the airframe topology."""
+    if airframe_topology not in GEAR_FRACTION:
+        raise ValueError(f"unknown airframe topology {airframe_topology!r}; expected one of {sorted(GEAR_FRACTION)}")
     return GEAR_FRACTION[airframe_topology] * mtow_kg

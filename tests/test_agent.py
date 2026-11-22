@@ -170,11 +170,12 @@ def test_static_margin_direction_uses_the_given_non_default_band() -> None:
     gates = [critic.GateResult("static_margin", False, "")]
     narrow = StaticMarginBand(minimum=0.05, maximum=0.10, target=0.075)
     directions = []
-    for margin in (0.04, 0.12):
+    # 0.06 is below the default 0.08 minimum but not below the narrow 0.05 minimum, so only the narrow band says decrease
+    for margin in (0.04, 0.06, 0.12):
         _, changes = critic.apply_adjustments({}, "electric", [], gates, cad.model_copy(update={"static_margin": margin}),
                                               band=narrow)
         directions.append(changes[0].direction)
-    assert directions == ["increase", "decrease"]
+    assert directions == ["increase", "decrease", "decrease"]
 
 
 # --------------------------------------------------------------------- graph ---
