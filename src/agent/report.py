@@ -27,6 +27,12 @@ TRIVIAL_NUMBERS: Final[frozenset[str]] = frozenset({"0", "1", "2", "3", "4", "5"
 CITATION_DECIMALS: Final[int] = 1  # prose often cites a 2-decimal fact at one decimal (16.62 kg -> 16.6 kg)
 
 
+# Section headings the PDF hangs its figures on (report_pdf.section_figures)
+SECTION_SIZING: Final[str] = "Configuration and sizing"
+SECTION_ENERGY: Final[str] = "Mission energy budget"
+SECTION_POLAR: Final[str] = "Linearised cruise polar"
+SECTION_SITL: Final[str] = "Flight control and SITL robustness check"
+
 BATTERY_DENSITY_FIELDS: Final[frozenset[str]] = frozenset({
     "liion_specific_energy_wh_kg", "liion_energy_density_wh_l",
     "lipo_specific_energy_wh_kg", "lipo_energy_density_wh_l"})
@@ -218,20 +224,20 @@ def _sections(inputs: ReportInputs) -> list[str]:
     s += ["### Critic iterations\n", table([{"Iteration": c["iteration"], "Failed gates": ", ".join(c["failed"]) or "-",
                                              "Changes": "; ".join(c["changes"]) or "-"} for c in inputs.critic_log])]
     if inputs.sizing:
-        s += ["## Configuration and sizing\n", pairs(presenters.sizing_summary(inputs.sizing))]
-        s += ["## Mission energy budget\n", table(presenters.phase_rows(inputs.sizing))]
+        s += [f"## {SECTION_SIZING}\n", pairs(presenters.sizing_summary(inputs.sizing))]
+        s += [f"## {SECTION_ENERGY}\n", table(presenters.phase_rows(inputs.sizing))]
     if inputs.bom:
         s += ["## Bill of materials\n", table(presenters.bom_rows(inputs.bom))]
     if inputs.aero and inputs.sizing:
         s += ["## Aerodynamics and stability (VSPAERO)\n", table(presenters.aero_rows(inputs.aero))]
-        s += ["### Linearised cruise polar\n", table(polar_rows(inputs.aero, inputs.sizing))]
+        s += [f"### {SECTION_POLAR}\n", table(polar_rows(inputs.aero, inputs.sizing))]
     if inputs.cad:
         s += ["## CAD, mass properties and packaging\n", pairs(presenters.cad_rows(inputs.cad))]
         s += [f"Files: `{Path(inputs.cad.oml_step_path).name}`, `{Path(inputs.cad.assembly_step_path).name}`, "
               f"`{Path(inputs.cad.oml_vsp3_path).name}`"
               + (f", `{VIEWER_FILE}` (3D viewer)" if (inputs.out_dir / VIEWER_FILE).is_file() else "") + "\n"]
     if inputs.fcs:
-        s += ["## Flight control and SITL robustness check\n", table(presenters.fcs_rows(inputs.fcs))]
+        s += [f"## {SECTION_SITL}\n", table(presenters.fcs_rows(inputs.fcs))]
         s += [f"Parameters: `{Path(inputs.fcs.param_path).name}`; telemetry: `{Path(inputs.fcs.sitl_report_path).name}`\n"]
     return s
 

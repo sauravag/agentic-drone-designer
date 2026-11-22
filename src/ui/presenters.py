@@ -59,7 +59,7 @@ NUMBER_FIELDS: Final[dict[str, tuple[tuple[str, float, float, float, str], ...]]
                  ("takeoff_altitude_m", 0.0, 5000.0, 100.0, "%.0f"),
                  ("isa_temperature_offset_c", -40.0, 40.0, 1.0, "%.0f")),
 }
-DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".xml"})
+DOWNLOAD_SUFFIXES: Final[frozenset[str]] = frozenset({".json", ".step", ".vsp3", ".param", ".md", ".pdf", ".xml"})
 SHEET_STEM_NUMBER: Final[re.Pattern[str]] = re.compile(r"-\d+$")
 SECONDS_PER_MINUTE: Final[float] = 60.0
 WORST_PLANT_LABEL: Final[str] = ", worst plant"  # suffix for step rows that hold the worst over the plants

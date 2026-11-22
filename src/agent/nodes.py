@@ -12,7 +12,7 @@ from typing import Any, Callable, Final, Optional
 from pydantic import BaseModel
 
 from src import pipeline
-from src.agent import critic, report
+from src.agent import critic, report, report_pdf
 from src.agent.agent_schemas import CriticDecision, OptionsExplanation, ReportNarrative, RequirementsDraft
 from src.agent.llm import LLMError, StructuredLLM
 from src.agent.parsing import to_requirements
@@ -323,11 +323,14 @@ def compile_report(state: DesignState, ctx: AgentContext) -> Update:
         except LLMError as exc:
             narrative = report.fallback_narrative(inputs, str(exc))
     path: Path = report.write_report(inputs, narrative)
+    _tool(ctx, "compile_report: writing design_report.pdf")
+    pdf: Optional[Path] = report_pdf.write_pdf_report(inputs, path)
     lineage = state.get("lineage")
     _write(state, "run_summary.json", {
         "run_id": inputs.run_id, "status": run_status(state), "converged": inputs.converged,
         "sitl_passed": sitl_passed(state), "iterations": inputs.iterations,
         "final_overrides": state.get("sizing_overrides") or {}, "report": path.name,
+        "report_pdf": pdf.name if pdf else None,
         "non_default_assumptions": {k: list(v) for k, v in inputs.design_assumptions.non_default().items()},
         "explorer_note": note, "lineage": lineage.model_dump(mode="json") if lineage else None})
     return {"final_report_path": str(path), "viewer_error": state.get("viewer_error"),

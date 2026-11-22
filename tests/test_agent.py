@@ -172,8 +172,9 @@ def test_hybrid_reserve_gate_forces_one_critic_iteration(tmp_path: Path, db: Pat
     assert state["critic_log"][0]["failed"] == ["reserve"] and state["critic_log"][1]["failed"] == []
     out = Path(state["out_dir"])
     for name in ("requirements.json", "sizing.json", "bom.json", "critic_log.json", "design_report.md",
-                 "run_summary.json"):
+                 "design_report.pdf", "run_summary.json"):
         assert (out / name).is_file(), name
+    assert json.loads((out / "run_summary.json").read_text())["report_pdf"] == "design_report.pdf"
     text = (out / "design_report.md").read_text()
     assert "status **CONVERGED** after 1 critic iteration" in text and "reserve_fraction 0.1 -> 0.15" in text
     assert [name for name, _ in llm.calls] == ["RequirementsDraft", "CriticDecision", "ReportNarrative"]

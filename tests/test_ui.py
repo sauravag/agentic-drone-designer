@@ -135,6 +135,11 @@ def test_downloadable_files_stay_inside_the_run_folder(run: pipeline.DesignRun) 
     assert all(f.resolve().parent == run.out_dir.resolve() for f in files)
 
 
+def test_the_pdf_report_is_downloadable(tmp_path: Path) -> None:
+    (tmp_path / "design_report.pdf").write_bytes(b"%PDF-1.4")
+    assert [f.name for f in presenters.downloadable_files(tmp_path)] == ["design_report.pdf"]
+
+
 def test_app_runs_a_sizing_only_design_headlessly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from streamlit.testing.v1 import AppTest
 

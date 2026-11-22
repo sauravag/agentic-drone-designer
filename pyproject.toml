@@ -36,6 +36,10 @@ dev = [
 ui = [
     "streamlit>=1.38",
 ]
+report = [  # design_report.pdf: typesetting and figures
+    "reportlab>=4.2",
+    "matplotlib>=3.8",
+]
 
 [project.scripts]
 isr-forge = "src.main:main"

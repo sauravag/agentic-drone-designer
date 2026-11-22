@@ -183,6 +183,7 @@ Each run writes `outputs/<UTC timestamp>-<mission>/`:
 | File | Contents |
 |---|---|
 | `design_report.md` | requirements and assumptions, critic gates and iterations, sizing, energy budget, BOM, VSPAERO derivatives and polar, CAD/inertia, SITL metrics, warnings |
+| `design_report.pdf` | the same report typeset, plus figures: a three-view of the packed aircraft, the mission power profile, the VSPAERO and sizing drag polars, and the SITL roll/pitch responses (a figure whose input is missing, or that fails, is left out; if the PDF cannot be written the run logs why and keeps the Markdown report) |
 | `bom.json` | selected COTS parts and total hardware mass |
 | `oml.step`, `oml.vsp3`, `assembly.step` | outer mould line, and internal structure with packed components |
 | `viewer_model.json`, `viewer.html` | `viewer_model.json` is the display mesh (tessellated parts) and CG; `viewer.html` is the self-contained page with that mesh and the replayed SITL flight trace inlined |
@@ -249,7 +250,7 @@ reserve fails gate 4 and the critic raises it to 15 %.
 ## Development
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install -e '.[physics,agent,ui,dev]'   # everything but OpenVSP/ArduPilot
+python3.11 -m venv .venv && .venv/bin/pip install -e '.[physics,agent,ui,dev,report]'   # everything but OpenVSP/ArduPilot
 .venv/bin/python -m pytest -q                                                   # OpenVSP/SITL tests skip on the host
 docker run --rm -v "$PWD":/app -w /app isr-forge:latest python -m pytest -q -p no:cacheprovider   # full suite
 ```

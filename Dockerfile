@@ -108,7 +108,7 @@ COPY pyproject.toml ./
 # invalidates this layer, and changing pyproject reuses already-downloaded wheels.
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p src && touch src/__init__.py \
- && pip install ".[physics,agent,dev,ui]" \
+ && pip install ".[physics,agent,dev,ui,report]" \
  && pip uninstall -y isr-forge && rm -rf src build ./*.egg-info
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps . && rm -rf build ./*.egg-info
