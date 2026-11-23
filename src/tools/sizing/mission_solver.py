@@ -183,7 +183,8 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
     loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
     avionics: float = assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer)
-    gear: GearGeometry = sizing_gear(aero.geom, layout_spec(req.airframe_layout), resolved_launch_method(req))
+    gear: GearGeometry = sizing_gear(
+        aero.geom, layout_spec(req.airframe_layout), resolved_launch_method(req))
     breakdown: dict[str, float] = empty_mass_breakdown(mtow, aero.geom, design.airframe, loads, avionics, booms, gear)
     empty: float = sum(breakdown.values())
     return _Evaluation(
@@ -327,7 +328,8 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         aspect_ratio=geom.aspect_ratio, fuselage_length_m=geom.fuselage_length_m,
         fuselage_diameter_m=geom.fuselage_diameter_m, horizontal_tail_area_m2=geom.horizontal_tail_area_m2,
         vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
-        launch_method=launch, gear_kind=ev.gear.kind, airframe_layout=req.airframe_layout, tail_surfaces=geom.tail_surfaces,
+        launch_method=launch, gear_kind=ev.gear.kind, airframe_layout=req.airframe_layout,
+        tail_surfaces=geom.tail_surfaces,
         cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
         v_stall_ms=math.sqrt(2.0 * weight / (RHO_SEA_LEVEL * geom.wing_area_m2 * cl_max)),
         v_stall_takeoff_ms=math.sqrt(2.0 * weight / (aero.rho_takeoff * geom.wing_area_m2 * cl_max)),

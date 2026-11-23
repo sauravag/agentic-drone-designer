@@ -20,10 +20,10 @@ from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_s
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
 from src.tools.fabrication import kit_export  # noqa: E402
 from src.tools.fabrication.kit import KitUnavailable  # noqa: E402
-from src.tools.sizing.mass_model import sizing_output_gear  # noqa: E402
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
 from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
+from src.tools.sizing.mass_model import sizing_output_gear  # noqa: E402
 from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml, part_solid, tube_solid  # noqa: E402
 from tests.reference_designs import CASES  # noqa: E402
 
@@ -836,3 +836,12 @@ def test_jump_bisection_is_capped() -> None:
     assert len(search.evaluated) - 2 <= build.MAX_JUMP_BISECTIONS
     stations = sorted(search.evaluated)
     assert min(b - a for a, b in zip(stations, stations[1:])) >= build.JUMP_MIN_WIDTH / 2 - 1e-12
+
+
+def test_hand_launched_design_has_no_residual_gear_item(designs: dict, tmp_path: Path) -> None:
+    sizing, bom = designs["g1"]
+    hand = sizing.model_copy(update={"launch_method": "hand", "gear_kind": "none"})
+    lay = _fitted_layout(hand, bom)
+    assert residual_gear_item(hand, lay, sizing_output_gear(hand)) is None
+    result = cad_packer.pack_layout(hand, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
+    assert GEAR_NAME not in {i.name for i in result.mass_items}

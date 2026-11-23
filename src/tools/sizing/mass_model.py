@@ -178,9 +178,12 @@ def sizing_gear(geom: Geometry, spec: LayoutSpec, launch: LaunchMethod) -> GearG
 
 def sizing_output_gear(sizing: SizingOutput) -> GearGeometry:
     """`sizing_gear` for a finished design (the same geometry, read back from the record)."""
-    geom = Geometry(sizing.wing_area_m2, sizing.aspect_ratio, sizing.wingspan_m, sizing.mean_chord_m,
-                    sizing.fuselage_length_m, sizing.fuselage_diameter_m, sizing.horizontal_tail_area_m2,
-                    sizing.vertical_tail_area_m2, sizing.tail_arm_m, sizing.tail_surfaces)
+    geom = Geometry(
+        wing_area_m2=sizing.wing_area_m2, aspect_ratio=sizing.aspect_ratio, wingspan_m=sizing.wingspan_m,
+        mean_chord_m=sizing.mean_chord_m, fuselage_length_m=sizing.fuselage_length_m,
+        fuselage_diameter_m=sizing.fuselage_diameter_m, horizontal_tail_area_m2=sizing.horizontal_tail_area_m2,
+        vertical_tail_area_m2=sizing.vertical_tail_area_m2, tail_arm_m=sizing.tail_arm_m,
+        tail_surfaces=sizing.tail_surfaces)
     return sizing_gear(geom, layout_spec(sizing.airframe_layout), sizing.launch_method)
 
 

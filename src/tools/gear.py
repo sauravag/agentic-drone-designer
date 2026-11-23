@@ -106,4 +106,6 @@ def gear_mass_kg(gear: GearGeometry, airframe_topology: str, mtow_kg: float) -> 
         raise ValueError(f"unknown airframe topology {airframe_topology!r}; expected one of {sorted(GEAR_FRACTION)}")
     if gear.kind == "none":
         return 0.0
+    if gear.base_leg_height_m <= 0:
+        raise ValueError(f"a {gear.kind!r} gear needs a positive base_leg_height_m, got {gear.base_leg_height_m}")
     return GEAR_FRACTION[airframe_topology] * mtow_kg * gear.leg_height_m / gear.base_leg_height_m

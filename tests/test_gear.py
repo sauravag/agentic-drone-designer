@@ -4,8 +4,8 @@ from typing import Literal
 
 import pytest
 
-from src.tools.gear import (GEAR_FRACTION, PROP_TIP_CLEARANCE_FRACTION, ROTATION_ANGLE_DEG, GearInputs,
-                            PropellerDisc, gear_mass_kg, landing_gear)
+from src.tools.gear import (GEAR_FRACTION, PROP_TIP_CLEARANCE_FRACTION, ROTATION_ANGLE_DEG, GearGeometry,
+                            GearInputs, PropellerDisc, gear_mass_kg, landing_gear)
 
 PROP_D_M = 0.279
 TRACTOR_LEG_M = 0.175  # G1: 1.25 x propeller radius
@@ -31,6 +31,12 @@ def test_hand_launch_gear_has_no_contacts_and_zero_mass() -> None:
     gear = landing_gear(_inputs(launch="hand"))
     assert gear.kind == "none" and gear.contacts == () and gear.leg_height_m == 0.0
     assert gear_mass_kg(gear, "fixed_wing", 5.0) == 0.0
+
+
+def test_hand_built_tricycle_without_a_base_height_is_rejected() -> None:
+    gear = GearGeometry("tricycle", (), 0.2)
+    with pytest.raises(ValueError, match="base_leg_height_m"):
+        gear_mass_kg(gear, "fixed_wing", 5.0)
 
 
 def test_tractor_runway_gear_matches_today() -> None:
