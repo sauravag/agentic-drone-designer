@@ -1028,3 +1028,40 @@ def test_strike_is_warned_once_for_the_final_design(vtail_g1, tmp_path: Path, mo
     assert design.total_iterations > 1
     assert [r.levelno for r in strikes if r.levelno >= logging.WARNING] == [logging.WARNING]
     assert sum(r.levelno == logging.DEBUG for r in strikes) == design.total_iterations
+
+
+# ----------------------------------------------------------- V-tail ruddervators in VSPAERO (Docker, Task 7) ---
+def test_vtail_panel_derivatives_from_vspaero(vtail_g1, tmp_path: Path) -> None:
+    """Each ruddervator deflected alone: both panels pitch nose-down for trailing edge down, the symmetric sum is the
+    elevator power, the antisymmetric difference yaws (rudder convention), and the roll couplings are opposite."""
+    pytest.importorskip("openvsp")
+    from src.tools.aero_cad.openvsp_builder import analyse_layout
+
+    sizing, bom = vtail_g1
+    layout = layout_from_sizing(sizing, propeller_diameter_m=bom.cruise_propeller.diameter_m)
+    aero, vsp3, _ = analyse_layout(layout, sizing, CASES["g1"].service_ceiling_m, tmp_path)
+    panels = {s.name: s for s in aero.control_surfaces}
+    assert list(panels) == ["aileron", "ruddervator_left", "ruddervator_right"]
+    left, right = panels["ruddervator_left"], panels["ruddervator_right"]
+    assert left.cm_per_rad < 0 and right.cm_per_rad < 0  # positive deflection = trailing edge down
+    assert aero.cm_delta_e_per_rad == pytest.approx(left.cm_per_rad + right.cm_per_rad) and aero.cm_delta_e_per_rad < 0
+    assert aero.cn_delta_r_per_rad == pytest.approx(left.cn_per_rad - right.cn_per_rad)
+    assert abs(aero.cn_delta_r_per_rad) > 1e-3 and aero.cn_delta_r_per_rad < 0  # trailing edges left -> nose left
+    assert left.cl_roll_per_rad * right.cl_roll_per_rad < 0  # left/right roll coupling of opposite sign
+    assert left.cn_per_rad < 0 < right.cn_per_rad  # a panel's trailing edge down pushes the tail away from it
+    assert aero.cl_delta_a_per_rad > 1e-4 and aero.cm_alpha_per_rad < 0 and aero.cn_beta_per_rad > 0
+    assert "VTailPair" in Path(vsp3).read_text()
+
+
+def test_vtail_convention_check_rejects_a_swapped_panel_pair(g1_layout: AircraftLayout) -> None:
+    """Swapping the panels (or an inverted geometry) makes the antisymmetric pair yaw the wrong way: refused."""
+    ref = stability.ReferenceGeometry(sref_m2=0.8, cref_m=0.3, bref_m=2.0, x_ref_m=0.6)
+    right = _coeffs(0.0, d_cmy=-0.145, d_cmx=0.003, d_cmz=-0.007, d_cl=0.05)  # raw (1, 0): right panel TE down
+    left = _coeffs(0.0, d_cmy=0.148, d_cmx=0.003, d_cmz=-0.007, d_cl=-0.05)  # raw (0, 1): left panel TE up
+    vtail = _cases(elevator=None, rudder=None, ruddervator_left=left, ruddervator_right=right)
+    out = stability.derive_stability(vtail, ref, g1_layout, cd0=0.03, cl_cruise=0.6)
+    names = [s.name for s in out.control_surfaces]
+    assert names == ["aileron", "ruddervator_left", "ruddervator_right"]
+    swapped = _cases(elevator=None, rudder=None, ruddervator_left=right, ruddervator_right=left)
+    with pytest.raises(stability.AeroAnalysisError, match="ruddervator"):
+        stability.derive_stability(swapped, ref, g1_layout, cd0=0.03, cl_cruise=0.6)

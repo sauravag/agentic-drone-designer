@@ -1,0 +1,103 @@
+{
+  "mtow_kg": 4.681310706904064,
+  "empty_mass_kg": 2.172763463120285,
+  "empty_mass_breakdown": {
+    "wing": 0.6843300786077058,
+    "tail": 0.12894390447120693,
+    "fuselage": 0.2876055999719831,
+    "tail_boom": 0.04021648838124817,
+    "cruise_propulsion": 0.09097096421287652,
+    "vtol_system": 0.0,
+    "generator": 0.0,
+    "fuel_system": 0.0,
+    "landing_gear": 0.3598177847984849,
+    "avionics": 0.34681310711279667,
+    "systems": 0.2340655355639835
+  },
+  "fuel_mass_kg": 0.0,
+  "battery_mass_kg": 1.508547243783779,
+  "wing_area_m2": 0.375522958418139,
+  "wingspan_m": 2.122798978004669,
+  "mean_chord_m": 0.17689991483372242,
+  "aspect_ratio": 12.0,
+  "fuselage_length_m": 0.9200650039092935,
+  "fuselage_diameter_m": 0.13143785770132763,
+  "cruise_power_w": 94.30225768375952,
+  "hover_power_w": 0.0,
+  "v_stall_ms": 12.999999993924472,
+  "v_stall_takeoff_ms": 12.999999993924472,
+  "v_loiter_ms": 17.309116215188,
+  "v_cruise_ms": 18.0,
+  "cl_cruise": 0.6467155978770501,
+  "cl_loiter": 0.6993725108823102,
+  "assumed_ld_cruise": 18.970408699558106,
+  "payload_mass_kg": 1.0,
+  "dod_group": 1,
+  "propulsion_type": "electric",
+  "airframe_topology": "fixed_wing",
+  "airfoil": "sd7037",
+  "cl_max": 1.1810251631582376,
+  "cd0": 0.018376919436299866,
+  "oswald_e": 0.7060139564214812,
+  "horizontal_tail_area_m2": 0.060167831511922,
+  "vertical_tail_area_m2": 0.057761118251445136,
+  "tail_arm_m": 0.552039002345576,
+  "launch_method": "runway",
+  "gear_kind": "tricycle",
+  "airframe_layout": "single_boom_vtail_pusher",
+  "tail_surfaces": [
+    {
+      "name": "vtail_pair",
+      "control": "ruddervator",
+      "area_m2": 0.11792894976336714,
+      "span_m": 0.6868156951129383,
+      "taper_ratio": 0.6,
+      "dihedral_deg": 44.415308597192976,
+      "arm_m": 0.552039002345576,
+      "is_symmetric": true
+    }
+  ],
+  "battery_energy_j": 1086154.015524321,
+  "battery_peak_power_w": 264.18808310071154,
+  "generator_power_w": 0.0,
+  "cruise_motor_power_w": 237.31555881619965,
+  "vtol_thrust_per_motor_n": 0.0,
+  "rotor_diameter_m": 0.0,
+  "energy_reserve_fraction": 0.2,
+  "phases": [
+    {
+      "name": "Climb",
+      "duration_s": 200.0,
+      "propulsive_power_w": 237.3155588161998,
+      "total_power_w": 264.1880831007114,
+      "energy_j": 52837.61662014232,
+      "fuel_burned_kg": 0.0
+    },
+    {
+      "name": "Ingress",
+      "duration_s": 833.3333333333334,
+      "propulsive_power_w": 67.42973339924765,
+      "total_power_w": 94.30225768375952,
+      "energy_j": 78585.21473646628,
+      "fuel_burned_kg": 0.0
+    },
+    {
+      "name": "Loiter",
+      "duration_s": 7200.0,
+      "propulsive_power_w": 64.64347103859676,
+      "total_power_w": 91.51599532310864,
+      "energy_j": 658915.166326382,
+      "fuel_burned_kg": 0.0
+    },
+    {
+      "name": "Egress",
+      "duration_s": 833.3333333333334,
+      "propulsive_power_w": 67.42973339924765,
+      "total_power_w": 94.30225768375952,
+      "energy_j": 78585.21473646628,
+      "fuel_burned_kg": 0.0
+    }
+  ],
+  "avionics_mass_kg": 0.3468131070690406,
+  "avionics_power_w": 11.872524282761626
+}

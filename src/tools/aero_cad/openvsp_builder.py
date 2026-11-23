@@ -1,13 +1,17 @@
 """OpenVSP OML generation, watertight STEP export, VSPAERO run matrix and ParasiteDrag (SRS 4.3 step 1).
 
 Run matrix (VLM on the lifting surfaces): alpha in {-4, 0, 4, 8, 12} deg; beta = 5 deg; aileron,
-elevator and rudder at 10 deg. Fuselage, booms and rotor discs are excluded from VLM (see
-stability.py for the handbook fuselage corrections); booms and fuselage are in the OML/drag set.
+elevator and rudder at 10 deg (a V-tail: each ruddervator panel alone at 10 deg instead of elevator and rudder).
+Fuselage, booms and rotor discs are excluded from VLM (see stability.py for the handbook fuselage corrections);
+booms and fuselage are in the OML/drag set.
 
 Empirical conventions verified against OpenVSP 3.56 / VSPAERO 7.2.2 (and guarded at runtime by
 stability._check_control_conventions):
   * equal gains on a mirrored control surface deflect it ANTISYMMETRICALLY, so the elevator's mirror
     gain is -1 and the ailerons keep +1;
+  * a mirrored surface's gains are "<surf>_0_Gain" for the main (+y, right) panel and "<surf>_1_Gain" for the planar
+    mirror (left), so gains (1, 0) deflect the right panel alone and (0, 1) the left one (a VSPAERO probe of the
+    G1 V-tail: (1, 0) yaws nose-right and rolls left for trailing edge down, as only the right panel can);
   * plain EXPORT_STEP assumes feet and writes untrimmed patches, so the OML goes through the
     SurfaceIntersection analysis with CADLenUnit = metres, which yields one trimmed watertight solid.
 """
@@ -47,6 +51,10 @@ BETA_DEG: Final[float] = 5.0
 DEFLECTION_DEG: Final[float] = 10.0
 WAKE_ITERATIONS: Final[int] = 3
 MIRROR_GAIN_SYMMETRIC: Final[float] = -1.0
+ELEVATOR_GAINS: Final[tuple[float, float]] = (1.0, MIRROR_GAIN_SYMMETRIC)  # (main, mirror): symmetric deflection
+RIGHT_PANEL_GAINS: Final[tuple[float, float]] = (1.0, 0.0)  # the main (+y) panel alone
+LEFT_PANEL_GAINS: Final[tuple[float, float]] = (0.0, 1.0)  # the mirrored (-y) panel alone
+DEFAULT_GAIN: Final[float] = 1.0  # OpenVSP's auto-grouped gain, restored after a per-panel case
 
 ROTOR_AXIS_ROTATION_DEG: Final[float] = -90.0  # PROP disc normal from +x to +z (lift rotor)
 MAX_PLAUSIBLE_CD0: Final[float] = 0.2
@@ -58,15 +66,21 @@ COMPUTE_GEOMETRY: Final[str] = "VSPAEROComputeGeometry"
 HISTORY: Final[str] = "VSPAERO_History"
 
 
-# Component names OpenVSP shows for the conventional tail (kept stable for stored models).
-VSP_TAIL_NAMES: Final[dict[str, str]] = {"htail": "HTail", "vtail": "VTail"}
+# Component names OpenVSP shows for the tail surfaces (kept stable for stored models).
+VSP_TAIL_NAMES: Final[dict[str, str]] = {"htail": "HTail", "vtail": "VTail", "vtail_pair": "VTailPair"}
+# Tail control sets the run matrix knows how to deflect.
+SUPPORTED_TAIL_CONTROLS: Final[tuple[frozenset[str], ...]] = (frozenset({"elevator", "rudder"}),
+                                                               frozenset({"ruddervator"}))
 
 
 @dataclass(frozen=True)
 class VspModel:
     wing: str
-    htail: str
-    vtail: str
+    tail_controls: tuple[tuple[str, str], ...]  # (control kind, OpenVSP component name) of each tail surface
+
+    def tail_named(self, control: str) -> str:
+        """The OpenVSP component carrying `control`."""
+        return next(name for kind, name in self.tail_controls if kind == control)
 
 
 @dataclass(frozen=True)
@@ -161,6 +175,10 @@ def build_model(layout: AircraftLayout, out_dir: Path) -> VspModel:
     dat: Path = write_selig_dat(load_airfoil(layout.airfoil), out_dir / "airfoils" / f"{layout.airfoil}.dat")
     fuselage = _add_fuselage(layout)
     wing = _add_surface("Wing", layout.wing, dat)
+    controls: frozenset[str] = frozenset(t.control for t in layout.tail_surfaces)
+    if controls not in SUPPORTED_TAIL_CONTROLS or len(layout.tail_surfaces) != len(controls):
+        raise ValueError(f"no VSPAERO run matrix for tail controls {sorted(t.control for t in layout.tail_surfaces)}; "
+                         f"supported: {[sorted(c) for c in SUPPORTED_TAIL_CONTROLS]}")
     tail: dict[str, str] = {
         t.name: _add_surface(VSP_TAIL_NAMES.get(t.name, t.name), t.planform, None, vertical=t.is_vertical)
         for t in layout.tail_surfaces
@@ -178,10 +196,8 @@ def build_model(layout: AircraftLayout, out_dir: Path) -> VspModel:
         vsp.SetSetFlag(gid, OML_SET, True)
     vsp.Update()
     vsp.AutoGroupVSPAEROControlSurfaces()
-    missing: list[str] = [name for name in ("htail", "vtail") if name not in tail]
-    if missing:
-        raise ValueError(f"layout has no tail surface named {missing[0]!r}; it has {sorted(tail)}")
-    return VspModel(wing=wing, htail=tail["htail"], vtail=tail["vtail"])
+    return VspModel(wing=wing, tail_controls=tuple((t.control, VSP_TAIL_NAMES.get(t.name, t.name))
+                                                   for t in layout.tail_surfaces))
 
 
 def export_oml(out_dir: Path) -> tuple[Path, Path]:
@@ -219,12 +235,13 @@ def flight_condition(layout: AircraftLayout, sizing: SizingOutput, altitude_m: f
 
 
 def _control_group(geom_name: str) -> tuple[str, list[str]]:
-    """(deflection parm, gain parms) of the auto-generated VSPAERO control group for a geom."""
+    """(deflection parm, gain parms) of the auto-generated VSPAERO control group for a geom; the gains in panel order
+    (main +y panel first, then its mirror), by their "_<index>_Gain" names."""
     for gid in vsp.GetControlSurfaceGroupIDVec():
         if vsp.GetVSPAEROControlGroupNameByID(gid).startswith(f"{geom_name}_"):
             pids = list(vsp.FindContainerParmIDs(gid))
             deflection = next(p for p in pids if vsp.GetParmName(p) == "DeflectionAngle")
-            return deflection, [p for p in pids if vsp.GetParmName(p).endswith("_Gain")]
+            return deflection, sorted((p for p in pids if vsp.GetParmName(p).endswith("_Gain")), key=vsp.GetParmName)
     raise AeroAnalysisError(f"no VSPAERO control-surface group for {geom_name}")
 
 
@@ -266,22 +283,41 @@ def _run_sweep(model: VspModel, cond: FlightCondition, alphas: tuple[float, ...]
     return cases, ref
 
 
-def _deflected_case(model: VspModel, cond: FlightCondition, geom_name: str, symmetric: bool, log: Path) -> AeroCoefficients:
+def _deflected_case(model: VspModel, cond: FlightCondition, geom_name: str, log: Path,
+                    panel_gains: Optional[tuple[float, float]] = None) -> AeroCoefficients:
+    """One DEFLECTION_DEG case of a geom's control group. `panel_gains` (main, mirror) for a mirrored surface; None
+    keeps OpenVSP's equal gains (antisymmetric on a mirrored surface). The gains are restored afterwards."""
     deflection, gains = _control_group(geom_name)
-    if symmetric and len(gains) == 2:
-        vsp.SetParmVal(gains[1], MIRROR_GAIN_SYMMETRIC)
+    if panel_gains is not None:
+        if len(gains) != len(panel_gains):
+            raise AeroAnalysisError(f"{geom_name} has {len(gains)} control gains, expected a mirrored pair")
+        for pid, gain in zip(gains, panel_gains):
+            vsp.SetParmVal(pid, gain)
     vsp.SetParmVal(deflection, DEFLECTION_DEG)
     vsp.Update()
     try:
         (case,), _ = _run_sweep(model, cond, (0.0,), 0.0, log)
     finally:
         vsp.SetParmVal(deflection, 0.0)
+        for pid in gains:
+            vsp.SetParmVal(pid, DEFAULT_GAIN)
         vsp.Update()
     return case
 
 
+def _tail_cases(model: VspModel, cond: FlightCondition, log: Path) -> dict[str, AeroCoefficients]:
+    """The tail deflection cases by VspaeroCases field: elevator and rudder, or each ruddervator panel alone."""
+    controls: frozenset[str] = frozenset(kind for kind, _ in model.tail_controls)
+    if "ruddervator" in controls:
+        pair: str = model.tail_named("ruddervator")
+        return {"ruddervator_left": _deflected_case(model, cond, pair, log, LEFT_PANEL_GAINS),
+                "ruddervator_right": _deflected_case(model, cond, pair, log, RIGHT_PANEL_GAINS)}
+    return {"elevator": _deflected_case(model, cond, model.tail_named("elevator"), log, ELEVATOR_GAINS),
+            "rudder": _deflected_case(model, cond, model.tail_named("rudder"), log)}
+
+
 def run_vspaero(model: VspModel, cond: FlightCondition, work_dir: Path) -> tuple[VspaeroCases, ReferenceGeometry]:
-    """The SRS run matrix: alpha sweep, beta = 5 deg, and 10 deg aileron / elevator / rudder."""
+    """The SRS run matrix: alpha sweep, beta = 5 deg, and 10 deg aileron / elevator / rudder (or each ruddervator)."""
     work_dir.mkdir(parents=True, exist_ok=True)
     model_file: Path = work_dir / "model.vsp3"
     vsp.WriteVSPFile(str(model_file))
@@ -293,13 +329,8 @@ def run_vspaero(model: VspModel, cond: FlightCondition, work_dir: Path) -> tuple
     vsp.ExecAnalysis(COMPUTE_GEOMETRY)
     sweep, ref = _run_sweep(model, cond, ALPHA_SWEEP_DEG, 0.0, log)
     (beta,), _ = _run_sweep(model, cond, (0.0,), BETA_DEG, log)
-    cases = VspaeroCases(
-        sweep=sweep, beta=beta,
-        aileron=_deflected_case(model, cond, "Wing", symmetric=False, log=log),
-        elevator=_deflected_case(model, cond, "HTail", symmetric=True, log=log),
-        rudder=_deflected_case(model, cond, "VTail", symmetric=False, log=log),
-        deflection_deg=DEFLECTION_DEG,
-    )
+    cases = VspaeroCases(sweep=sweep, beta=beta, aileron=_deflected_case(model, cond, "Wing", log),
+                         deflection_deg=DEFLECTION_DEG, **_tail_cases(model, cond, log))
     return cases, ref
 
 

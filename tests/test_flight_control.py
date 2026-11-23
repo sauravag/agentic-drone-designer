@@ -267,9 +267,11 @@ def test_exporter_refuses_a_derivative_it_has_no_coefficient_for(design: Any, tm
                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
     _, _, model = design
     aileron, *others = model.channels
-    unmapped = replace(aileron, derivatives=replace(aileron.derivatives, cm=0.05))  # no aileron pitching moment
-    with pytest.raises(ValueError, match="aileron.*cm"):
-        export_jsbsim(_with_channels(monkeypatch, model, (unmapped, *others)), tmp_path)
+    elevator = next(c for c in others if c.surface == "elevator")
+    unmapped = replace(elevator, derivatives=replace(elevator.derivatives, cn=0.05))  # no elevator yawing moment
+    rest = tuple(c for c in others if c.surface != "elevator")
+    with pytest.raises(ValueError, match="elevator.*cn"):
+        export_jsbsim(_with_channels(monkeypatch, model, (aileron, unmapped, *rest)), tmp_path)
 
 
 def test_gear_meets_the_tip_back_rule_and_clears_the_propeller(design: Any) -> None:
@@ -404,7 +406,7 @@ def _vtail_surfaces() -> tuple[ControlSurfaceDerivatives, ...]:
 
 
 def _zero_derivative_vtail() -> tuple[ControlSurfaceDerivatives, ...]:
-    """V-tail records the exporter can write (it has no coefficient for ruddervator derivatives yet)."""
+    """V-tail records with zero derivatives (only the channel names and property stems matter)."""
     zero = {"cl_per_rad": 0.0, "cl_roll_per_rad": 0.0, "cm_per_rad": 0.0, "cn_per_rad": 0.0}
     return tuple(_surface(n, **zero) for n in ("aileron", "ruddervator_left", "ruddervator_right"))
 
@@ -464,7 +466,7 @@ def test_vtail_model_channels_include_the_steering_channel() -> None:
 
 def test_fixed_wing_does_not_reserve_quad_servos() -> None:
     fixed_wing = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
-    functions = pg.fw_servo_functions(fixed_wing)  # the V-tail rate gains arrive with the V-tail flight model
+    functions = pg.fw_servo_functions(fixed_wing)
     assert functions == {"SERVO1_FUNCTION": 4, "SERVO2_FUNCTION": 79, "SERVO3_FUNCTION": 70, "SERVO4_FUNCTION": 80,
                          "SERVO5_FUNCTION": 26}  # steering on output 5, not lift motor 1 (33)
 
@@ -503,9 +505,10 @@ def test_no_free_output_for_steering_is_an_error() -> None:
     assert model.channels  # the real tractor still builds
 
 
-def test_missing_elevator_is_a_clear_parameter_error() -> None:
-    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
-    with pytest.raises(pg.ParamGenerationError, match="elevator"):
+def test_missing_pitch_surface_is_a_clear_parameter_error() -> None:
+    lone_panel = (_surface("aileron"), _surface("ruddervator_left"))  # neither an elevator nor a ruddervator pair
+    model = replace(build_flight_model(*load_design("g1")), surfaces=lone_panel)
+    with pytest.raises(pg.ParamGenerationError, match="elevator.*ruddervator_right"):
         pg.fixed_wing_gains(model)
 
 
@@ -636,3 +639,207 @@ def test_a_hand_launched_quadplane_is_refused_not_held_forever() -> None:
     flight_test = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
     with pytest.raises(flight_test.SitlFlightError, match="quadplane.*hand-launched"):
         flight_test.fly_acceptance_test(None, {}, True, 0.0, "hand")  # type: ignore[arg-type]
+
+
+# ------------------------------------------- V-tail ruddervators, mixing and pusher thrust (phase 2, Task 7) ---
+VTAIL_LAYOUT: str = "single_boom_vtail_pusher"
+AP_PITCH_UP: float = 1.0  # ArduPilot scaled elevator output above zero demands nose up
+AP_YAW_RIGHT: float = 1.0  # ArduPilot scaled rudder output above zero demands nose right
+
+
+def load_vtail_design() -> DesignInputs:
+    """The saved V-tail G1 design (scripts/generate_vtail_g1_fixture.py). The layout is not enabled for users until
+    Task 9, so the requirement gate is opened for loading this fixture only."""
+    from src.schemas import requirements as requirements_module
+
+    enabled = requirements_module.ENABLED_LAYOUTS | {(VTAIL_LAYOUT, "fixed_wing"), (VTAIL_LAYOUT, "quadplane_vtol")}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(requirements_module, "ENABLED_LAYOUTS", enabled)
+        return load_design("g1_vtail")
+
+
+@pytest.fixture(scope="module")
+def vtail_g1_design() -> DesignInputs:
+    return load_vtail_design()
+
+
+@pytest.fixture(scope="module")
+def vtail_model(vtail_g1_design: DesignInputs) -> FlightModel:
+    return build_flight_model(*vtail_g1_design)
+
+
+def _panels(model: FlightModel) -> tuple[ControlChannel, ControlChannel]:
+    by_name = {c.surface: c for c in model.channels}
+    return by_name["ruddervator_left"], by_name["ruddervator_right"]
+
+
+def test_vtail_fixture_is_the_vtail_pusher(vtail_g1_design: DesignInputs) -> None:
+    _, sizing, _, aero, cad = vtail_g1_design
+    assert sizing.airframe_layout == VTAIL_LAYOUT and [t.control for t in sizing.tail_surfaces] == ["ruddervator"]
+    assert [s.name for s in aero.control_surfaces] == ["aileron", "ruddervator_left", "ruddervator_right"]
+    assert cad.propeller_x_m is not None and cad.propeller_x_m > cad.x_cg_m  # boom-end pusher behind the CG
+
+
+def test_vtail_channels_and_servos(vtail_g1_design: DesignInputs, vtail_model: FlightModel) -> None:
+    model = vtail_model
+    assert [(c.surface, c.servo, c.servo_function) for c in model.channels][:3] == [
+        ("aileron", 1, 4), ("ruddervator_left", 2, 79), ("ruddervator_right", 4, 80)]
+    params = pg.generate_params(model, *vtail_g1_design[1:3])
+    assert params["MIXING_GAIN"] == 0.5 and params["SERVO5_FUNCTION"] == 26
+    assert (params["SERVO2_FUNCTION"], params["SERVO4_FUNCTION"]) == (79, 80)
+    assert set(params) <= KNOWN_PARAMS
+
+
+def test_vtail_panels_carry_their_own_measured_derivatives(vtail_g1_design: DesignInputs,
+                                                           vtail_model: FlightModel) -> None:
+    aero = vtail_g1_design[3]
+    left, right = _panels(vtail_model)
+    records = {s.name: s for s in aero.control_surfaces}
+    for channel in (left, right):
+        record = records[channel.surface]
+        assert channel.derivatives == SurfaceDerivatives(cl=record.cl_per_rad, cl_roll=record.cl_roll_per_rad,
+                                                         cm=record.cm_per_rad, cn=record.cn_per_rad)
+    assert left.derivatives.cm < 0 and right.derivatives.cm < 0  # positive panel deflection = trailing edge down
+    assert left.derivatives.cl_roll * right.derivatives.cl_roll < 0  # roll coupling of opposite sign
+    assert aero.cm_delta_e_per_rad == pytest.approx(left.derivatives.cm + right.derivatives.cm)  # by linearity
+    assert aero.cn_delta_r_per_rad == pytest.approx(left.derivatives.cn - right.derivatives.cn)
+
+
+def _ardupilot_vtail_mix(elevator: float, rudder: float, mixing_gain: float) -> tuple[float, float]:
+    """ArduPlane's V-tail mixer (Plane::channel_function_mixer(k_rudder, k_elevator, k_vtail_right, k_vtail_left)):
+    (left, right) scaled outputs; verified against arduplane 4.7 in SITL (Task 7 report)."""
+    return (elevator + rudder) * mixing_gain, (elevator - rudder) * mixing_gain
+
+
+def _moments(model: FlightModel, params: pg.ParamSet, elevator: float, rudder: float) -> tuple[float, float]:
+    """(Cm, Cn) per unit of panel throw from ArduPilot demands, through reversal, PWM and the bridge sign."""
+    outputs = dict(zip(("ruddervator_left", "ruddervator_right"),
+                       _ardupilot_vtail_mix(elevator, rudder, params["MIXING_GAIN"])))
+    cm = cn = 0.0
+    for channel in _panels(model):
+        reversal = -1.0 if params[f"SERVO{channel.servo}_REVERSED"] else 1.0
+        deflection = channel.bridge_sign * reversal * outputs[channel.surface]
+        cm += channel.derivatives.cm * deflection
+        cn += channel.derivatives.cn * deflection
+    return cm, cn
+
+
+def test_vtail_pitch_up_and_yaw_right_demands_give_nose_up_and_nose_right(vtail_g1_design: DesignInputs,
+                                                                          vtail_model: FlightModel) -> None:
+    params = pg.generate_params(vtail_model, *vtail_g1_design[1:3])
+    pitch_cm, pitch_cn = _moments(vtail_model, params, AP_PITCH_UP, 0.0)
+    yaw_cm, yaw_cn = _moments(vtail_model, params, 0.0, AP_YAW_RIGHT)
+    assert pitch_cm > 0 and abs(pitch_cn) < 0.1 * pitch_cm
+    assert yaw_cn > 0 and abs(yaw_cm) < 0.1 * abs(pitch_cm)
+
+
+def test_vtail_reversal_follows_each_panels_pitch_sign(vtail_g1_design: DesignInputs,
+                                                      vtail_model: FlightModel) -> None:
+    params = pg.generate_params(vtail_model, *vtail_g1_design[1:3])
+    flipped = tuple(s.model_copy(update={"cm_per_rad": -s.cm_per_rad, "cn_per_rad": -s.cn_per_rad,
+                                         "cl_per_rad": -s.cl_per_rad, "cl_roll_per_rad": -s.cl_roll_per_rad})
+                    if s.name == "ruddervator_left" else s for s in vtail_model.surfaces)
+    flipped_params = pg.generate_params(replace(vtail_model, surfaces=flipped), *vtail_g1_design[1:3])
+    assert flipped_params["SERVO2_REVERSED"] == 1 - params["SERVO2_REVERSED"]
+    assert flipped_params["SERVO4_REVERSED"] == params["SERVO4_REVERSED"]
+
+
+def test_vtail_pitch_gains_use_the_mixed_control_power(vtail_g1_design: DesignInputs,
+                                                       vtail_model: FlightModel) -> None:
+    left, right = _panels(vtail_model)
+    mixed = 0.5 * (left.derivatives.cm + right.derivatives.cm)
+    # a tractor whose elevator has the mixed pitch power and the ruddervator throw must get the same pitch gains
+    equivalent = replace(vtail_model, surfaces=(), aero=replace(vtail_model.aero, cm_delta_e=mixed))
+    assert left.max_deflection_rad == ELEVATOR_MAX_RAD
+    vtail = pg.fixed_wing_gains(vtail_model)
+    tractor = pg.fixed_wing_gains(equivalent)
+    assert {k: v for k, v in vtail.items() if k.startswith("PTCH")} == pytest.approx(
+        {k: v for k, v in tractor.items() if k.startswith("PTCH")})
+    assert vtail["RLL_RATE_P"] == pytest.approx(tractor["RLL_RATE_P"])
+
+
+def test_tractor_params_have_no_mixing_or_reversal() -> None:
+    inputs = load_design("g1")
+    params = pg.generate_params(build_flight_model(*inputs), inputs[1], inputs[2])
+    assert "MIXING_GAIN" not in params and not any(name.endswith("_REVERSED") for name in params)
+
+
+def test_vtail_damping_reads_the_effective_tail_areas(vtail_g1_design: DesignInputs,
+                                                      vtail_model: FlightModel) -> None:
+    req, sizing, bom, aero, cad = vtail_g1_design
+    bigger = tuple(t.model_copy(update={"area_m2": 2 * t.area_m2}) for t in sizing.tail_surfaces)
+    doubled = build_flight_model(req, sizing.model_copy(update={"tail_surfaces": bigger}), bom, aero, cad)
+    assert doubled.aero.cm_q / vtail_model.aero.cm_q == pytest.approx(2.0, rel=0.05)
+    assert doubled.aero.cy_beta == pytest.approx(2 * vtail_model.aero.cy_beta)
+
+
+def _cruise_force(root: ET.Element) -> ET.Element:
+    force = next(f for f in root.findall("external_reactions/force") if f.get("name") == "cruise")
+    return force
+
+
+def _xyz(node: ET.Element) -> tuple[float, ...]:
+    return tuple(float(node.find(axis).text) for axis in "xyz")  # type: ignore[union-attr,arg-type]
+
+
+def test_pusher_thrust_at_propeller_station(vtail_g1_design: DesignInputs, vtail_model: FlightModel,
+                                            tmp_path: Path) -> None:
+    cad = vtail_g1_design[4]
+    force = _cruise_force(ET.parse(export_jsbsim(vtail_model, tmp_path).xml_path).getroot())
+    assert _xyz(force.find("location")) == pytest.approx(  # type: ignore[arg-type]
+        (cad.propeller_x_m, 0.0, cad.propeller_z_m), rel=1e-5, abs=1e-9)  # the XML keeps 6 significant digits
+    assert _xyz(force.find("direction")) == (1.0, 0.0, 0.0)  # type: ignore[arg-type] # pushes forward
+
+
+def test_tractor_thrust_stays_at_the_nose(tmp_path: Path) -> None:
+    force = _cruise_force(ET.parse(export_jsbsim(build_flight_model(*load_design("g1")), tmp_path).xml_path)
+                          .getroot())
+    assert _xyz(force.find("location")) == (0.0, 0.0, 0.0)  # type: ignore[arg-type]
+
+
+def test_vtail_jsbsim_has_one_coefficient_set_per_panel(vtail_model: FlightModel, tmp_path: Path) -> None:
+    root = ET.parse(export_jsbsim(vtail_model, tmp_path).xml_path).getroot()
+    for channel in _panels(vtail_model):
+        stem = jsbsim_stem(channel.surface)
+        for axis, value in (("LIFT", channel.derivatives.cl), ("ROLL", channel.derivatives.cl_roll),
+                            ("PITCH", channel.derivatives.cm), ("YAW", channel.derivatives.cn)):
+            terms = [f for f in root.findall(f"aerodynamics/axis[@name='{axis}']/function")
+                     if any(p.text and p.text.strip() == f"fcs/{stem}-pos-rad" for p in f.iter("property"))]
+            assert len(terms) == 1, (channel.surface, axis)
+            assert float(terms[0].find("product/value").text) == pytest.approx(value, rel=1e-5)  # type: ignore
+
+
+def test_vtail_bridge_drives_each_panel_from_its_own_servo(vtail_model: FlightModel) -> None:
+    left, right = _panels(vtail_model)
+    fdm: dict[str, float] = {}
+    pwm = [1500] * 16
+    pwm[left.servo - 1], pwm[right.servo - 1] = 2000, 1250
+    sitl_bridge._apply_channels(fdm, vtail_model.channels, pwm)
+    assert fdm["fcs/ruddervator-left-cmd-norm"] == pytest.approx(left.bridge_sign * 1.0)
+    assert fdm["fcs/ruddervator-right-cmd-norm"] == pytest.approx(right.bridge_sign * -0.5)
+
+
+def test_truth_log_records_each_channels_surface(vtail_model: FlightModel, tmp_path: Path) -> None:
+    jsbsim = pytest.importorskip("jsbsim")
+    jsb = export_jsbsim(vtail_model, tmp_path)
+    bridge = sitl_bridge.JsonPhysicsBridge(jsb, sitl_bridge.Home(), port=0)
+    fdm = jsbsim.FGFDMExec(str(tmp_path), None)
+    fdm.set_debug_level(0)
+    assert fdm.load_model(jsb.name)
+    bridge._initialise(fdm)
+    bridge._record_truth(fdm)  # a V-tail has no elevator property: reading one would stop the bridge
+    assert {"aileron_rad", "ruddervator_left_rad", "ruddervator_right_rad"} <= set(bridge.stats.truth[-1])
+
+
+def test_vtail_model_rests_on_its_gear_in_jsbsim(vtail_model: FlightModel, tmp_path: Path) -> None:
+    jsbsim = pytest.importorskip("jsbsim")
+    jsb = export_jsbsim(vtail_model, tmp_path)
+    fdm = jsbsim.FGFDMExec(str(tmp_path), None)
+    fdm.set_debug_level(0)
+    assert fdm.load_model(jsb.name)  # every per-panel command property is declared
+    fdm["ic/h-agl-ft"] = (jsb.rest_height_m + 0.01) / 0.3048
+    fdm.run_ic()
+    for _ in range(1200):
+        fdm.run()
+    assert abs(fdm["attitude/theta-deg"]) < 10 and abs(fdm["attitude/phi-deg"]) < 1
+    assert fdm["velocities/vt-fps"] * 0.3048 < 0.5

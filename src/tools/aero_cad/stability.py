@@ -13,6 +13,11 @@ because which way OpenVSP's "positive" group deflection moves each surface is ar
   positive aileron  -> right-wing-down roll   => Cl_da > 0
   positive elevator -> trailing edge down     => Cm_de < 0
   positive rudder   -> trailing edge left     => Cn_dr < 0
+  positive ruddervator (each V-tail panel alone) -> trailing edge down => Cm < 0 for both panels
+A V-tail's aggregated gate values follow by linearity from the two panel records: Cm_de = Cm_L + Cm_R (both trailing
+edges down, the elevator convention) and Cn_dr = Cn_L - Cn_R (left down, right up: both trailing edges move left, the
+rudder convention). On an upright V a panel's trailing edge down pushes the tail away from that panel, so the left
+panel yaws nose-left (Cn_L < 0) and the right nose-right: Cn_dr < 0 is checked, which also catches swapped panels.
 
 Drag polar: VLM is inviscid, so its k misses the profile drag that grows with lift. Kroo's correction
 (Aircraft Design: Synthesis and Analysis, 1/e = 1/e_inviscid + 0.38 CD0 pi AR) adds it: k = k_VLM + 0.38 CD0.
@@ -21,7 +26,7 @@ Drag polar: VLM is inviscid, so its k misses the profile drag that grows with li
 
 import math
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, Optional
 
 import numpy as np
 
@@ -34,6 +39,7 @@ LINEAR_ALPHA_WINDOW_DEG: Final[tuple[float, float]] = (-4.0, 4.0)
 MIN_LINEAR_POINTS: Final[int] = 2
 MIN_CL_ALPHA_PER_RAD: Final[float] = 1.0  # a real wing is ~4-6 /rad; below 1 the geometry is broken
 ELEVATOR_MAX_ROLL_FRACTION: Final[float] = 0.2  # |dCMx| / |dCMy| for a symmetric elevator deflection
+PANEL_MAX_ROLL_FRACTION: Final[float] = 0.2  # |dCMx| / |dCMy| for one ruddervator alone (both deflected: ~1)
 ALPHA_MATCH_TOL_DEG: Final[float] = 1e-6
 AILERON_SIGN: Final[float] = 1.0
 ELEVATOR_SIGN: Final[float] = -1.0
@@ -71,12 +77,16 @@ class AeroCoefficients:
 
 @dataclass(frozen=True)
 class VspaeroCases:
+    """The run matrix. A conventional tail has the elevator and rudder cases, a V-tail the two ruddervator cases."""
+
     sweep: tuple[AeroCoefficients, ...]  # alpha sweep at beta = 0, no deflection
     beta: AeroCoefficients  # alpha = 0, beta = +5 deg
     aileron: AeroCoefficients  # alpha = 0, antisymmetric deflection
-    elevator: AeroCoefficients  # alpha = 0, symmetric deflection
-    rudder: AeroCoefficients  # alpha = 0
     deflection_deg: float
+    elevator: Optional[AeroCoefficients] = None  # alpha = 0, symmetric deflection
+    rudder: Optional[AeroCoefficients] = None  # alpha = 0
+    ruddervator_left: Optional[AeroCoefficients] = None  # alpha = 0, left V-tail panel alone (raw OpenVSP direction)
+    ruddervator_right: Optional[AeroCoefficients] = None  # alpha = 0, right V-tail panel alone
 
 
 @dataclass(frozen=True)
@@ -129,10 +139,29 @@ def _check_control_conventions(cases: VspaeroCases, base: AeroCoefficients) -> N
     d_roll: float = abs(cases.aileron.cmx - base.cmx)
     if d_lift >= d_roll:
         raise AeroAnalysisError(f"aileron deflection behaves like a flap (dCL {d_lift:.4g} >= dCMx {d_roll:.4g})")
-    e_roll: float = abs(cases.elevator.cmx - base.cmx)
-    e_pitch: float = abs(cases.elevator.cmy - base.cmy)
-    if e_roll >= ELEVATOR_MAX_ROLL_FRACTION * e_pitch:
-        raise AeroAnalysisError(f"elevator deflection is not symmetric (dCMx {e_roll:.4g}, dCMy {e_pitch:.4g})")
+    if cases.elevator is not None:
+        e_roll: float = abs(cases.elevator.cmx - base.cmx)
+        e_pitch: float = abs(cases.elevator.cmy - base.cmy)
+        if e_roll >= ELEVATOR_MAX_ROLL_FRACTION * e_pitch:
+            raise AeroAnalysisError(f"elevator deflection is not symmetric (dCMx {e_roll:.4g}, dCMy {e_pitch:.4g})")
+
+
+def _check_vtail_conventions(panel_cases: dict[str, AeroCoefficients], base: AeroCoefficients,
+                             left: ControlSurfaceDerivatives, right: ControlSurfaceDerivatives) -> None:
+    """V-tail rule. Each panel case must deflect that panel alone (pitch dominates roll; both panels together roll
+    as much as they pitch); with both trailing edges up the pair pitches nose up (Cm_L + Cm_R < 0 in the elevator
+    convention; each record's sign comes from its own pitch, so this guards that normalisation); left down and right
+    up yaws nose-left. The roll coupling is recorded, not gated."""
+    for name, case in panel_cases.items():
+        roll, pitch = abs(case.cmx - base.cmx), abs(case.cmy - base.cmy)
+        if roll >= PANEL_MAX_ROLL_FRACTION * pitch:
+            raise AeroAnalysisError(f"{name} case does not deflect one panel alone (dCMx {roll:.4g}, dCMy {pitch:.4g})")
+    if not -(left.cm_per_rad + right.cm_per_rad) > 0:
+        raise AeroAnalysisError("ruddervators deflected trailing-edge-up together do not pitch the nose up "
+                                f"(Cm_L {left.cm_per_rad:.4g}, Cm_R {right.cm_per_rad:.4g})")
+    if not left.cn_per_rad - right.cn_per_rad < 0:
+        raise AeroAnalysisError("ruddervators deflected trailing-edges-left do not yaw the nose left (panels swapped "
+                                f"or the V inverted): Cn_L {left.cn_per_rad:.4g}, Cn_R {right.cn_per_rad:.4g}")
 
 
 def _induced_drag_factor(sweep: tuple[AeroCoefficients, ...]) -> float:
@@ -166,10 +195,38 @@ def _surface_record(name: str, case: AeroCoefficients, base: AeroCoefficients, s
 
 def tractor_surface_records(cases: VspaeroCases, base: AeroCoefficients) -> tuple[ControlSurfaceDerivatives, ...]:
     """Aileron, elevator and rudder records from the three deflection cases."""
+    if cases.elevator is None or cases.rudder is None:
+        raise AeroAnalysisError("a conventional tail needs the elevator and rudder deflection cases")
     step: float = cases.deflection_deg
     return (_surface_record("aileron", cases.aileron, base, step, 0, AILERON_SIGN),
             _surface_record("elevator", cases.elevator, base, step, 1, ELEVATOR_SIGN),
             _surface_record("rudder", cases.rudder, base, step, 2, RUDDER_SIGN))
+
+
+def vtail_surface_records(cases: VspaeroCases, base: AeroCoefficients) -> tuple[ControlSurfaceDerivatives, ...]:
+    """Aileron and the two ruddervator records, each panel's sign set by its own pitch (trailing edge down)."""
+    if cases.ruddervator_left is None or cases.ruddervator_right is None:
+        raise AeroAnalysisError("a V-tail needs both ruddervator deflection cases")
+    step: float = cases.deflection_deg
+    return (_surface_record("aileron", cases.aileron, base, step, 0, AILERON_SIGN),
+            _surface_record("ruddervator_left", cases.ruddervator_left, base, step, 1, ELEVATOR_SIGN),
+            _surface_record("ruddervator_right", cases.ruddervator_right, base, step, 1, ELEVATOR_SIGN))
+
+
+def _pitch_yaw_controls(cases: VspaeroCases, base: AeroCoefficients) -> tuple[
+        float, float, tuple[ControlSurfaceDerivatives, ...]]:
+    """(Cm_delta_e, Cn_delta_r, per-surface records) for the tail the cases describe."""
+    step: float = cases.deflection_deg
+    if cases.ruddervator_left is not None and cases.ruddervator_right is not None:
+        records = vtail_surface_records(cases, base)
+        _, left, right = records
+        _check_vtail_conventions({"ruddervator_left": cases.ruddervator_left,
+                                  "ruddervator_right": cases.ruddervator_right}, base, left, right)
+        return left.cm_per_rad + right.cm_per_rad, left.cn_per_rad - right.cn_per_rad, records
+    if cases.elevator is None or cases.rudder is None:
+        raise AeroAnalysisError("the run matrix has neither the elevator and rudder cases nor the ruddervator cases")
+    return (_control_derivative(cases.elevator, base, 1, step, ELEVATOR_SIGN),
+            _control_derivative(cases.rudder, base, 2, step, RUDDER_SIGN), tractor_surface_records(cases, base))
 
 
 def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: AircraftLayout,
@@ -180,6 +237,7 @@ def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: Aircra
         raise AeroAnalysisError(f"lift-curve slope {cl_alpha:.3f}/rad is non-physical; check VSPAERO geometry sets")
     base: AeroCoefficients = _zero_alpha_case(cases.sweep)
     _check_control_conventions(cases, base)
+    cm_delta_e, cn_delta_r, records = _pitch_yaw_controls(cases, base)
     cm_alpha_vlm, _ = _linear_fit(cases.sweep, [c.body_moments()[1] for c in cases.sweep])
     cm_alpha: float = cm_alpha_vlm + fuselage_cm_alpha_per_rad(layout, ref)
     k: float = _induced_drag_factor(cases.sweep) + VISCOUS_LIFT_DRAG_FACTOR * cd0
@@ -190,10 +248,9 @@ def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: Aircra
         cn_beta_per_rad=_derivative(cases.beta, base, 2, cases.beta.beta_deg) + fuselage_cn_beta_per_rad(layout, ref),
         cl_beta_per_rad=_derivative(cases.beta, base, 0, cases.beta.beta_deg),
         cl_delta_a_per_rad=_control_derivative(cases.aileron, base, 0, cases.deflection_deg, AILERON_SIGN),
-        cm_delta_e_per_rad=_control_derivative(cases.elevator, base, 1, cases.deflection_deg, ELEVATOR_SIGN),
-        cn_delta_r_per_rad=_control_derivative(cases.rudder, base, 2, cases.deflection_deg, RUDDER_SIGN),
+        cm_delta_e_per_rad=cm_delta_e, cn_delta_r_per_rad=cn_delta_r,
         x_np_m=ref.x_ref_m - cm_alpha / cl_alpha * ref.cref_m,
-        control_surfaces=tractor_surface_records(cases, base),
+        control_surfaces=records,
     )
 
 

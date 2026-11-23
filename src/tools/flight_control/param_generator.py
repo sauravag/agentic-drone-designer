@@ -17,6 +17,12 @@ Gain design (all at the cruise speed, which becomes SCALING_SPEED so ArduPilot's
   speed-change (ramp) disturbances without adding overshoot. D = P * servo lag.
 * QuadPlane rate P = w_q * Ixx / (2 L_arm T_max) (SRS: proportional to Ixx / (L_arm T_max)); the
   factor 2 is ArduPilot's normalised X-frame mix (4 motors x 0.5 factor).
+* V-tail: ArduPilot mixes elevator and rudder into the two ruddervator outputs (SERVOn_FUNCTION 79/80), each output
+  = MIXING_GAIN x (elevator +- rudder). A full elevator demand therefore moves both panels MIXING_GAIN of their throw,
+  so the pitch gains use the mixed control power MIXING_GAIN x (Cm_L + Cm_R) over the ruddervator throw. ArduPilot
+  writes no yaw rate gains for any layout here (its yaw damper stays at the defaults, as on the tractor), so the mixed
+  yaw power MIXING_GAIN x |Cn_L - Cn_R| has no gain to set. Each panel's SERVOn_REVERSED is chosen from its own
+  measured pitch sign so a nose-up demand gives a nose-up moment through the bridge sign.
 """
 
 import math
@@ -25,8 +31,8 @@ from typing import Final, Mapping, Optional
 
 from src.schemas.components import SelectedBOM
 from src.schemas.state import SizingOutput
-from src.tools.flight_control.control_channels import (LIFT_MOTOR_SERVOS, THROTTLE_SERVO,
-                                                       THROTTLE_SERVO_FUNCTION)
+from src.tools.flight_control.control_channels import (ELEVATOR_SURFACE, LIFT_MOTOR_SERVOS, RUDDERVATOR_SURFACES,
+                                                       THROTTLE_SERVO, THROTTLE_SERVO_FUNCTION, ControlChannel)
 from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
                                                    THRUST_EXPO, FlightModel, transition_time_s)
 
@@ -67,6 +73,7 @@ QUAD_SERVO_NUMBERS: Final[tuple[int, ...]] = LIFT_MOTOR_SERVOS  # outputs reserv
 QUAD_MOTOR_FIRST_FUNCTION: Final[int] = 33
 QUAD_SERVO_FUNCTIONS: Final[dict[str, int]] = {
     f"SERVO{servo}_FUNCTION": QUAD_MOTOR_FIRST_FUNCTION + i for i, servo in enumerate(QUAD_SERVO_NUMBERS)}
+MIXING_GAIN: Final[float] = 0.5  # ArduPilot's default V-tail/elevon mix, written explicitly
 
 
 class ParamGenerationError(ValueError):
@@ -92,24 +99,62 @@ def _rate_gains(prefix: str, ff_phys: float, damping: float, control_power: floa
             f"{prefix}_D": min(gain_scale, 1.0) * p * SERVO_TIME_CONSTANT_S}
 
 
+def _ruddervators(model: FlightModel) -> Optional[tuple[ControlChannel, ControlChannel]]:
+    """The (left, right) ruddervator channels of a V-tail, else None."""
+    by_name: dict[str, ControlChannel] = {c.surface: c for c in model.channels}
+    if not all(name in by_name for name in RUDDERVATOR_SURFACES):
+        return None
+    left, right = (by_name[name] for name in RUDDERVATOR_SURFACES)
+    return left, right
+
+
+def pitch_effector(model: FlightModel) -> tuple[float, float]:
+    """(Cm per rad of an equivalent elevator, its full-scale deflection in rad) behind ArduPilot's pitch output: the
+    elevator, or a V-tail's ruddervator pair through the mixer (MIXING_GAIN x (Cm_L + Cm_R) over the panel throw)."""
+    by_name: dict[str, ControlChannel] = {c.surface: c for c in model.channels}
+    if ELEVATOR_SURFACE in by_name:
+        return model.aero.cm_delta_e, by_name[ELEVATOR_SURFACE].max_deflection_rad
+    panels = _ruddervators(model)
+    if panels is None:
+        missing: list[str] = [n for n in (ELEVATOR_SURFACE, *RUDDERVATOR_SURFACES) if n not in by_name]
+        raise ParamGenerationError(f"pitch rate gains need an elevator or a ruddervator pair; missing {missing}")
+    left, right = panels
+    return (MIXING_GAIN * (left.derivatives.cm + right.derivatives.cm),
+            min(left.max_deflection_rad, right.max_deflection_rad))
+
+
 def fixed_wing_gains(model: FlightModel, gain_scale: float = 1.0) -> ParamSet:
     a, v = model.aero, model.v_cruise_ms
     qs: float = model.dynamic_pressure(v) * model.wing_area_m2
     b, c = model.wingspan_m, model.mean_chord_m
+    max_defl: dict[str, float] = {c.surface: c.max_deflection_rad for c in model.channels}  # the JSBSim limits
+    if "aileron" not in max_defl:
+        raise ParamGenerationError("roll rate gains need an aileron channel")
+    cm_pitch, max_pitch_defl = pitch_effector(model)
     l_da: float = qs * b * a.cl_delta_a / model.ixx_kgm2
     l_p: float = qs * b**2 * a.cl_p / (2 * v * model.ixx_kgm2)
-    m_de: float = abs(qs * c * a.cm_delta_e / model.iyy_kgm2)
+    m_de: float = abs(qs * c * cm_pitch / model.iyy_kgm2)
     m_q: float = qs * c**2 * a.cm_q / (2 * v * model.iyy_kgm2)
     alpha_per_q: float = model.mass_kg * v / (qs * a.cl_alpha)  # steady pull-up: dn = V q / g
-    ff_pitch: float = abs((a.cm_alpha * alpha_per_q + a.cm_q * c / (2 * v)) / a.cm_delta_e)
+    ff_pitch: float = abs((a.cm_alpha * alpha_per_q + a.cm_q * c / (2 * v)) / cm_pitch)
     gains: ParamSet = {"RLL2SRV_TCONST": ANGLE_TIME_CONSTANT_S, "PTCH2SRV_TCONST": ANGLE_TIME_CONSTANT_S}
-    max_defl: dict[str, float] = {c.surface: c.max_deflection_rad for c in model.channels}  # the JSBSim limits
-    missing: list[str] = [name for name in ("aileron", "elevator") if name not in max_defl]
-    if missing:
-        raise ParamGenerationError(f"rate gains need an aileron and an elevator channel; missing {missing}")
     gains |= _rate_gains("RLL_RATE", -l_p / l_da, l_p, l_da, max_defl["aileron"], gain_scale)
-    gains |= _rate_gains("PTCH_RATE", ff_pitch, m_q, m_de, max_defl["elevator"], gain_scale)
+    gains |= _rate_gains("PTCH_RATE", ff_pitch, m_q, m_de, max_pitch_defl, gain_scale)
     return gains
+
+
+def ruddervator_params(model: FlightModel) -> ParamSet:
+    """V-tail mixing: MIXING_GAIN, and each panel's SERVOn_REVERSED chosen so a nose-up (positive) ArduPilot output
+    gives a nose-up moment: PWM above trim deflects the panel by bridge_sign, which pitches by bridge_sign x Cm.
+    Empty for a layout without ruddervators."""
+    panels = _ruddervators(model)
+    if panels is None:
+        return {}
+    params: ParamSet = {"MIXING_GAIN": MIXING_GAIN}
+    for panel in panels:
+        nose_up_without_reversal: bool = panel.bridge_sign * panel.derivatives.cm > 0
+        params[f"SERVO{panel.servo}_REVERSED"] = 0 if nose_up_without_reversal else 1
+    return params
 
 
 def hover_throttle(model: FlightModel) -> float:
@@ -203,7 +248,7 @@ def generate_params(model: FlightModel, sizing: SizingOutput, bom: SelectedBOM, 
     rate D is only ever scaled down."""
     if gain_scale <= 0:
         raise ParamGenerationError(f"gain_scale must be positive, got {gain_scale}")
-    params: ParamSet = envelope_params(model) | fixed_wing_gains(model, gain_scale)
+    params: ParamSet = envelope_params(model) | fixed_wing_gains(model, gain_scale) | ruddervator_params(model)
     if model.is_quadplane:
         params |= quadplane_params(model, gain_scale)
     return params | battery_params(sizing, bom, model.is_quadplane)

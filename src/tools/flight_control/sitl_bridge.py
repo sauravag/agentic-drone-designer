@@ -12,7 +12,8 @@ m/s^2), position (NED m from home), attitude (rad), velocity (NED m/s) and airsp
 
 Servo mapping (ArduPilot outputs, PWM > trim = roll right / pitch up / yaw right):
 SERVO1 aileron, SERVO2 elevator, SERVO3 cruise throttle, SERVO4 rudder + nose-wheel steering,
-SERVO5-8 lift motors 1-4 (a layout with no rudder steers the nose wheel from the first free output).
+SERVO5-8 lift motors 1-4 (a layout with no rudder steers the nose wheel from the first free output). A V-tail has
+SERVO2/SERVO4 = left/right ruddervator, already mixed by ArduPilot; each drives its own panel.
 """
 
 import json
@@ -53,10 +54,9 @@ TRUTH_RATE_HZ: Final[float] = 25.0  # ground-truth log rate (JSBSim state, for d
 TRUTH_PROPS: Final[tuple[tuple[str, str, float], ...]] = (  # (key, JSBSim property, scale to SI)
     ("airspeed_ms", "velocities/vt-fps", FT_TO_M), ("alpha_deg", "aero/alpha-deg", 1.0),
     ("pitch_deg", "attitude/theta-deg", 1.0), ("roll_deg", "attitude/phi-deg", 1.0),
-    ("agl_m", "position/h-agl-ft", FT_TO_M), ("elevator_rad", "fcs/elevator-pos-rad", 1.0),
-    ("aileron_rad", "fcs/aileron-pos-rad", 1.0), ("throttle", "fcs/cruise-throttle", 1.0),
+    ("agl_m", "position/h-agl-ft", FT_TO_M), ("throttle", "fcs/cruise-throttle", 1.0),
     ("heading_deg", "attitude/psi-deg", 1.0),
-)
+)  # plus "<surface>_rad" for every deflecting channel (elevator, or each ruddervator panel, ...)
 TRUTH_POSITION_KEYS: Final[tuple[str, str]] = ("north_m", "east_m")  # metres from the start point
 
 
@@ -246,6 +246,8 @@ class JsonPhysicsBridge:
     def _record_truth(self, fdm: jsbsim.FGFDMExec) -> None:
         sample: dict[str, float] = {"t_s": fdm.get_sim_time() + self._held_s}
         sample |= {key: fdm[prop] * scale for key, prop, scale in TRUTH_PROPS}
+        sample |= {f"{c.surface}_rad": fdm[f"fcs/{jsbsim_stem(c.surface)}-pos-rad"]
+                   for c in self._model.channels if c.max_deflection_rad > 0}  # steering has no surface
         lat0, lon0, _ = self._origin
         sample |= dict(zip(TRUTH_POSITION_KEYS, north_east_m(
             fdm["position/lat-geod-rad"], fdm["position/long-gc-rad"], lat0, lon0)))

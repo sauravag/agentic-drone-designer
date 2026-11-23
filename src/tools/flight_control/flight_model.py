@@ -7,7 +7,9 @@ the M3 VSPAERO derivatives and the as-built CAD mass properties, in SI units:
   centre, so pitch stiffness is re-based on the as-built CG: Cm_alpha = -CL_alpha * SM. The other
   moment derivatives move by ~0.1 MAC, negligible next to the tail arm, and are used as-is.
 * Damping derivatives (Clp, Cmq, Cnr, ...) are not in the VSPAERO run matrix; they are estimated
-  with standard strip-theory / tail-volume (DATCOM-style) formulas from the sized geometry.
+  with standard strip-theory / tail-volume (DATCOM-style) formulas from the sized geometry, with the tail volumes
+  from the tail surfaces' projected (effective) areas, so a V-tail damps like its horizontal and vertical shares.
+* The cruise thrust acts at the propeller hub the CAD stage placed (nose tractor or boom-end pusher), pointing forward.
 * Propulsion: momentum-theory static thrust with a power-limited roll-off for the cruise propeller;
   lift rotors use the catalog max thrust and ArduPilot's own thrust-curve shape (MOT_THST_EXPO), so the
   autopilot's linearisation matches the simulated plant.
@@ -22,7 +24,8 @@ from typing import Final, Literal
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, ControlSurfaceDerivatives, SizingOutput
+from src.schemas.state import (AeroStabilityOutput, CADArtifacts, ControlSurfaceDerivatives, SizingOutput,
+                               effective_tail_areas)
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_TAPER_RATIO, layout_from_sizing
 from src.tools.aero_cad.stability import cruise_lift_coefficient
 from src.tools.flight_control.control_channels import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,  # noqa: F401 (re-exported)
@@ -130,6 +133,8 @@ class FlightModel:
     # Per-surface derivatives for layouts whose surfaces are not the tractor triple; empty means the tractor
     # aileron/elevator/rudder, derived from the aggregated `aero` so a perturbed plant keeps them consistent.
     surfaces: tuple[ControlSurfaceDerivatives, ...] = ()
+    propeller_x_m: float = 0.0  # cruise propeller hub (thrust station), CAD axes; the nose for records without one
+    propeller_z_m: float = 0.0
 
     @property
     def is_quadplane(self) -> bool:
@@ -172,13 +177,22 @@ def _helmbold_lift_slope(aspect: float) -> float:
     return 2 * math.pi * aspect / (2 + math.sqrt(aspect**2 + 4))
 
 
+def tail_areas_m2(sizing: SizingOutput) -> tuple[float, float]:
+    """(horizontal, vertical) projected tail areas from the tail surfaces; a record that predates them carries the
+    same effective areas in its legacy fields."""
+    if sizing.tail_surfaces:
+        return effective_tail_areas(sizing.tail_surfaces)
+    return sizing.horizontal_tail_area_m2, sizing.vertical_tail_area_m2
+
+
 def _damping(sizing: SizingOutput, aero: AeroStabilityOutput, cl_cruise: float) -> dict[str, float]:
     """Strip-theory and tail-volume damping derivatives (Nelson / DATCOM approximations)."""
     s, b, c, arm = sizing.wing_area_m2, sizing.wingspan_m, sizing.mean_chord_m, sizing.tail_arm_m
     a_h: float = _helmbold_lift_slope(HTAIL_ASPECT_RATIO)
     a_v: float = _helmbold_lift_slope(VTAIL_EFFECTIVE_ASPECT)
-    v_h: float = sizing.horizontal_tail_area_m2 * arm / (s * c)
-    v_v: float = sizing.vertical_tail_area_m2 * arm / (s * b)
+    s_h, s_v = tail_areas_m2(sizing)
+    v_h: float = s_h * arm / (s * c)
+    v_v: float = s_v * arm / (s * b)
     taper: float = WING_TAPER_RATIO
     return {
         "cl_q": 2 * TAIL_EFFICIENCY * a_h * v_h,
@@ -186,7 +200,7 @@ def _damping(sizing: SizingOutput, aero: AeroStabilityOutput, cl_cruise: float) 
         "cm_q": -2 * TAIL_EFFICIENCY * a_h * v_h * (arm / c) * FUSELAGE_DAMPING_FACTOR,
         "cl_p": -(aero.cl_alpha_per_rad / 12) * (1 + 3 * taper) / (1 + taper),
         "cn_r": -2 * TAIL_EFFICIENCY * a_v * v_v * (arm / b) - aero.cd0 / 4,
-        "cy_beta": -TAIL_EFFICIENCY * a_v * sizing.vertical_tail_area_m2 / s,
+        "cy_beta": -TAIL_EFFICIENCY * a_v * s_v / s,
         "cl_r": ROLL_YAW_CL_FACTOR_CLR * cl_cruise,
         "cn_p": ROLL_YAW_CL_FACTOR_CNP * cl_cruise,
         "cn_delta_a": ADVERSE_YAW_FACTOR * cl_cruise * aero.cl_delta_a_per_rad,
@@ -272,7 +286,8 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
     rho, _ = air_properties(SITL_ALTITUDE_M)
     cl_cruise: float = cruise_lift_coefficient(cad.as_built_mass_kg, rho, req.cruise_speed_ms, sizing.wing_area_m2)
     shaft_w: float = min(bom.cruise_motor.max_power_w, bom.cruise_propeller.max_power_w)
-    gear: GearGeometry = as_built_gear(sizing, cad.x_cg_m, _propeller_disc(sizing, bom, cad))
+    propeller: PropellerDisc = _propeller_disc(sizing, bom, cad)
+    gear: GearGeometry = as_built_gear(sizing, cad.x_cg_m, propeller)
     model = FlightModel(
         mass_kg=cad.as_built_mass_kg, ixx_kgm2=cad.ixx_kgm2, iyy_kgm2=cad.iyy_kgm2, izz_kgm2=cad.izz_kgm2,
         ixz_kgm2=cad.ixz_kgm2, x_cg_m=cad.x_cg_m, static_margin=cad.static_margin,
@@ -287,6 +302,7 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
         lift_rotors=_lift_rotors(sizing, bom, aero, cad),
         lift_motor_lag_s=motor_lag_s(bom.vtol_propeller.diameter_m) if bom.vtol_propeller else 0.0,
         gear=gear, launch=sizing.launch_method, wing_tip_z_m=_wing_tip_z_m(sizing), surfaces=_model_surfaces(aero),
+        propeller_x_m=propeller.x_m, propeller_z_m=propeller.z_m,
     )
     _check_flyable(model)
     return model

@@ -1,0 +1,20 @@
+{
+  "oml_vsp3_path": "fixture/oml.vsp3",
+  "oml_step_path": "fixture/oml.step",
+  "assembly_step_path": "fixture/assembly.step",
+  "x_cg_m": 0.377568408149015,
+  "static_margin": 0.10999999999999967,
+  "collision_count": 0,
+  "as_built_mass_kg": 5.571792498907408,
+  "ixx_kgm2": 0.2910804885063318,
+  "iyy_kgm2": 0.3273948665658738,
+  "izz_kgm2": 0.5916913509045192,
+  "ixz_kgm2": 0.02817429110336109,
+  "viewer_model_path": "fixture/viewer_model.json",
+  "kit_dir": null,
+  "build_sheet_path": null,
+  "kit_mass_kg": null,
+  "kit_warning": "No laser kit: the laser-cut kit has no parts for the Single-boom V-tail pusher layout yet",
+  "propeller_x_m": 1.1605843271052019,
+  "propeller_z_m": 0.0
+}

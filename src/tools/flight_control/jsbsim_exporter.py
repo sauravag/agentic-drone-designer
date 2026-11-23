@@ -6,11 +6,13 @@ Writes <root>/aircraft/<name>/<name>.xml with:
 * the model's landing gear (3-point with a steerable nose wheel, or two belly contacts for a hand launch);
 * actuators: first-order servo and motor lags (servo time constant, motor lags from the BOM);
 * propulsion thrust tables: cruise thrust vs (throttle, airspeed) and lift-rotor thrust vs motor
-  output using ArduPilot's spin-range/expo mapping, applied as external forces plus rotor torques;
+  output using ArduPilot's spin-range/expo mapping, applied as external forces plus rotor torques; the cruise thrust
+  acts at the propeller hub (nose tractor or boom-end pusher) and points forward either way;
 * the aerodynamic build-up (lift with a stall break, drag polar, side force, roll/pitch/yaw moments).
 
-Inputs the SITL bridge drives: fcs/{aileron,elevator,rudder}-cmd-norm (+-1, positive = right roll /
-trailing edge down / trailing edge left, i.e. the conventional delta_a, delta_e, delta_r signs),
+Inputs the SITL bridge drives: fcs/<surface>-cmd-norm for each channel (+-1; aileron, elevator, rudder positive =
+right roll / trailing edge down / trailing edge left, the conventional delta_a, delta_e, delta_r signs; each V-tail
+ruddervator-left/-right positive = that panel's trailing edge down, with its own coefficient set),
 fcs/steer-cmd-norm, fcs/cruise-throttle-cmd and fcs/lift<N>-cmd for motor N (ArduPilot output 0..1).
 XML is built with ElementTree, so no value is ever spliced into markup.
 """
@@ -43,6 +45,8 @@ STATIC_FRICTION: Final[float] = 0.8
 DYNAMIC_FRICTION: Final[float] = 0.5
 ROLLING_FRICTION: Final[float] = 0.02
 BELLY_AFT_STATION: Final[float] = 0.8  # second belly contact, fraction of the pod length
+# Surfaces whose fcs/<surface>-cmd-norm JSBSim's FCS defines itself; any other channel's command is declared.
+JSBSIM_BUILTIN_SURFACES: Final[frozenset[str]] = frozenset({"aileron", "elevator", "rudder"})
 
 
 @dataclass(frozen=True)
@@ -173,14 +177,21 @@ def _lift_propulsion(channel: ET.Element, model: FlightModel) -> None:
         _sub(torque, "output", f"external_reactions/lift{n}-torque/magnitude-lbsft")
 
 
+def _surface_command(surface: str) -> str:
+    return f"fcs/{jsbsim_stem(surface)}-cmd-norm"
+
+
 def _flight_control(root: ET.Element, model: FlightModel) -> None:
     fcs = _sub(root, "flight_control", name="isr_forge")
-    for prop in ["fcs/cruise-throttle-cmd", *(f"fcs/lift{r.motor_number}-cmd" for r in model.lift_rotors)]:
+    custom_commands: list[str] = [_surface_command(c.surface) for c in model.channels
+                                  if c.surface not in JSBSIM_BUILTIN_SURFACES]  # JSBSim only predefines its own
+    for prop in ["fcs/cruise-throttle-cmd", *(f"fcs/lift{r.motor_number}-cmd" for r in model.lift_rotors),
+                 *custom_commands]:
         _sub(fcs, "property", prop, value="0")
     surfaces = _sub(fcs, "channel", name="surfaces")
     for c in model.channels:
         stem: str = jsbsim_stem(c.surface)
-        _actuator(surfaces, f"{stem}-pos-rad", f"fcs/{stem}-cmd-norm", SERVO_TIME_CONSTANT_S,
+        _actuator(surfaces, f"{stem}-pos-rad", _surface_command(c.surface), SERVO_TIME_CONSTANT_S,
                   c.max_deflection_rad)
     propulsion = _sub(fcs, "channel", name="propulsion")
     _cruise_propulsion(propulsion, model)
@@ -190,7 +201,7 @@ def _flight_control(root: ET.Element, model: FlightModel) -> None:
 def _external_reactions(root: ET.Element, model: FlightModel) -> None:
     ext = _sub(root, "external_reactions")
     cruise = _sub(ext, "force", name="cruise", frame="BODY", unit="LBS")
-    _vector(cruise, "location", (0.0, 0.0, 0.0), unit="M")
+    _vector(cruise, "location", (model.propeller_x_m, 0.0, model.propeller_z_m), unit="M")
     _vector(cruise, "direction", (1.0, 0.0, 0.0))
     for r in model.lift_rotors:
         force = _sub(ext, "force", name=f"lift{r.motor_number}", frame="BODY", unit="LBS")
@@ -219,10 +230,19 @@ def lift_table(model: FlightModel) -> tuple[list[float], list[float]]:
     return alphas, [-post, -post, -a.cl_max, a.cl_max, post, post]
 
 
-# (surface, derivative) -> JSBSim coefficient name and the axis it belongs to; the order is the XML order
+# One JSBSim coefficient per (ruddervator panel, derivative): (attribute, name prefix, axis).
+_PANEL_TERMS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("cl", "CL", "LIFT"), ("cl_roll", "Cl", "ROLL"), ("cm", "Cm", "PITCH"), ("cn", "Cn", "YAW"))
+_PANEL_SUFFIXES: Final[dict[str, str]] = {"ruddervator_left": "drvl", "ruddervator_right": "drvr"}
+
+# (surface, derivative) -> JSBSim coefficient name and the axis it belongs to; the order is the XML order. The
+# tractor's aggregated records leave the aileron lift/pitch terms zero, so they are not written for it.
 SURFACE_COEFFICIENTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     ("elevator", "cl", "CLde", "LIFT"), ("aileron", "cl_roll", "Clda", "ROLL"),
-    ("elevator", "cm", "Cmde", "PITCH"), ("rudder", "cn", "Cndr", "YAW"), ("aileron", "cn", "Cnda", "YAW"))
+    ("elevator", "cm", "Cmde", "PITCH"), ("rudder", "cn", "Cndr", "YAW"), ("aileron", "cn", "Cnda", "YAW"),
+    ("aileron", "cl", "CLda", "LIFT"), ("aileron", "cm", "Cmda", "PITCH"),
+    *((panel, attr, f"{prefix}{suffix}", axis) for panel, suffix in _PANEL_SUFFIXES.items()
+      for attr, prefix, axis in _PANEL_TERMS))
 
 
 def _require_mapped_derivatives(model: FlightModel) -> None:

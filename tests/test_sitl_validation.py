@@ -19,7 +19,8 @@ from src.tools.flight_control.flight_model import FlightModelError, build_flight
 from src.tools.flight_control.perturbation import HOT, SLUGGISH, PlantCase, perturbed_model
 from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
 from src.ui.examples import G1_ELECTRIC_FW
-from tests.test_flight_control import KNOWN_PARAMS, design, load_design  # noqa: F401 (design is a fixture)
+from tests.test_flight_control import (KNOWN_PARAMS, design, load_design,  # noqa: F401 (design is a fixture)
+                                        load_vtail_design)
 
 # ------------------------------------------------- pilot helpers and the validator ---
 def test_stick_mapping() -> None:
@@ -399,6 +400,75 @@ def test_reversed_elevator_fails_sitl(tmp_path: Path) -> None:
     assert not reversed_.passed and reversed_.error is not None
     assert "SitlFlightError" in reversed_.error
     assert "Floating point exception" in reversed_.error or "timed out" in reversed_.error  # divergence / no climb
+
+
+@pytest.mark.docker
+def test_reversed_ruddervator_fails_sitl(tmp_path: Path) -> None:
+    """The V-tail G1 flies its generated parameters through ArduPilot's own V-tail mixer; reversing one ruddervator
+    servo must fail SITL (each panel is its own JSBSim surface, so nothing un-mixes the wrong sign)."""
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    if not sv.sitl_available():
+        pytest.skip("arduplane not installed (run in the Docker image)")
+    req, sizing, bom, aero, cad = load_vtail_design()
+    model = build_flight_model(req, sizing, bom, aero, cad)
+    params = pg.generate_params(model, sizing, bom)
+    baseline, _ = sv._attempt(model, params, tmp_path / "baseline", 1.0, sv.SitlConfig())
+    assert baseline.passed and baseline.error is None, baseline  # the nominal V-tail flies the doublets
+    flipped: int = 1 - int(params["SERVO2_REVERSED"])
+    reversed_, _ = sv._attempt(model, params, tmp_path / "reversed", 1.0,
+                               sv.SitlConfig(extra_params={"SERVO2_REVERSED": flipped}))
+    assert not reversed_.passed, reversed_
+    assert reversed_.error is None or "SitlFlightError" in reversed_.error  # a flight failure, not a setup problem
+
+
+@pytest.mark.docker
+def test_arduplane_vtail_mixer_matches_the_modelled_mix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The host sign-chain test (test_flight_control) models ArduPlane's V-tail mixer as left = g (e + r),
+    right = g (e - r): check it against arduplane itself with MANUAL-mode stick inputs, so the yaw sense (which the
+    roll/pitch doublets do not exercise) is proven too."""
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    if not sv.sitl_available():
+        pytest.skip("arduplane not installed (run in the Docker image)")
+    from contextlib import ExitStack
+
+    from pymavlink import mavutil
+
+    from src.tools.flight_control import sitl_bridge
+    from src.tools.flight_control.flight_test import SitlPilot
+    from src.tools.flight_control.jsbsim_exporter import export_jsbsim
+    from tests.test_flight_control import _ardupilot_vtail_mix
+
+    req, sizing, bom, aero, cad = load_vtail_design()
+    model = build_flight_model(req, sizing, bom, aero, cad)
+    params = pg.generate_params(model, sizing, bom)
+    config = sv.SitlConfig()
+    pg.write_param_file(params, tmp_path / sv.PARAM_FILE)
+    pg.write_param_file(pg.sitl_overrides(), tmp_path / sv.SITL_PARAM_FILE)
+    received: list[tuple[int, ...]] = []
+    real_apply = sitl_bridge._apply_channels
+
+    def spy(fdm: Any, channels: Any, pwm: Any) -> None:
+        received.append(tuple(pwm))
+        real_apply(fdm, channels, pwm)
+
+    monkeypatch.setattr(sitl_bridge, "_apply_channels", spy)
+    sticks = {"pitch_up": (1.0, 0.0, [1500, 2000, 1000, 1500]), "yaw_right": (0.0, 1.0, [1500, 1500, 1000, 2000])}
+    with (sitl_bridge.JsonPhysicsBridge(export_jsbsim(model, tmp_path / "jsbsim"), config.home,
+                                        config.physics_port) as bridge, ExitStack() as stack):
+        proc = sv._launch(config, tmp_path)
+        stack.callback(sv._stop, proc)
+        conn = mavutil.mavlink_connection(f"udpin:127.0.0.1:{config.mavlink_port}", source_system=255)
+        stack.callback(conn.close)
+        pilot = SitlPilot(conn, health=sv._health(bridge, proc, tmp_path))
+        pilot.connect()
+        pilot.set_mode("MANUAL")  # surfaces follow the sticks directly, armed or not
+        for elevator, rudder, rc in sticks.values():
+            pilot.rc = rc
+            pilot.wait(2.0)
+            left, right = _ardupilot_vtail_mix(elevator, rudder, params["MIXING_GAIN"])
+            pwm = received[-1]
+            assert (pwm[1] - 1500) / 500 == pytest.approx(left, abs=0.02)  # SERVO2: VTail left (79)
+            assert (pwm[3] - 1500) / 500 == pytest.approx(right, abs=0.02)  # SERVO4: VTail right (80)
 
 
 @pytest.mark.docker

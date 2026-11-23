@@ -25,6 +25,8 @@ LIFT_MOTOR_SERVOS: Final[tuple[int, ...]] = (5, 6, 7, 8)  # outputs reserved for
 STEERING_SURFACE: Final[str] = "steering"
 STEERING_SERVO_FUNCTION: Final[int] = 26  # ground steering
 RUDDER_SURFACE: Final[str] = "rudder"
+ELEVATOR_SURFACE: Final[str] = "elevator"
+RUDDERVATOR_SURFACES: Final[tuple[str, str]] = ("ruddervator_left", "ruddervator_right")
 MAX_SERVO_OUTPUT: Final[int] = 16
 
 
@@ -53,16 +55,20 @@ class ControlChannel:
 class _SurfaceSpec:
     servo: int
     servo_function: int
-    bridge_sign: float  # the ruddervator signs are settled with the V-tail flight model
+    bridge_sign: float
     max_deflection_rad: float
 
 
+# Bridge signs: a positive ArduPilot output (nose-up elevator, nose-right rudder; a V-tail panel's mixed share of
+# them) puts a non-reversed servo's PWM above trim, which should move the trailing edge up (elevator, ruddervators) or
+# right (rudder). JSBSim's positive deflections are trailing edge down / left, so those bridge signs are -1. The
+# V-tail's SERVOn_REVERSED is then chosen per panel from its measured pitch sign (param_generator.ruddervator_params).
 SURFACE_SPECS: Final[dict[str, _SurfaceSpec]] = {
     "aileron": _SurfaceSpec(1, 4, 1.0, AILERON_MAX_RAD),
-    "elevator": _SurfaceSpec(2, 19, -1.0, ELEVATOR_MAX_RAD),
+    ELEVATOR_SURFACE: _SurfaceSpec(2, 19, -1.0, ELEVATOR_MAX_RAD),
     RUDDER_SURFACE: _SurfaceSpec(4, 21, -1.0, RUDDER_MAX_RAD),
-    "ruddervator_left": _SurfaceSpec(2, 79, 1.0, RUDDERVATOR_MAX_RAD),
-    "ruddervator_right": _SurfaceSpec(4, 80, 1.0, RUDDERVATOR_MAX_RAD),
+    RUDDERVATOR_SURFACES[0]: _SurfaceSpec(2, 79, -1.0, RUDDERVATOR_MAX_RAD),
+    RUDDERVATOR_SURFACES[1]: _SurfaceSpec(4, 80, -1.0, RUDDERVATOR_MAX_RAD),
 }
 
 
