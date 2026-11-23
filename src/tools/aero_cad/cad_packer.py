@@ -377,6 +377,27 @@ def _with_bom_propeller(layout: AircraftLayout, bom: SelectedBOM) -> AircraftLay
     return replace(layout, propeller=replace(station, diameter_m=diameter))
 
 
+def _check_motor_mount(layout: AircraftLayout, bom: SelectedBOM) -> None:
+    """A boom-end pusher's motor must fit between the boom end and the hub (the mount length), else it would run
+    into the boom: refuse it with the two lengths rather than report an unexplained collision."""
+    station: PropellerStation = layout.propeller
+    boom = layout.tail_boom
+    if not station.is_pusher or boom is None:
+        return
+    mount: float = station.x_m - boom.x_end_m
+    motor: float = bom.cruise_motor.length_m
+    if motor > mount:
+        raise CADPackingError(f"the cruise motor ({motor:.3f} m long) does not fit the boom-end mount ({mount:.3f} m "
+                              f"from the boom end to the propeller hub)")
+
+
+def log_strike(clearance: PropClearance, level: int) -> None:
+    """Log a propeller strike (a collision-class failure) at `level`; nothing when the propeller clears."""
+    if clearance.strikes:
+        ground: str = "n/a" if clearance.ground_m is None else f"{clearance.ground_m:.3f}"
+        logger.log(level, "propeller strike: tail gap %.3f m, ground clearance %s m", clearance.tail_gap_m, ground)
+
+
 def _propeller_disc(layout: AircraftLayout) -> PropellerDisc:
     p = layout.propeller
     return PropellerDisc(p.x_m, p.z_m, p.diameter_m)
@@ -405,6 +426,7 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     counts as a collision."""
     band: StaticMarginBand = layouts.static_margin_band(sizing.airframe_layout)
     layout = _with_bom_propeller(layout, bom)
+    _check_motor_mount(layout, bom)
     oml: bd.Shape = _load_oml(oml_step)
     airfoil: AirfoilShape = load_airfoil(layout.airfoil)
     target_gear: GearGeometry = as_built_gear(sizing, aero.x_np_m - band.target * layout.wing.mac_m,
@@ -420,11 +442,9 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
     components = (*fixed, *placed)
     mass_items, gear = _final_mass(sizing, layout, final, components)
     mass = mp.combine(list(mass_items))
-    clearance: PropClearance = prop_clearance(layout, gear, mass.cg_m[0], sizing.launch_method)
+    clearance: PropClearance = prop_clearance(layout, gear, sizing.launch_method)
     strikes: int = 1 if clearance.strikes else 0
-    if strikes:
-        logger.warning("propeller strike: tail gap %.3f m, ground clearance %s m", clearance.tail_gap_m,
-                       "n/a" if clearance.ground_m is None else f"{clearance.ground_m:.3f}")
+    log_strike(clearance, logging.DEBUG)  # every balance evaluation; the chosen design is warned about once
     result = PackingResult(
         components=components, mass=mass, static_margin=(aero.x_np_m - mass.cg_m[0]) / layout.wing.mac_m, band=band,
         collision_count=count_collisions(components, parts.boom_obstacles(layout)) + strikes,

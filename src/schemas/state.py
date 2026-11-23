@@ -14,6 +14,7 @@ from src.schemas.requirements import AirframeLayout, OperationalRequirements
 
 Positive = Annotated[float, Field(gt=0)]
 NonNegative = Annotated[float, Field(ge=0)]
+Finite = Annotated[float, Field(allow_inf_nan=False)]
 
 
 class _Frozen(BaseModel):
@@ -176,8 +177,8 @@ class CADArtifacts(_Frozen):
     kit_warning: Optional[str] = None  # why there is no kit, or why its files or solids could not be written
     # Cruise-propeller hub of the packed layout (structural axes). None in records saved before it existed: those are
     # all nose tractors with the hub at the origin.
-    propeller_x_m: Optional[float] = None
-    propeller_z_m: Optional[float] = None
+    propeller_x_m: Optional[Finite] = None
+    propeller_z_m: Optional[Finite] = None
 
 
 class PlantCaseResult(_Frozen):

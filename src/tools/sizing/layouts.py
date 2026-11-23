@@ -98,6 +98,18 @@ def pusher_mount_length_m(propeller_diameter_m: float) -> float:
     return PUSHER_MOTOR_MOUNT_FRACTION * propeller_diameter_m
 
 
+def has_tail_boom(spec: LayoutSpec, boom_start_m: float, boom_end_m: float, fuselage_length_m: float) -> bool:
+    """Whether the centre tail boom is built (sizing books it, the CAD layout places it): a boom-end pusher's always,
+    since it carries the motor (one ending ahead of its root is refused), otherwise only when the tail reaches past
+    the pod."""
+    if spec.propeller != "pusher_boom_end":
+        return boom_end_m > fuselage_length_m
+    if boom_end_m <= boom_start_m:
+        raise ValueError(f"the boom-end pusher's boom would end at {boom_end_m:.3f} m, ahead of its root at "
+                         f"{boom_start_m:.3f} m")
+    return True
+
+
 def trapezoid_root_chord_m(area_m2: float, span_m: float, taper_ratio: float) -> float:
     """Root chord of a straight trapezoid of `area_m2` over `span_m` (tip-to-tip, or the fin height)."""
     return 2.0 * area_m2 / (span_m * (1.0 + taper_ratio))

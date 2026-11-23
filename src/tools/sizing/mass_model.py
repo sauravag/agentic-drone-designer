@@ -24,6 +24,7 @@ from src.tools.sizing.layouts import (
     WING_TAPER_RATIO,
     BoomSet,
     LayoutSpec,
+    has_tail_boom,
     layout_spec,
     lift_boom_geometry,
     pusher_mount_length_m,
@@ -190,8 +191,8 @@ def _tail_boom_end_m(geom: Geometry, spec: LayoutSpec) -> float:
 
 def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> tuple[BoomSet, ...]:
     """The boom tubes the sizing books, estimated at DEFAULT_WING_STATION exactly as the CAD layout places them:
-    a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to `_tail_boom_end_m` (none when the tail sits
-    on the pod), and two lift booms when there are lift rotors (`rotor_diameter_m` > 0)."""
+    a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to `_tail_boom_end_m` (when `has_tail_boom`), and
+    two lift booms when there are lift rotors (`rotor_diameter_m` > 0)."""
     if spec.booms != "centre":
         raise ValueError(f"no boom estimate for {spec.booms!r} booms yet")
     tail_end: float = _tail_boom_end_m(geom, spec)
@@ -199,7 +200,7 @@ def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> t
     start: float = TAIL_BOOM_START_FRACTION * geom.fuselage_length_m
     tail: tuple[BoomSet, ...] = (
         (BoomSet(1, tail_end - start, tail_boom_diameter_m(geom.fuselage_diameter_m), "tail_boom"),)
-        if tail_end > geom.fuselage_length_m else ()
+        if has_tail_boom(spec, start, tail_end, geom.fuselage_length_m) else ()
     )
     if rotor_diameter_m <= 0:
         return tail

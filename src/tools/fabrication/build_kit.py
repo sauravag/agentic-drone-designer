@@ -48,7 +48,6 @@ from src.tools.aero_cad.layout import (
     fuselage_radius_at,
 )
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
-from src.tools.sizing.layouts import layout_spec
 from src.tools.fabrication.boom_parts import lift_boom_keep_out
 from src.tools.fabrication.fittings import boom_parts, component_plates, cruise_motor_plate, join_notes, split_to_bed
 from src.tools.fabrication.fuselage_parts import (
@@ -118,6 +117,7 @@ from src.tools.fabrication.wing_stiffness import (
     stiffen_spar,
     wing_stiffness,
 )
+from src.tools.sizing.layouts import layout_spec
 
 MAX_DOD_GROUP: Final[int] = 2
 PIN_REACH_M: Final[float] = 0.020  # R18: pin end this far outboard of the root doubler

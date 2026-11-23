@@ -25,6 +25,7 @@ from src.tools.sizing.layouts import (  # noqa: F401  (MIN_BOOM_DIAMETER_M re-ex
     VTAIL_TAPER_RATIO,
     WING_TAPER_RATIO,
     LayoutSpec,
+    has_tail_boom,
     layout_spec,
     lift_boom_geometry,
     lift_rotor_half_spacing_m,
@@ -239,18 +240,15 @@ def tail_trailing_edge_m(tail: tuple[PlacedTailSurface, ...]) -> float:
 def _tail_booms(spec: LayoutSpec, length: float, diameter_fus: float, tail: tuple[PlacedTailSurface, ...],
                 propeller_diameter_m: float = 0.0) -> tuple[Boom, ...]:
     """The centre boom from its buried root to the tail trailing edge (plus the propeller gap for a boom-end
-    pusher); none when the empennage fits on the fuselage, except for a boom-end pusher, whose boom carries the
-    motor (a disc that ends up ahead of the pod's tail is a clearance failure, not a missing boom)."""
+    pusher), when `has_tail_boom` (a boom-end pusher's disc ending up ahead of the pod's tail is a clearance
+    failure, not a missing boom)."""
     if spec.booms != "centre":
         raise ValueError(f"no tail-boom placement for {spec.booms!r} booms yet")
     start: float = TAIL_BOOM_START_FRACTION * length
     end: float = tail_trailing_edge_m(tail)
-    is_boom_end_pusher: bool = spec.propeller == "pusher_boom_end"
-    if is_boom_end_pusher:
+    if spec.propeller == "pusher_boom_end":
         end += pusher_tail_gap_m(propeller_diameter_m)
-    if is_boom_end_pusher and end <= start:
-        raise ValueError(f"the boom-end pusher's boom would end at {end:.3f} m, ahead of its root at {start:.3f} m")
-    if not is_boom_end_pusher and end <= length:
+    if not has_tail_boom(spec, start, end, length):
         return ()  # empennage fits on the fuselage itself
     diameter: float = tail_boom_diameter_m(diameter_fus)
     return (Boom(x_start_m=start, length_m=end - start, diameter_m=diameter, y_m=0.0, z_m=0.0),)

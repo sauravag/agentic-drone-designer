@@ -83,12 +83,10 @@ def _belly_m(layout: AircraftLayout) -> float:
     return _pitched_height_m(prop.x_m, prop.z_m - prop.diameter_m / 2, pitch) - lowest
 
 
-def prop_clearance(layout: AircraftLayout, gear: GearGeometry, x_cg_m: float, launch: str) -> PropClearance:
-    """Clearances of the layout's propeller with `gear`, which was built at the CG `x_cg_m` (its main wheels sit
-    there; the CG is checked, the contacts carry it). A hand-launched pusher always folds its propeller; any
-    propeller folds when its tip is within PROP_TIP_CLEARANCE_FRACTION x radius of the belly line."""
-    if not math.isfinite(x_cg_m):
-        raise ValueError(f"x_cg_m must be finite, got {x_cg_m}")
+def prop_clearance(layout: AircraftLayout, gear: GearGeometry, launch: str) -> PropClearance:
+    """Clearances of the layout's propeller with `gear` (built at the as-built CG: its main-wheel contacts carry
+    it). A hand-launched pusher always folds its propeller; any propeller folds when its tip is within
+    PROP_TIP_CLEARANCE_FRACTION x radius of the belly line."""
     belly: Optional[float] = _belly_m(layout) if gear.kind == "none" else None
     radius: float = layout.propeller.diameter_m / 2
     folds: bool = (launch == "hand" and layout.propeller.is_pusher) or (

@@ -534,3 +534,32 @@ def test_sizing_gear_and_boom_use_the_propeller_estimate() -> None:
     tractor = mm.sizing_gear(g, layout_spec("pod_boom_tractor"), "runway")
     assert tractor.base_leg_height_m == pytest.approx(diameter / 2 * 1.25)
     assert tractor.leg_height_m == tractor.base_leg_height_m  # a nose disc never needs a taller leg: mass ratio 1
+
+
+LONG_POD_FACTOR = 4.0  # a pod so long that the V-tail and the propeller gap end ahead of its tail
+
+
+def test_sizing_books_the_pusher_boom_whenever_the_layout_builds_it() -> None:
+    spec = layout_spec(VTAIL)
+    g = mm.size_geometry(5.0, 0.6, 9.0, 0.45, 0.035, LONG_POD_FACTOR, spec)
+    assert mm._tail_boom_end_m(g, spec) < g.fuselage_length_m
+    assert mm.sizing_booms(g, dataclasses.replace(spec, propeller="tractor_nose"), 0.0) == ()  # tail on the pod
+    (boom,) = mm.sizing_booms(g, spec, 0.0)  # but the pusher's boom carries the motor
+    start = mm.TAIL_BOOM_START_FRACTION * g.fuselage_length_m
+    assert boom.length_m == pytest.approx(mm._tail_boom_end_m(g, spec) - start)
+
+
+def test_sizing_refuses_a_pusher_boom_ending_ahead_of_its_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(layouts, "PUSHER_TAIL_GAP_FRACTION", -5.0)
+    with pytest.raises(ValueError, match="ahead of its root"):
+        mm.sizing_booms(_vtail_geometry(), layout_spec(VTAIL), 0.0)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_cad_record_rejects_a_non_finite_propeller_station(bad: float) -> None:
+    from src.schemas.state import CADArtifacts
+
+    _, _, _, _, cad = load_design("g1")
+    for field in ("propeller_x_m", "propeller_z_m"):
+        with pytest.raises(ValidationError):
+            CADArtifacts.model_validate({**cad.model_dump(), field: bad})

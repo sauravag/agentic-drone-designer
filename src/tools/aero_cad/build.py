@@ -20,6 +20,7 @@ from src.tools.aero_cad.cad_packer import (
     PackingResult,
     PackingSlotError,
     export_artifacts,
+    log_strike,
     pack_layout,
 )
 from src.tools.aero_cad.components import required_fuselage_length_m
@@ -196,6 +197,7 @@ def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
     if search.best is None:
         raise CADPackingError("no wing station produced a packable layout (no free battery/tray slot)")
     total: int = len(search.evaluated)
+    log_strike(search.best.packing.clearance, logging.WARNING)
     if not search.best.packing.is_balanced:
         logger.warning("design not balanced after %d evaluation(s): SM %.3f, %d interferences at wing station %.3f",
                        total, search.best.packing.static_margin, search.best.packing.interference_count,

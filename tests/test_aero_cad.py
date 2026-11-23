@@ -906,7 +906,7 @@ def test_runway_clearance_is_measured_at_the_rotation_angle(vtail_g1) -> None:
     lay = _pusher_layout(sizing, bom)
     x_cg = lay.wing.x_ac_m - 0.11 * lay.wing.mac_m
     gear = _layout_gear(sizing, lay, "runway", x_cg)
-    clearance = prop_clearance(lay, gear, x_cg, "runway")
+    clearance = prop_clearance(lay, gear, "runway")
     radius = lay.propeller.diameter_m / 2
     main = gear.contacts[1]
     theta = math.radians(ROTATION_ANGLE_DEG)
@@ -924,7 +924,7 @@ def test_vertical_clearance_is_level(vtail_g1) -> None:
     lay = _pusher_layout(sizing, bom)
     x_cg = lay.wing.x_ac_m
     gear = _layout_gear(sizing, lay, "vertical", x_cg)
-    clearance = prop_clearance(lay, gear, x_cg, "vertical")
+    clearance = prop_clearance(lay, gear, "vertical")
     assert clearance.ground_m == pytest.approx(lay.propeller.z_m - lay.propeller.diameter_m / 2 + gear.leg_height_m)
 
 
@@ -933,7 +933,7 @@ def test_hand_launched_pusher_needs_folding_prop(vtail_g1) -> None:
     lay = _pusher_layout(sizing, bom)
     x_cg = lay.wing.x_ac_m
     gear = _layout_gear(sizing, lay, "hand", x_cg)
-    clearance = prop_clearance(lay, gear, x_cg, "hand")
+    clearance = prop_clearance(lay, gear, "hand")
     assert gear.kind == "none"
     assert clearance.ground_m is None and clearance.belly_m is not None
     assert clearance.needs_folding_prop
@@ -943,7 +943,7 @@ def test_belly_line_is_taken_at_the_landing_pitch(designs: dict) -> None:
     """Hand-launched tractor with a tiny propeller: clear of the belly line at BELLY_LANDING_PITCH_DEG, no fold."""
     sizing, _ = designs["g1"]
     lay = layout_from_sizing(sizing, propeller_diameter_m=0.02)
-    clearance = prop_clearance(lay, GearGeometry("none", (), 0.0), lay.wing.x_ac_m, "hand")
+    clearance = prop_clearance(lay, GearGeometry("none", (), 0.0), "hand")
     pitch = math.radians(BELLY_LANDING_PITCH_DEG)
     tip_drop = -0.01 * math.cos(pitch)  # tip of the disc at the nose (x = 0)
     lowest = min(-lay.fuselage_diameter_m / 2 * math.cos(pitch) - 0.80 * lay.fuselage_length_m * math.sin(pitch),
@@ -999,3 +999,32 @@ def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> N
     assert r.clearance.tail_gap_m > 0 and r.clearance.ground_m > 0
     gear_item = next(i for i in r.mass_items if i.name == GEAR_NAME)
     assert gear_item.mass_kg == pytest.approx(gear_mass_kg(r.gear, sizing.airframe_topology, sizing.mtow_kg))
+
+
+def test_motor_longer_than_its_mount_is_a_readable_packing_error(vtail_g1, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sizing_layouts, "PUSHER_MOTOR_MOUNT_FRACTION", 0.05)  # 14 mm mount for a 30 mm motor
+    sizing, bom = vtail_g1
+    with pytest.raises(cad_packer.CADPackingError, match=r"cruise motor .*0\.030 m.* mount .*0\.014 m"):
+        _pack_pusher(sizing, bom, tmp_path)
+
+
+def test_strike_is_warned_once_for_the_final_design(vtail_g1, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                    caplog: pytest.LogCaptureFixture, no_kit: None) -> None:
+    import logging
+
+    real = cad_packer.as_built_gear
+
+    def short_legs(sizing, x_cg_m: float, propeller: PropellerDisc) -> GearGeometry:
+        gear = real(sizing, x_cg_m, propeller)
+        stub = sizing.fuselage_diameter_m / 2
+        return _replace(gear, contacts=tuple(_replace(c, z_m=-stub) for c in gear.contacts), leg_height_m=stub)
+
+    monkeypatch.setattr(cad_packer, "as_built_gear", short_legs)
+    sizing, bom = vtail_g1
+    with caplog.at_level(logging.DEBUG):
+        design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
+    strikes = [r for r in caplog.records if "propeller strike" in r.getMessage()]
+    assert design.total_iterations > 1
+    assert [r.levelno for r in strikes if r.levelno >= logging.WARNING] == [logging.WARNING]
+    assert sum(r.levelno == logging.DEBUG for r in strikes) == design.total_iterations
