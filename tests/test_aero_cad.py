@@ -783,6 +783,8 @@ def test_refine_bisects_across_a_packing_jump_to_a_balanced_station() -> None:
     for station in (0.35, 0.40, 0.45):
         search.evaluate(station)
     build._refine(search)
+    assert not search.done  # the per-scan-station refine never bisects across a jump
+    build._refine(search, allow_jump=True)  # the final, post-scan refine does
     assert search.done
     balanced = [s for s, d in search.evaluated.items() if d is not None and d.packing.is_balanced]
     assert all(0.40 < s < 0.445 for s in balanced)  # found by bisection, never by a secant across the jump
@@ -800,5 +802,35 @@ def test_refine_stops_when_the_jump_midpoint_cannot_be_packed() -> None:
     search = Unpackable()
     for station in (0.40, 0.45):
         search.evaluate(station)
-    build._refine(search)  # must return (no endless re-evaluation of the cached midpoint)
+    build._refine(search, allow_jump=True)  # must return (no endless re-evaluation of the cached midpoint)
     assert not search.done and len(search.evaluated) == 3
+
+
+class _JumpWithoutBalancedSide(_FakeSearch):
+    """SM jumps from below the band (0.0) straight above it (0.5) at 0.32; a third configuration from 0.42 on
+    balances (SM 0.11 at 0.45). Bisecting the 0.30-0.35 jump finds nothing; scanning on reaches 0.45."""
+
+    @staticmethod
+    def _design(station: float) -> _FakeDesign:
+        if station < 0.32:
+            return _FakeDesign(station, 0.0, "a")
+        if station < 0.42:
+            return _FakeDesign(station, 0.5, "b")
+        return _FakeDesign(station, 0.11 + 0.1 * (station - 0.45), "c")
+
+
+def test_scan_is_not_spent_bisecting_a_jump_with_no_balanced_side() -> None:
+    search = _JumpWithoutBalancedSide()
+    build._scan(search, build.DEFAULT_WING_STATION)
+    assert search.done and len(search.evaluated) <= build.MAX_BALANCE_ITERATIONS
+    assert [s for s, d in search.evaluated.items() if d.packing.is_balanced] == [0.45]
+
+
+def test_jump_bisection_is_capped() -> None:
+    search = _JumpWithoutBalancedSide()
+    for station in (0.30, 0.35):
+        search.evaluate(station)
+    build._refine(search, allow_jump=True)
+    assert len(search.evaluated) - 2 <= build.MAX_JUMP_BISECTIONS
+    stations = sorted(search.evaluated)
+    assert min(b - a for a, b in zip(stations, stations[1:])) >= build.JUMP_MIN_WIDTH / 2 - 1e-12

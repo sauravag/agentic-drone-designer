@@ -32,6 +32,10 @@ MAX_BALANCE_ITERATIONS: Final[int] = 12
 SCAN_STATIONS: Final[tuple[float, ...]] = WING_STATION_SCAN
 STATION_TOLERANCE: Final[float] = 1e-4
 STATION_DECIMALS: Final[int] = 6  # evaluated stations are keyed rounded to this
+# Bisecting across a packing jump looks for a balanced station beside it, not for the jump itself: at most this
+# many halvings, and never of a gap narrower than JUMP_MIN_WIDTH (fraction of fuselage length).
+MAX_JUMP_BISECTIONS: Final[int] = 3
+JUMP_MIN_WIDTH: Final[float] = 0.01
 
 
 @dataclass(frozen=True)
@@ -124,10 +128,10 @@ def _bracket(search: _Search) -> tuple[BalancedDesign, BalancedDesign] | None:
 
 
 def _jump(search: _Search) -> tuple[BalancedDesign, BalancedDesign] | None:
-    """Adjacent stations that straddle the target across a configuration change, wider than STATION_TOLERANCE:
+    """Adjacent stations that straddle the target across a configuration change, at least JUMP_MIN_WIDTH apart:
     the band may still be reached on either side of the jump, so the gap is bisected (never extrapolated)."""
     pairs = [(a, b) for a, b in _adjacent_straddles(search, same_configuration=False)
-             if b.layout.wing_station - a.layout.wing_station > 2.0 * STATION_TOLERANCE]
+             if b.layout.wing_station - a.layout.wing_station >= JUMP_MIN_WIDTH]
     return min(pairs, key=lambda p: p[1].layout.wing_station - p[0].layout.wing_station) if pairs else None
 
 
@@ -136,18 +140,22 @@ def _seen(search: _Search, station: float) -> bool:
     return round(station, STATION_DECIMALS) in search.evaluated
 
 
-def _refine(search: _Search) -> None:
-    """Secant (regula falsi) inside same-configuration brackets; where the only straddle crosses a configuration
-    change, bisect it to find the jump (or a balanced station beside it). Until balanced or out of budget."""
+def _refine(search: _Search, allow_jump: bool = False) -> None:
+    """Secant (regula falsi) inside same-configuration brackets, until balanced or out of budget. With
+    `allow_jump` (the final, post-scan refine only, so the scan's budget is never spent on it), a straddle that
+    crosses a configuration change is bisected up to MAX_JUMP_BISECTIONS times to look for a balanced station
+    beside the jump."""
+    jumps_left: int = MAX_JUMP_BISECTIONS if allow_jump else 0
     while search.budget_left and not search.done:
         pair = _bracket(search)
         if pair is None:
-            jump = _jump(search)
+            jump = _jump(search) if jumps_left > 0 else None
             if jump is None:
                 return
             mid: float = 0.5 * (jump[0].layout.wing_station + jump[1].layout.wing_station)
             if _seen(search, mid):  # the midpoint had no packable slot: no progress possible here
                 return
+            jumps_left -= 1
             search.evaluate(mid)
             continue
         (a, b) = pair
@@ -159,6 +167,18 @@ def _refine(search: _Search) -> None:
         search.evaluate(x_new)
 
 
+def _scan(search: _Search, wing_station: float) -> None:
+    """Try `wing_station`, then the scan stations nearest-first (refining same-configuration brackets after
+    each), then one final refine that may also bisect across a packing jump."""
+    search.evaluate(wing_station)
+    for station in sorted(SCAN_STATIONS, key=lambda s: abs(s - wing_station)):
+        if search.done or not search.budget_left:
+            break
+        search.evaluate(station)
+        _refine(search)
+    _refine(search, allow_jump=True)
+
+
 def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
                    wing_station: float = DEFAULT_WING_STATION,
                    settings: FabricationSettings = DEFAULT_FABRICATION) -> BalancedDesign:
@@ -166,17 +186,12 @@ def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
 
     SM(station) jumps whenever a slider changes slot (e.g. battery ahead of / behind the tank), so a
     plain secant can bounce across the jump forever. Instead: try the default station, scan the
-    station range nearest-first, and refine only inside brackets whose two ends share a packing
-    configuration. Returns the best attempt (fewest interferences, then smallest SM error) even if
+    station range nearest-first, and refine inside brackets whose two ends share a packing
+    configuration; only after the scan, bisect (a capped number of times) across a jump that straddles the
+    target. Returns the best attempt (fewest interferences, then smallest SM error) even if
     unbalanced, so the critic can act on it. The pod is floored so the internal COTS parts fit."""
     search = _Search(sizing, bom, analyse, settings)
-    search.evaluate(wing_station)
-    for station in sorted(SCAN_STATIONS, key=lambda s: abs(s - wing_station)):
-        if search.done or not search.budget_left:
-            break
-        search.evaluate(station)
-        _refine(search)
-    _refine(search)
+    _scan(search, wing_station)
     if search.best is None:
         raise CADPackingError("no wing station produced a packable layout (no free battery/tray slot)")
     total: int = len(search.evaluated)
