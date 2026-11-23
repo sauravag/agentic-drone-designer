@@ -17,6 +17,8 @@ NonNegative = Annotated[float, Field(ge=0)]
 Finite = Annotated[float, Field(allow_inf_nan=False)]
 
 
+NO_KIT_PREFIX: str = "No laser kit: "  # CADArtifacts.kit_warning when the packer could not build a kit
+
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

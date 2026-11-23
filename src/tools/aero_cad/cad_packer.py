@@ -30,7 +30,7 @@ from scipy.optimize import minimize_scalar
 
 from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import NO_KIT_PREFIX, AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad import components as parts
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
@@ -62,7 +62,6 @@ TRAY_SCAN_POINTS: Final[int] = 80
 STEP_IMPORT_TO_M: Final[float] = 1e-3  # OCC's STEP reader always returns millimetres
 STRUCTURE_PART_PREFIXES: Final[tuple[str, ...]] = ("WM-", "FW-", "BM-")  # wing-box plates, firewall, boom mounts
 STRUCTURE_TUBE_ROLES: Final[tuple[str, ...]] = ("socket",)
-NO_KIT_PREFIX: Final[str] = "No laser kit: "
 KIT_FILES_PREFIX: Final[str] = "kit files could not be written: "
 KIT_SOLIDS_PREFIX: Final[str] = "kit solids could not be built: "
 KIT_CLEANUP_PREFIX: Final[str] = "stale kit files could not be removed: "

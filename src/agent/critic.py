@@ -11,6 +11,7 @@ override bounds, and adds the rule-table fix for every failed gate so each itera
 even if the LLM's choice is poor (SRS Zero-LLM-Math: the model never picks a number).
 """
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Final, Literal, Optional
 
@@ -19,7 +20,7 @@ from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import NO_KIT_PREFIX, AeroStabilityOutput, CADArtifacts, SizingOutput
 from src.tools.aero_cad.stability import LD_DEVIATION_TOLERANCE, ld_deviations
 from src.tools.sizing import layouts
 from src.tools.sizing.layouts import StaticMarginBand
@@ -47,6 +48,8 @@ class GateResult:
     passed: bool
     detail: str
     side: Literal["", "low", "high"] = ""  # which side of a two-sided band a failed value fell on
+    # L/D gate, low side: whether VSPAERO's extra drag at the worst point is mostly zero-lift (parasite) or induced
+    driver: Literal["", "induced", "parasite"] = ""
 
 
 @dataclass(frozen=True)
@@ -80,21 +83,43 @@ def evaluate_gates(req: OperationalRequirements, sizing: SizingOutput, bom: Sele
         _ld_gate(sizing, aero),
         GateResult("collisions_and_group", cad.collision_count == 0 and cad.as_built_mass_kg < limit,
                    f"{cad.collision_count} collision(s); as-built mass {cad.as_built_mass_kg:.2f} kg vs Group {group} "
-                   f"limit {limit} kg"),
+                   f"limit {limit} kg" + _missing_kit_chain(cad, group, limit)),
         GateResult("reserve", reserve >= RESERVE_MIN, f"energy reserve {reserve:.0%} (min {RESERVE_MIN:.0%})"),
     ]
 
 
+def _missing_kit_chain(cad: CADArtifacts, group: int, limit: float) -> str:
+    """Why a design without a kit is over its group: the packer fell back to the shell mass model, whose mass is
+    the one the gate saw. Empty when there is a kit or the mass is within the limit."""
+    if not (cad.kit_warning or "").startswith(NO_KIT_PREFIX) or cad.as_built_mass_kg < limit:
+        return ""
+    reason: str = cad.kit_warning.removeprefix(NO_KIT_PREFIX)
+    return (f"; no laser kit ({reason}), so the shell mass model gives {cad.as_built_mass_kg:.2f} kg, over the "
+            f"Group {group} limit of {limit} kg")
+
+
 def _ld_gate(sizing: SizingOutput, aero: AeroStabilityOutput) -> GateResult:
-    """Gate 2: VSPAERO and sizing L/D agree within the tolerance, either side, at both CLs."""
+    """Gate 2: VSPAERO and sizing L/D agree within the tolerance, either side, at both CLs. A low VSPAERO L/D also
+    names its driver at the worst point: VSPAERO's extra zero-lift drag (CD0) against its extra induced drag
+    (k CL^2). Only an induced gap is one a higher aspect ratio can close."""
     points = ld_deviations(sizing, aero)
     failed = [p for p in points if abs(p.deviation) > LD_DEVIATION_TOLERANCE]
-    side: Literal["", "low", "high"] = ""
-    if failed:
-        side = "low" if any(p.deviation < 0 for p in failed) else "high"
     detail: str = "; ".join(f"{p.name} (CL {p.cl:.2f}): VSPAERO L/D {p.vspaero_ld:.1f} vs sizing {p.sizing_ld:.1f} "
                             f"({p.deviation:+.0%})" for p in points)
-    return GateResult("lift_to_drag", not failed, f"{detail} (band +-{LD_DEVIATION_TOLERANCE:.0%})", side)
+    detail += f" (band +-{LD_DEVIATION_TOLERANCE:.0%})"
+    if not failed:
+        return GateResult("lift_to_drag", True, detail)
+    if not any(p.deviation < 0 for p in failed):
+        return GateResult("lift_to_drag", False, detail, "high")
+    worst = min(failed, key=lambda p: p.deviation)
+    k_sizing: float = 1.0 / (math.pi * sizing.oswald_e * sizing.aspect_ratio)
+    extra_parasite: float = aero.cd0 - sizing.cd0
+    extra_induced: float = (aero.induced_drag_factor - k_sizing) * worst.cl**2  # type: ignore[operator]
+    if extra_parasite < extra_induced:
+        return GateResult("lift_to_drag", False, detail, "low", "induced")
+    detail += (f"; the extra drag is mostly parasite (CD0 VSPAERO {aero.cd0:.4f} vs sizing {sizing.cd0:.4f}): "
+               "a higher aspect ratio cannot close it")
+    return GateResult("lift_to_drag", False, detail, "low", "parasite")
 
 
 def evaluate_sizing_gates(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM) -> list[GateResult]:
@@ -134,7 +159,8 @@ def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Opt
             direction = "increase" if cad.static_margin < band.minimum else "decrease"
             fixes.append(Adjustment(knob=knob, direction=direction,
                                     reason=f"{knob} moves the neutral point and hence the SM"))
-        elif gate.name == "lift_to_drag" and gate.side != "high":  # a VSPAERO L/D above sizing has no knob fix
+        elif gate.name == "lift_to_drag" and gate.side != "high" and gate.driver != "parasite":
+            # no knob fix for a VSPAERO L/D above sizing, nor for a CD0 gap (AR only cuts induced drag)
             fixes.append(Adjustment(knob="aspect_ratio", direction="increase", reason="higher AR cuts induced drag"))
         elif gate.name == "collisions_and_group" and cad is not None and cad.collision_count:
             fixes.append(Adjustment(knob="fuselage_length_factor", direction="increase",
@@ -176,7 +202,8 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
     for adj in _rule_fixes(gates, cad, stage, band, sm_knob):
         chosen.setdefault(adj.knob, (adj, "rule"))
     for adj in llm_choices:
-        chosen.setdefault(adj.knob, (adj, "llm"))
+        if not _refused(adj, gates):
+            chosen.setdefault(adj.knob, (adj, "llm"))
     updated: dict[str, float] = dict(overrides)
     changes: list[AppliedChange] = []
     for knob, (adj, source) in chosen.items():
@@ -187,6 +214,13 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
             updated[knob] = new
             changes.append(AppliedChange(knob, adj.direction, old, new, source, adj.reason))
     return updated, changes
+
+
+def _refused(adj: Adjustment, gates: list[GateResult]) -> bool:
+    """An LLM move the gates rule out: a higher aspect ratio against a parasite-driven L/D gap (it cannot close it
+    and walks the wing toward its stiffness limits)."""
+    parasite_gap: bool = any(g.name == "lift_to_drag" and not g.passed and g.driver == "parasite" for g in gates)
+    return parasite_gap and adj.knob == "aspect_ratio" and adj.direction == "increase"
 
 
 def unfixable(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],

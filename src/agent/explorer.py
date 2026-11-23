@@ -143,8 +143,9 @@ def unchanged_closes(req: OperationalRequirements, assumptions: DesignAssumption
 def unchanged_closes_note(state: DesignState) -> str:
     """Says where the failure is for a design that closes unchanged: the failed stage, else the failed gates."""
     stage_error = state.get("stage_error")
-    failed = [gate["name"] for gate in state.get("gate_results") or [] if not gate["passed"]]
-    where = f"the {stage_error['stage']} stage" if stage_error else ", ".join(failed) or "the final checks"
+    failed = [f"{gate['name']} ({gate['detail']})" if gate.get("detail") else gate["name"]
+              for gate in state.get("gate_results") or [] if not gate["passed"]]
+    where = f"the {stage_error['stage']} stage" if stage_error else "; ".join(failed) or "the final checks"
     return UNCHANGED_CLOSES_NOTE.format(where=where)
 
 

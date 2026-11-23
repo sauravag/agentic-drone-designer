@@ -171,6 +171,26 @@ def test_each_gate_detects_its_failure() -> None:
     assert not group.passed and "Group 2" in group.detail
 
 
+PIN_REASON = "anti-rotation pin: 300 N from the spar's root torque overloads even a 5 mm rod with boss doublers"
+
+
+def _group_gate(**cad_update: object) -> critic.GateResult:
+    req, sizing, bom, aero, cad = load_design("g2")
+    gates = critic.evaluate_gates(req, sizing, bom, aero, cad.model_copy(update=cad_update))
+    return next(g for g in gates if g.name == "collisions_and_group")
+
+
+def test_group_gate_explains_a_missing_kit_that_puts_the_design_over_its_group() -> None:
+    """G2 V-tail on default stock: no kit, so the shell mass model's mass is what breaks the group limit."""
+    gate = _group_gate(as_built_mass_kg=27.408, kit_warning=f"No laser kit: {PIN_REASON}")
+    assert not gate.passed
+    assert gate.detail.endswith(f"; no laser kit ({PIN_REASON}), so the shell mass model gives 27.41 kg, over the "
+                                "Group 2 limit of 24.95 kg")
+    within = _group_gate(kit_warning=f"No laser kit: {PIN_REASON}")  # no kit but within the group: no chain
+    heavy_kit = _group_gate(as_built_mass_kg=27.408)  # over the group with a kit: no kit story to tell
+    assert "shell mass model" not in within.detail + heavy_kit.detail
+
+
 def test_ld_gate_compares_both_models_at_the_sizing_cruise_and_loiter_lift_coefficients() -> None:
     _, sizing, _, aero, _ = load_design("g2")
     points = {p.name: p for p in stability.ld_deviations(sizing, aero)}
@@ -196,6 +216,35 @@ def test_ld_gate_is_two_sided_and_only_a_low_vspaero_ld_raises_the_aspect_ratio(
     high_fix = critic.apply_adjustments({}, "electric", [], [gate["high"]], cad, band=TAILED_BAND, sm_knob=TAILED_KNOB)
     assert high_fix[1] == []
     assert critic.unfixable([gate["high"]], cad, None, band=TAILED_BAND, sm_knob=TAILED_KNOB) == ["lift_to_drag"]
+
+
+def _ld_gate(aero_update: dict) -> critic.GateResult:
+    req, sizing, bom, aero, cad = load_design("g2")
+    gates = critic.evaluate_gates(req, sizing, bom, aero.model_copy(update=aero_update), cad)
+    return next(g for g in gates if g.name == "lift_to_drag")
+
+
+def test_ld_gate_names_what_drives_a_low_vspaero_ld() -> None:
+    _, _, _, aero, _ = load_design("g2")
+    induced = _ld_gate({"induced_drag_factor": 2.0 * aero.induced_drag_factor})
+    parasite = _ld_gate({"cd0": 2.0 * aero.cd0})
+    assert (induced.passed, induced.side, induced.driver) == (False, "low", "induced")
+    assert (parasite.passed, parasite.side, parasite.driver) == (False, "low", "parasite")
+    assert "parasite" in parasite.detail and "aspect ratio cannot close it" in parasite.detail
+    assert _ld_gate({}).driver == ""
+
+
+def test_a_parasite_dominated_ld_gap_never_raises_the_aspect_ratio() -> None:
+    """The hand-launched G1 lesson: raising AR cannot close a CD0 gap, and it walks the wing past its stiffness
+    limits. The rule table offers no fix (the gate is reported unfixable) and an LLM AR increase is dropped."""
+    _, _, _, aero, cad = load_design("g2")
+    gate = _ld_gate({"cd0": 2.0 * aero.cd0})
+    llm = [Adjustment(knob="aspect_ratio", direction="increase", reason="cut induced drag"),
+           Adjustment(knob="tail_volume_v", direction="increase", reason="extra judgement")]
+    overrides, changes = critic.apply_adjustments({}, "electric", llm, [gate], cad, band=TAILED_BAND,
+                                                  sm_knob=TAILED_KNOB)
+    assert "aspect_ratio" not in overrides and [c.knob for c in changes] == ["tail_volume_v"]
+    assert critic.unfixable([gate], cad, None, band=TAILED_BAND, sm_knob=TAILED_KNOB) == ["lift_to_drag"]
 
 
 def test_ld_gate_refuses_a_design_that_predates_the_same_cl_check() -> None:
@@ -556,7 +605,8 @@ def test_a_design_that_closes_unchanged_ends_in_airframe_mode_with_a_note(
     gate = critic.GateResult("collisions_and_group", False, "as-built mass 26 kg is over the Group 1 limit")
     monkeypatch.setattr("src.agent.nodes._gates", lambda state: [gate])
     state = run_agent(_ctx(tmp_path, db, None, max_iterations=0), requirements=G1_ELECTRIC_FW)
-    note = "Sizing + catalog close unchanged; the failure is in collisions_and_group"
+    note = ("Sizing + catalog close unchanged; the failure is in collisions_and_group "
+            "(as-built mass 26 kg is over the Group 1 limit)")
     assert state["explorer_mode"] == "airframe" and state["explore_options"] == []
     assert state["explorer_note"] == note
     assert note in Path(state["final_report_path"]).read_text()
