@@ -38,6 +38,7 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "lipo_max_c_rate": "Max discharge (LiPo)",
     "battery_reserve_fraction": "Battery reserve", "fuel_reserve_fraction": "Fuel reserve",
     "bsfc_kg_per_kwh": "Generator BSFC (kg/kWh)", "drivetrain_efficiency": "Drivetrain efficiency",
+    "pusher_efficiency_factor": "Pusher installation factor",
     "hover_figure_of_merit": "Hover figure of merit", "lift_motor_efficiency": "Lift motor efficiency",
     "avionics_base_mass_kg": "Avionics allowance base (kg)",
     "avionics_mass_per_mtow": "Avionics allowance per kg MTOW (kg/kg)",
@@ -87,6 +88,7 @@ class AssumptionChanges(BaseModel):
     fuel_reserve_fraction: Optional[float] = None
     bsfc_kg_per_kwh: Optional[float] = None
     drivetrain_efficiency: Optional[float] = None
+    pusher_efficiency_factor: Optional[float] = None
     hover_figure_of_merit: Optional[float] = None
     lift_motor_efficiency: Optional[float] = None
     avionics_base_mass_kg: Optional[float] = None

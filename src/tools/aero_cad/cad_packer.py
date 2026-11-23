@@ -19,7 +19,8 @@ MTOW-convergence check.
 """
 
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Optional, Sequence
 
@@ -39,7 +40,8 @@ from src.tools.aero_cad.components import (  # noqa: F401  (re-exported for call
     count_collisions,
     overlap_volume_m3,
 )
-from src.tools.aero_cad.layout import AircraftLayout
+from src.tools.aero_cad.clearance import PropClearance, prop_clearance
+from src.tools.aero_cad.layout import AircraftLayout, PropellerStation
 from src.tools.aero_cad.mesh_export import export_viewer_model
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
@@ -49,7 +51,8 @@ from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
 from src.tools.sizing import layouts
 from src.tools.sizing.layouts import StaticMarginBand
-from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg, sizing_output_gear
+from src.tools.gear import GearGeometry, PropellerDisc
+from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg, as_built_gear
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
 
 logger = logging.getLogger(__name__)
@@ -82,11 +85,14 @@ class PackingResult:
     mass: mp.MassProperties
     static_margin: float
     band: StaticMarginBand  # the layout's band the margin is judged against
-    collision_count: int  # part-part and part-boom overlaps
+    collision_count: int  # part-part and part-boom overlaps, plus one for a propeller tail or ground strike
     containment_violations: int  # internal parts poking through the OML
     shell_areal_density_kg_m2: float  # 0.0 with a kit
     oml: bd.Shape
     structure: Optional[WingStructure]  # shell-model fallback only (None with a kit)
+    propeller: PropellerStation  # the packed propeller station, with the BOM's diameter
+    gear: GearGeometry  # the real gear: as-built CG and the layout's propeller
+    clearance: PropClearance  # a tail or ground strike is counted in `collision_count`
     kit: Optional[Kit] = None
     kit_warning: Optional[str] = None  # why there is no kit, when there is none
     mass_items: tuple[mp.MassItem, ...] = ()  # the items combined into `mass`
@@ -304,23 +310,28 @@ def _structure_boxes(kit: Kit, settings: FabricationSettings) -> tuple[Box3, ...
     return (*plates, *(_tube_box(t) for t in (*tubes, *kit.overwrap_halves())))
 
 
+def _gear_items(sizing: SizingOutput, layout: AircraftLayout, gear: GearGeometry) -> tuple[mp.MassItem, ...]:
+    """The residual landing-gear item the kit does not cut (none for a gearless design)."""
+    item = residual_gear_item(sizing, layout, gear)
+    return () if item is None else (item,)
+
+
 def _kit_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
-                  placed: Sequence[PlacedComponent], settings: FabricationSettings) -> _Airframe:
+                  placed: Sequence[PlacedComponent], settings: FabricationSettings, gear: GearGeometry) -> _Airframe:
     """Raises KitUnavailable when the kit cannot be built around `placed`."""
     kit: Kit = build_kit(sizing, layout, airfoil, placed, settings)
     kit_items = tuple(kit_mass_items(kit, settings))
-    gear_item = residual_gear_item(sizing, layout, sizing_output_gear(sizing))
-    return _Airframe((*kit_items, *(() if gear_item is None else (gear_item,))), _structure_boxes(kit, settings),
+    return _Airframe((*kit_items, *_gear_items(sizing, layout, gear)), _structure_boxes(kit, settings),
                      kit=kit, kit_items=kit_items)
 
 
 def _airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape, oml: bd.Shape,
-              placed: Sequence[PlacedComponent], settings: FabricationSettings) -> _Airframe:
+              placed: Sequence[PlacedComponent], settings: FabricationSettings, gear: GearGeometry) -> _Airframe:
     """The kit built around `placed`, or the shell model when no kit can be built: a kit failure never fails the
     run, whatever raised it. Group 3+ designs expect no kit (info); any other failure is a warning, and an
     unexpected error is logged with its traceback."""
     try:
-        return _kit_airframe(sizing, layout, airfoil, placed, settings)
+        return _kit_airframe(sizing, layout, airfoil, placed, settings, gear)
     except KitUnavailable as exc:
         warning = f"{NO_KIT_PREFIX}{exc}"
         expected: bool = sizing.dod_group > MAX_DOD_GROUP
@@ -355,32 +366,71 @@ def _place_sliders(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOu
     return _solve_battery_and_tray(*_sliders(sizing, bom, layout, rules), on_axis, balance, layout, rules)
 
 
+def _with_bom_propeller(layout: AircraftLayout, bom: SelectedBOM) -> AircraftLayout:
+    """The layout with the BOM's propeller diameter on its station (a layout built without the BOM has 0 there). A
+    boom-end pusher's station depends on the diameter, so one placed for another propeller is refused."""
+    diameter: float = bom.cruise_propeller.diameter_m
+    station: PropellerStation = layout.propeller
+    if station.is_pusher and not math.isclose(station.diameter_m, diameter):
+        raise CADPackingError(f"the pusher station was placed for a {station.diameter_m:.3f} m propeller but the "
+                              f"BOM's is {diameter:.3f} m: build the layout with propeller_diameter_m from the BOM")
+    return replace(layout, propeller=replace(station, diameter_m=diameter))
+
+
+def _propeller_disc(layout: AircraftLayout) -> PropellerDisc:
+    p = layout.propeller
+    return PropellerDisc(p.x_m, p.z_m, p.diameter_m)
+
+
+def _final_mass(sizing: SizingOutput, layout: AircraftLayout, final: _Airframe,
+                components: Sequence[PlacedComponent]) -> tuple[tuple[mp.MassItem, ...], GearGeometry]:
+    """Mass items with the real gear: built at the packed CG (the sliders solved for the target-CG gear), whose
+    residual mass replaces the estimate's in a kit. The shell model's gear stays inside the sized airframe mass."""
+    estimate = (*final.items, *(c.mass_item() for c in components))
+    gear: GearGeometry = as_built_gear(sizing, mp.combine(list(estimate)).cg_m[0], _propeller_disc(layout))
+    if final.kit is None:
+        return estimate, gear
+    return (*final.kit_items, *_gear_items(sizing, layout, gear), *(c.mass_item() for c in components)), gear
+
+
 def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, layout: AircraftLayout,
                 oml_step: Path, settings: FabricationSettings = DEFAULT_FABRICATION) -> PackingResult:
     """Place every part, slide battery + tray for static margin, build the mass properties.
 
     Pass 1 builds the kit around the fixed parts (mass estimate + structure obstacles) and solves the sliders;
     pass 2 rebuilds it around every placed part for exact openings and the final mass. If that rebuild fails, the
-    sliders are re-solved for the shell model it falls back to. The static margin and `is_balanced` use the final
-    mass."""
+    sliders are re-solved for the shell model it falls back to. Both passes carry the residual gear built at the
+    target CG; the final mass carries the real gear (packed CG, the layout's propeller), which also sets the
+    propeller clearances. The static margin and `is_balanced` use the final mass; a propeller tail or ground strike
+    counts as a collision."""
     band: StaticMarginBand = layouts.static_margin_band(sizing.airframe_layout)
+    layout = _with_bom_propeller(layout, bom)
     oml: bd.Shape = _load_oml(oml_step)
     airfoil: AirfoilShape = load_airfoil(layout.airfoil)
-    fixed = [parts.cruise_motor(bom), parts.payload(bom, layout),
+    target_gear: GearGeometry = as_built_gear(sizing, aero.x_np_m - band.target * layout.wing.mac_m,
+                                              _propeller_disc(layout))
+    fixed = [parts.cruise_motor(bom, layout), parts.payload(bom, layout),
              *parts.hybrid_parts(sizing, bom, layout, aero.x_np_m), *parts.vtol_motors(bom, layout)]
-    estimate: _Airframe = _airframe(sizing, layout, airfoil, oml, fixed, settings)
+    estimate: _Airframe = _airframe(sizing, layout, airfoil, oml, fixed, settings, target_gear)
     placed = _place_sliders(sizing, bom, aero, layout, fixed, estimate, settings, band)
-    final = estimate if estimate.kit is None else _airframe(sizing, layout, airfoil, oml, (*fixed, *placed), settings)
+    final = (estimate if estimate.kit is None
+             else _airframe(sizing, layout, airfoil, oml, (*fixed, *placed), settings, target_gear))
     if estimate.kit is not None and final.kit is None:
         placed = _place_sliders(sizing, bom, aero, layout, fixed, final, settings, band)
     components = (*fixed, *placed)
-    mass_items = (*final.items, *(c.mass_item() for c in components))
+    mass_items, gear = _final_mass(sizing, layout, final, components)
     mass = mp.combine(list(mass_items))
+    clearance: PropClearance = prop_clearance(layout, gear, mass.cg_m[0], sizing.launch_method)
+    strikes: int = 1 if clearance.strikes else 0
+    if strikes:
+        logger.warning("propeller strike: tail gap %.3f m, ground clearance %s m", clearance.tail_gap_m,
+                       "n/a" if clearance.ground_m is None else f"{clearance.ground_m:.3f}")
     result = PackingResult(
         components=components, mass=mass, static_margin=(aero.x_np_m - mass.cg_m[0]) / layout.wing.mac_m, band=band,
-        collision_count=count_collisions(components, parts.boom_obstacles(layout)),
+        collision_count=count_collisions(components, parts.boom_obstacles(layout)) + strikes,
         containment_violations=parts.containment_violations(components, oml),
         shell_areal_density_kg_m2=final.shell_areal_density_kg_m2, oml=oml, structure=final.structure,
+        propeller=layout.propeller, gear=gear, clearance=clearance,
         kit=final.kit, kit_warning=final.kit_warning, mass_items=mass_items, settings=settings,
         kit_items=final.kit_items,
     )
@@ -458,6 +508,7 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
         build_sheet_path=str(kit_files.build_sheet) if kit_files else None,
         kit_mass_kg=sum(i.mass_kg for i in result.kit_items) if result.kit is not None else None,
         kit_warning=_kit_warning(result.kit_warning, files_warning, solids_warning),
+        propeller_x_m=result.propeller.x_m, propeller_z_m=result.propeller.z_m,
     )
 
 

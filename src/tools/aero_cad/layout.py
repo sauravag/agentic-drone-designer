@@ -24,9 +24,12 @@ from src.tools.sizing.layouts import (  # noqa: F401  (MIN_BOOM_DIAMETER_M re-ex
     VTAIL_ASPECT_RATIO,
     VTAIL_TAPER_RATIO,
     WING_TAPER_RATIO,
+    LayoutSpec,
     layout_spec,
     lift_boom_geometry,
     lift_rotor_half_spacing_m,
+    pusher_mount_length_m,
+    pusher_tail_gap_m,
     tail_boom_diameter_m,
     trapezoid_mac_m,
     trapezoid_root_chord_m,
@@ -127,12 +130,14 @@ class PlacedTailSurface:
 
 @dataclass(frozen=True)
 class PropellerStation:
-    """Where the cruise propeller sits (hub centre, fuselage axes). The diameter is added with its first reader."""
+    """Where the cruise propeller sits (hub centre, fuselage axes) and its diameter (0 when the layout was built
+    without a BOM: a boom-end pusher's station then has no tail gap or motor mount)."""
 
     x_m: float
     y_m: float
     z_m: float
     is_pusher: bool
+    diameter_m: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -224,22 +229,42 @@ def _place_tail(sizing: SizingOutput, wing: SurfacePlanform) -> tuple[PlacedTail
     return tuple(placed)
 
 
-def _tail_booms(length: float, diameter_fus: float, tail: tuple[PlacedTailSurface, ...]) -> tuple[Boom, ...]:
+def tail_trailing_edge_m(tail: tuple[PlacedTailSurface, ...]) -> float:
+    """Aft-most root trailing edge of the tail surfaces (straight leading edges taper forward to the tips)."""
     if not tail:
         raise ValueError("layout has no tail surfaces to size a tail boom for")
+    return max(t.planform.x_le_root_m + t.planform.root_chord_m for t in tail)
+
+
+def _tail_booms(spec: LayoutSpec, length: float, diameter_fus: float, tail: tuple[PlacedTailSurface, ...],
+                propeller_diameter_m: float = 0.0) -> tuple[Boom, ...]:
+    """The centre boom from its buried root to the tail trailing edge (plus the propeller gap for a boom-end
+    pusher); none when the empennage fits on the fuselage, except for a boom-end pusher, whose boom carries the
+    motor (a disc that ends up ahead of the pod's tail is a clearance failure, not a missing boom)."""
+    if spec.booms != "centre":
+        raise ValueError(f"no tail-boom placement for {spec.booms!r} booms yet")
     start: float = TAIL_BOOM_START_FRACTION * length
-    end: float = max(t.planform.x_le_root_m + t.planform.root_chord_m for t in tail)
-    if end <= length:
+    end: float = tail_trailing_edge_m(tail)
+    is_boom_end_pusher: bool = spec.propeller == "pusher_boom_end"
+    if is_boom_end_pusher:
+        end += pusher_tail_gap_m(propeller_diameter_m)
+    if is_boom_end_pusher and end <= start:
+        raise ValueError(f"the boom-end pusher's boom would end at {end:.3f} m, ahead of its root at {start:.3f} m")
+    if not is_boom_end_pusher and end <= length:
         return ()  # empennage fits on the fuselage itself
     diameter: float = tail_boom_diameter_m(diameter_fus)
     return (Boom(x_start_m=start, length_m=end - start, diameter_m=diameter, y_m=0.0, z_m=0.0),)
 
 
-def _propeller_station(sizing: SizingOutput) -> PropellerStation:
-    """Hub on the fuselage axis; the spec decides nose or pusher placement."""
-    if layout_spec(sizing.airframe_layout).propeller != "tractor_nose":
-        raise ValueError(f"no propeller placement for layout {sizing.airframe_layout!r} yet")
-    return PropellerStation(x_m=0.0, y_m=0.0, z_m=0.0, is_pusher=False)
+def _propeller_station(spec: LayoutSpec, tail_booms: tuple[Boom, ...], diameter_m: float) -> PropellerStation:
+    """Nose hub for a tractor; for a boom-end pusher, on the boom axis the motor-mount length behind the boom end."""
+    if spec.propeller == "tractor_nose":
+        return PropellerStation(x_m=0.0, y_m=0.0, z_m=0.0, is_pusher=False, diameter_m=diameter_m)
+    if spec.propeller == "pusher_boom_end":
+        boom = tail_booms[0]  # `_tail_booms` always builds a boom-end pusher's boom
+        return PropellerStation(x_m=boom.x_end_m + pusher_mount_length_m(diameter_m), y_m=boom.y_m, z_m=boom.z_m,
+                                is_pusher=True, diameter_m=diameter_m)
+    raise ValueError(f"propeller placement {spec.propeller!r} is not built yet")
 
 
 def _vtol_arrangement(sizing: SizingOutput, wing: SurfacePlanform,
@@ -262,10 +287,12 @@ def _vtol_arrangement(sizing: SizingOutput, wing: SurfacePlanform,
 
 
 def layout_from_sizing(sizing: SizingOutput, wing_station: float = DEFAULT_WING_STATION,
-                       min_fuselage_diameter_m: float = 0.0, min_fuselage_length_m: float = 0.0) -> AircraftLayout:
+                       min_fuselage_diameter_m: float = 0.0, min_fuselage_length_m: float = 0.0,
+                       propeller_diameter_m: float = 0.0) -> AircraftLayout:
     """General arrangement for `sizing`. `wing_station` slides the wing+tail group along the
     fuselage; the `min_fuselage_*` floors grow the pod so the internal COTS parts fit (SRS 4.3: the
-    pod is sized to house payload, tank and avionics). Tail arm stays the sized absolute value."""
+    pod is sized to house payload, tank and avionics). Tail arm stays the sized absolute value.
+    `propeller_diameter_m` (the BOM's cruise propeller) sets a boom-end pusher's tail gap and motor mount."""
     lo, hi = WING_STATION_BOUNDS
     if not lo <= wing_station <= hi:
         raise ValueError(f"wing_station {wing_station:.3f} must be within [{lo}, {hi}] of fuselage length")
@@ -273,12 +300,14 @@ def layout_from_sizing(sizing: SizingOutput, wing_station: float = DEFAULT_WING_
     diameter: float = max(sizing.fuselage_diameter_m, min_fuselage_diameter_m)
     wing: SurfacePlanform = _main_wing(sizing, wing_station, length, diameter)
     tail = _place_tail(sizing, wing)
+    spec: LayoutSpec = layout_spec(sizing.airframe_layout)
+    tail_booms = _tail_booms(spec, length, diameter, tail, propeller_diameter_m)
     is_quad: bool = sizing.airframe_topology == "quadplane_vtol"
     booms, rotors = _vtol_arrangement(sizing, wing, diameter) if is_quad else ((), ())
     return AircraftLayout(
         fuselage_length_m=length, fuselage_diameter_m=diameter,
-        wing=wing, tail_surfaces=tail, tail_booms=_tail_booms(length, diameter, tail),
-        propeller=_propeller_station(sizing),
+        wing=wing, tail_surfaces=tail, tail_booms=tail_booms,
+        propeller=_propeller_station(spec, tail_booms, propeller_diameter_m),
         vtol_booms=booms, rotor_positions=rotors, rotor_diameter_m=sizing.rotor_diameter_m if is_quad else 0.0,
         airfoil=sizing.airfoil, wing_station=wing_station,
     )

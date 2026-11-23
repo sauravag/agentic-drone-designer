@@ -37,6 +37,7 @@ GROUPS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     ),
     "Efficiencies": (
         ("drivetrain_efficiency", "Drivetrain efficiency (fraction)"),
+        ("pusher_efficiency_factor", "Pusher installation factor (fraction, pusher layouts)"),
         ("hover_figure_of_merit", "Hover figure of merit (fraction)"),
         ("lift_motor_efficiency", "Lift motor efficiency (fraction)"),
     ),

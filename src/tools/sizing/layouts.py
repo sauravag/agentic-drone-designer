@@ -43,6 +43,11 @@ HTAIL_ASPECT_RATIO: Final[float] = 4.0  # span^2 / area of the horizontal tail
 HTAIL_TAPER_RATIO: Final[float] = 0.6
 VTAIL_ASPECT_RATIO: Final[float] = 1.5  # height^2 / area of the single fin
 VTAIL_TAPER_RATIO: Final[float] = 0.6
+VTAIL_PAIR_ASPECT_RATIO: Final[float] = 4.0  # V-tail: tip-to-tip span^2 / total area of both panels (spec band 3-6)
+# Boom-end pusher: axial gap from the tail trailing edge to the boom end, and boom end to propeller hub (motor plus
+# its mount), as fractions of the propeller diameter. The mount length covers every catalog outrunner (<= 0.12 D).
+PUSHER_TAIL_GAP_FRACTION: Final[float] = 0.10
+PUSHER_MOTOR_MOUNT_FRACTION: Final[float] = 0.15
 
 # Shared by the sizing boom estimate and the CAD layout (aero_cad.layout re-imports them).
 WING_TAPER_RATIO: Final[float] = 0.5
@@ -58,6 +63,8 @@ VTOL_BOOM_OVERHANG_FRACTION: Final[float] = 0.15  # boom extension past each rot
 _SPECS: Final[dict[str, LayoutSpec]] = {
     "pod_boom_tractor": LayoutSpec("conventional", "centre", "tractor_nose", "straight", "tail_volume_h",
                                    TAILED_BAND),
+    "single_boom_vtail_pusher": LayoutSpec("v", "centre", "pusher_boom_end", "straight", "tail_volume_h",
+                                           TAILED_BAND),
 }
 
 
@@ -79,6 +86,16 @@ def tail_arm_m(spec: LayoutSpec, fuselage_length_m: float) -> float:
     if spec.booms != "centre":
         raise ValueError(f"no tail-arm rule for {spec.booms!r} booms yet")
     return TAIL_ARM_FRACTION * fuselage_length_m
+
+
+def pusher_tail_gap_m(propeller_diameter_m: float) -> float:
+    """Tail trailing edge to tail-boom end for a boom-end pusher (read at call time, so tests can patch it)."""
+    return PUSHER_TAIL_GAP_FRACTION * propeller_diameter_m
+
+
+def pusher_mount_length_m(propeller_diameter_m: float) -> float:
+    """Tail-boom end to propeller hub for a boom-end pusher: the motor and its mount."""
+    return PUSHER_MOTOR_MOUNT_FRACTION * propeller_diameter_m
 
 
 def trapezoid_root_chord_m(area_m2: float, span_m: float, taper_ratio: float) -> float:

@@ -174,6 +174,10 @@ class CADArtifacts(_Frozen):
     build_sheet_path: Optional[str] = None
     kit_mass_kg: Optional[NonNegative] = None  # packed kit mass (tubes, overwrap, covering, glue); None without a kit
     kit_warning: Optional[str] = None  # why there is no kit, or why its files or solids could not be written
+    # Cruise-propeller hub of the packed layout (structural axes). None in records saved before it existed: those are
+    # all nose tractors with the hub at the origin.
+    propeller_x_m: Optional[float] = None
+    propeller_z_m: Optional[float] = None
 
 
 class PlantCaseResult(_Frozen):

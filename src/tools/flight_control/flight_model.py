@@ -28,8 +28,10 @@ from src.tools.aero_cad.stability import cruise_lift_coefficient
 from src.tools.flight_control.control_channels import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,  # noqa: F401 (re-exported)
                                                        RUDDER_MAX_RAD, ControlChannel, channels_with_steering,
                                                        control_channels)
-from src.tools.gear import GearGeometry, GearInputs, PropellerDisc, landing_gear
+from src.tools.gear import GearGeometry, PropellerDisc
 from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor
+from src.tools.sizing.layouts import layout_spec
+from src.tools.sizing.mass_model import as_built_gear
 from src.units import G0
 
 SITL_ALTITUDE_M: Final[float] = 0.0  # SITL flies near sea level; gains are scheduled with airspeed
@@ -252,15 +254,25 @@ def _wing_tip_z_m(sizing: SizingOutput) -> float:
     return wing.z_at(wing.semi_span_m)
 
 
+def _propeller_disc(sizing: SizingOutput, bom: SelectedBOM, cad: CADArtifacts) -> PropellerDisc:
+    """The cruise propeller where the CAD stage packed it. A record without the hub position predates it and is a
+    nose tractor (hub at the origin); any other propeller needs the recorded station."""
+    diameter: float = bom.cruise_propeller.diameter_m
+    if cad.propeller_x_m is not None and cad.propeller_z_m is not None:
+        return PropellerDisc(cad.propeller_x_m, cad.propeller_z_m, diameter)
+    propeller = layout_spec(sizing.airframe_layout).propeller
+    if propeller != "tractor_nose":
+        raise ValueError(f"the CAD record has no propeller station, which a {propeller!r} propeller needs")
+    return PropellerDisc(0.0, 0.0, diameter)
+
+
 def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                        aero: AeroStabilityOutput, cad: CADArtifacts) -> FlightModel:
     """Assemble the flight model; raises FlightModelError if the design cannot hover/accelerate."""
     rho, _ = air_properties(SITL_ALTITUDE_M)
     cl_cruise: float = cruise_lift_coefficient(cad.as_built_mass_kg, rho, req.cruise_speed_ms, sizing.wing_area_m2)
     shaft_w: float = min(bom.cruise_motor.max_power_w, bom.cruise_propeller.max_power_w)
-    gear: GearGeometry = landing_gear(GearInputs(
-        sizing.launch_method, sizing.fuselage_length_m, sizing.fuselage_diameter_m, sizing.mean_chord_m,
-        sizing.wingspan_m, cad.x_cg_m, PropellerDisc(0.0, 0.0, bom.cruise_propeller.diameter_m)))
+    gear: GearGeometry = as_built_gear(sizing, cad.x_cg_m, _propeller_disc(sizing, bom, cad))
     model = FlightModel(
         mass_kg=cad.as_built_mass_kg, ixx_kgm2=cad.ixx_kgm2, iyy_kgm2=cad.iyy_kgm2, izz_kgm2=cad.izz_kgm2,
         ixz_kgm2=cad.ixz_kgm2, x_cg_m=cad.x_cg_m, static_margin=cad.static_margin,

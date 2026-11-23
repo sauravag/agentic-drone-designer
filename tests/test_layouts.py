@@ -151,7 +151,7 @@ def test_tail_booms_reject_empty_surfaces() -> None:
     from src.tools.aero_cad.layout import _tail_booms
 
     with pytest.raises(ValueError, match="no tail surfaces"):
-        _tail_booms(1.0, 0.1, ())
+        _tail_booms(layout_spec("pod_boom_tractor"), 1.0, 0.1, ())
 
 
 # ---------------------------------------------------------------- static-margin band ---
@@ -348,3 +348,167 @@ def test_layout_tail_boom_diameter_is_shared() -> None:
     layout = layout_from_sizing(size_aircraft(G1_ELECTRIC_FW))
     assert layout.tail_boom is not None
     assert layout.tail_boom.diameter_m == tail_boom_diameter_m(layout.fuselage_diameter_m)
+
+
+# ------------------------------------------------------------- V-tail pusher (phase 2, Task 6) ---
+import math  # noqa: E402
+
+from src.schemas.assumptions import DesignAssumptions  # noqa: E402
+from src.tools.aero_cad.layout import PropellerStation  # noqa: E402
+from src.tools.sizing import layouts  # noqa: E402
+from src.tools.sizing import mass_model as mm  # noqa: E402
+from src.tools.sizing.layouts import (PUSHER_MOTOR_MOUNT_FRACTION, PUSHER_TAIL_GAP_FRACTION, TAILED_BAND,  # noqa: E402
+                                      VTAIL_PAIR_ASPECT_RATIO, LayoutSpec)
+from src.tools.sizing.mission_solver import cruise_drivetrain_efficiency  # noqa: E402
+
+VTAIL = "single_boom_vtail_pusher"
+G1_PROP_DIAMETER_M = 0.279
+
+
+def _vtail_geometry() -> mm.Geometry:
+    return mm.size_geometry(5.0, 0.6, 9.0, 0.45, 0.035, 1.0, layout_spec(VTAIL))
+
+
+def test_vtail_pusher_spec_is_built_but_not_enabled() -> None:
+    assert layout_spec(VTAIL) == LayoutSpec("v", "centre", "pusher_boom_end", "straight", "tail_volume_h", TAILED_BAND)
+    assert not any(layout == VTAIL for layout, _ in requirements_module.ENABLED_LAYOUTS)
+    assert VTAIL_PAIR_ASPECT_RATIO == 4.0 and PUSHER_TAIL_GAP_FRACTION == 0.10
+
+
+def test_vtail_area_and_dihedral() -> None:
+    g = _vtail_geometry()
+    (t,) = g.tail_surfaces
+    s_h = 0.45 * 0.6 * g.mean_chord_m / g.tail_arm_m
+    s_v = 0.035 * 0.6 * g.wingspan_m / g.tail_arm_m
+    assert t.name == "vtail_pair" and t.control == "ruddervator" and t.is_symmetric
+    assert t.area_m2 == pytest.approx(s_h + s_v)
+    assert t.span_m == pytest.approx(math.sqrt(VTAIL_PAIR_ASPECT_RATIO * (s_h + s_v)))
+    assert t.dihedral_deg == pytest.approx(math.degrees(math.atan(math.sqrt(s_v / s_h))))
+    assert effective_tail_areas(g.tail_surfaces) == pytest.approx((s_h, s_v))
+    assert (g.horizontal_tail_area_m2, g.vertical_tail_area_m2) == pytest.approx((s_h, s_v))
+    assert g.tail_arm_m == pytest.approx(tail_arm_m(layout_spec(VTAIL), g.fuselage_length_m))
+
+
+def test_unknown_tail_kind_has_no_sizing_rule() -> None:
+    spec = dataclasses.replace(layout_spec(VTAIL), tail="inverted_v")
+    with pytest.raises(ValueError, match="inverted_v"):
+        mm.size_geometry(5.0, 0.6, 9.0, 0.45, 0.035, 1.0, spec)
+
+
+def test_pusher_efficiency_applies_only_to_pushers() -> None:
+    assumptions = DesignAssumptions(drivetrain_efficiency=0.70)
+    tractor = cruise_drivetrain_efficiency(layout_spec("pod_boom_tractor"), assumptions)
+    pusher = cruise_drivetrain_efficiency(layout_spec(VTAIL), assumptions)
+    assert tractor == 0.70
+    assert pusher == pytest.approx(0.95 * tractor)
+    custom = assumptions.model_copy(update={"pusher_efficiency_factor": 0.85})
+    assert cruise_drivetrain_efficiency(layout_spec(VTAIL), custom) == pytest.approx(0.85 * 0.70)
+
+
+@pytest.mark.parametrize("bad", [0.79, 1.01])
+def test_pusher_efficiency_factor_is_bounded(bad: float) -> None:
+    assert DEFAULT_ASSUMPTIONS.pusher_efficiency_factor == 0.95
+    with pytest.raises(ValidationError):
+        DesignAssumptions(pusher_efficiency_factor=bad)
+
+
+def test_change_set_can_set_the_pusher_efficiency_factor() -> None:
+    change = ChangeSet(label="pusher", requirements=RequirementChanges(),
+                       assumptions=AssumptionChanges(pusher_efficiency_factor=0.9), knobs=KnobChanges())
+    _, assumptions, _ = apply_changes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, change)
+    assert assumptions.pusher_efficiency_factor == 0.9
+
+
+def test_pusher_tail_boom_reaches_past_the_tail_by_the_gap() -> None:
+    g = _vtail_geometry()
+    spec = layout_spec(VTAIL)
+    as_tractor = dataclasses.replace(spec, propeller="tractor_nose")
+    (pusher_boom,) = mm.sizing_booms(g, spec, 0.0)
+    (plain_boom,) = mm.sizing_booms(g, as_tractor, 0.0)
+    gap = PUSHER_TAIL_GAP_FRACTION * g.fuselage_diameter_m  # sizing's propeller estimate: the fuselage diameter
+    assert pusher_boom.length_m == pytest.approx(plain_boom.length_m + gap)
+    assert mm.boom_mass_kg(pusher_boom) > mm.boom_mass_kg(plain_boom)
+
+
+def test_sizing_gear_puts_the_pusher_disc_at_the_boom_end() -> None:
+    from src.tools.gear import GearInputs, PropellerDisc, landing_gear
+
+    g, spec = _vtail_geometry(), layout_spec(VTAIL)
+    (boom,) = mm.sizing_booms(g, spec, 0.0)
+    boom_end = mm.TAIL_BOOM_START_FRACTION * g.fuselage_length_m + boom.length_m
+    diameter = g.fuselage_diameter_m
+    _, _, x_ac = mm._default_station_wing_m(g)
+    x_cg = x_ac - spec.static_margin.target * g.mean_chord_m
+    expected = landing_gear(GearInputs("runway", g.fuselage_length_m, diameter, g.mean_chord_m, g.wingspan_m, x_cg,
+                                       PropellerDisc(boom_end + PUSHER_MOTOR_MOUNT_FRACTION * diameter, 0.0, diameter)))
+    gear = mm.sizing_gear(g, spec, "runway")
+    assert gear == expected
+    assert gear.leg_height_m > gear.base_leg_height_m  # the take-off rotation sets the leg, not the fuselage
+
+
+def test_pusher_pod_has_no_estimate_yet() -> None:
+    spec = dataclasses.replace(layout_spec(VTAIL), propeller="pusher_pod")
+    with pytest.raises(ValueError, match="not built yet"):
+        mm.sizing_gear(_vtail_geometry(), spec, "runway")
+
+
+def test_vtail_pusher_sizes_with_a_ruddervator_pair(vtail_g1_sizing: SizingOutput) -> None:
+    sizing = vtail_g1_sizing
+    assert sizing.airframe_layout == VTAIL
+    assert [(t.name, t.control) for t in sizing.tail_surfaces] == [("vtail_pair", "ruddervator")]
+    assert sizing.gear_kind == "tricycle"
+    assert sizing.empty_mass_breakdown["tail_boom"] > 0
+
+
+def test_vtail_layout_places_one_mirrored_surface(vtail_g1_sizing: SizingOutput) -> None:
+    layout = layout_from_sizing(vtail_g1_sizing, propeller_diameter_m=G1_PROP_DIAMETER_M)
+    (pair,) = layout.tail_surfaces
+    assert pair.control == "ruddervator" and not pair.is_vertical and pair.planform.is_symmetric
+    assert pair.dihedral_deg == pytest.approx(vtail_g1_sizing.tail_surfaces[0].dihedral_deg)
+    assert pair.planform.x_ac_m - layout.wing.x_ac_m == pytest.approx(vtail_g1_sizing.tail_arm_m)
+
+
+def test_boom_end_station_behind_vtail(vtail_g1_sizing: SizingOutput) -> None:
+    layout = layout_from_sizing(vtail_g1_sizing, propeller_diameter_m=G1_PROP_DIAMETER_M)
+    te = max(t.planform.x_le_root_m + t.planform.root_chord_m for t in layout.tail_surfaces)
+    assert layout.propeller.is_pusher and layout.tail_boom.x_end_m == pytest.approx(te + 0.0279)
+    assert layout.propeller.x_m == pytest.approx(layout.tail_boom.x_end_m
+                                                 + PUSHER_MOTOR_MOUNT_FRACTION * G1_PROP_DIAMETER_M)
+    assert layout.propeller.z_m == layout.tail_boom.z_m
+    assert layout.propeller.diameter_m == G1_PROP_DIAMETER_M
+
+
+def test_tractor_station_gains_only_the_diameter(designs: dict) -> None:
+    sizing = designs["g1"][0]
+    plain, with_d = layout_from_sizing(sizing), layout_from_sizing(sizing, propeller_diameter_m=G1_PROP_DIAMETER_M)
+    assert with_d.propeller == PropellerStation(0.0, 0.0, 0.0, False, G1_PROP_DIAMETER_M)
+    assert dataclasses.replace(with_d, propeller=plain.propeller) == plain
+
+
+def test_pusher_pod_station_is_not_built_yet(vtail_g1_sizing: SizingOutput, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(layouts._SPECS, VTAIL, dataclasses.replace(layout_spec(VTAIL), propeller="pusher_pod"))
+    with pytest.raises(ValueError, match="not built yet"):
+        layout_from_sizing(vtail_g1_sizing, propeller_diameter_m=G1_PROP_DIAMETER_M)
+
+
+def test_flight_model_gear_uses_the_cad_propeller_station() -> None:
+    from src.tools.gear import GearInputs, PropellerDisc, landing_gear
+
+    req, sizing, bom, aero, cad = load_design("g1")
+    tractor = build_flight_model(req, sizing, bom, aero, cad)
+    at_nose = cad.model_copy(update={"propeller_x_m": 0.0, "propeller_z_m": 0.0})
+    assert build_flight_model(req, sizing, bom, aero, at_nose).gear == tractor.gear
+    x_hub = 1.3
+    pusher = build_flight_model(req, sizing.model_copy(update={"airframe_layout": VTAIL}), bom, aero,
+                                cad.model_copy(update={"propeller_x_m": x_hub, "propeller_z_m": 0.0}))
+    expected = landing_gear(GearInputs("runway", sizing.fuselage_length_m, sizing.fuselage_diameter_m,
+                                       sizing.mean_chord_m, sizing.wingspan_m, cad.x_cg_m,
+                                       PropellerDisc(x_hub, 0.0, bom.cruise_propeller.diameter_m)))
+    assert pusher.gear == expected
+    assert pusher.gear.leg_height_m > tractor.gear.leg_height_m
+
+
+def test_pusher_flight_model_needs_the_cad_propeller_station() -> None:
+    req, sizing, bom, aero, cad = load_design("g1")
+    with pytest.raises(ValueError, match="propeller station"):
+        build_flight_model(req, sizing.model_copy(update={"airframe_layout": VTAIL}), bom, aero, cad)

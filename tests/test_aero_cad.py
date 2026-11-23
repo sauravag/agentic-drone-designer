@@ -423,6 +423,7 @@ def test_pack_aircraft_exports_assembly(designs: dict, tmp_path: Path, no_kit: N
     assert len(reloaded.solids()) >= 2 * len(structure.rib_stations(lay)) + 4
     tensor = np.array([[art.ixx_kgm2, 0, -art.ixz_kgm2], [0, art.iyy_kgm2, 0], [-art.ixz_kgm2, 0, art.izz_kgm2]])
     assert mass_properties.is_positive_definite(tensor)
+    assert (art.propeller_x_m, art.propeller_z_m) == (lay.propeller.x_m, lay.propeller.z_m)  # the flight model's
 
 
 # ---------------------------------------------------------------------------------- laser-cut kit ---
@@ -858,3 +859,143 @@ def test_hand_launched_design_has_no_residual_gear_item(designs: dict, tmp_path:
     assert residual_gear_item(hand, lay, sizing_output_gear(hand)) is None
     result = cad_packer.pack_layout(hand, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
     assert GEAR_NAME not in {i.name for i in result.mass_items}
+
+
+# ------------------------------------------------- boom-end pusher: station, clearance (phase 2, Task 6) ---
+from dataclasses import replace as _replace  # noqa: E402
+
+from src.tools.aero_cad.clearance import BELLY_LANDING_PITCH_DEG, PropClearance, prop_clearance  # noqa: E402
+from src.tools.gear import (PROP_TIP_CLEARANCE_FRACTION, ROTATION_ANGLE_DEG, GearGeometry, GearInputs,  # noqa: E402
+                            PropellerDisc, gear_mass_kg, landing_gear)
+from src.tools.sizing import layouts as sizing_layouts  # noqa: E402
+
+
+def _pusher_layout(sizing, bom, station: float = 0.30) -> AircraftLayout:
+    diameter: float = max(sizing.fuselage_diameter_m, kit_fuselage_diameter_m(sizing, bom))
+    return layout_from_sizing(sizing, station, diameter, components.required_fuselage_length_m(sizing, bom, diameter),
+                              propeller_diameter_m=bom.cruise_propeller.diameter_m)
+
+
+def _layout_gear(sizing, layout: AircraftLayout, launch: str, x_cg: float) -> GearGeometry:
+    """The gear the packer builds: the sized airframe (as the flight model reads it) with the layout's propeller."""
+    p = layout.propeller
+    return landing_gear(GearInputs(launch, sizing.fuselage_length_m, sizing.fuselage_diameter_m, sizing.mean_chord_m,
+                                   sizing.wingspan_m, x_cg, PropellerDisc(p.x_m, p.z_m, p.diameter_m)))
+
+
+def _pack_pusher(sizing, bom, tmp_path: Path) -> cad_packer.PackingResult:
+    lay = _pusher_layout(sizing, bom)
+    return cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
+
+
+def test_cruise_motor_sits_ahead_of_its_station(designs: dict, vtail_g1) -> None:
+    sizing, bom = designs["g1"]
+    tractor = components.cruise_motor(bom, layout_from_sizing(sizing))
+    assert tractor.x_max == pytest.approx(-components.COMPONENT_GAP_M) and tractor.center_m[1:] == (0.0, 0.0)
+    vsizing, vbom = vtail_g1
+    lay = _pusher_layout(vsizing, vbom)
+    pusher = components.cruise_motor(vbom, lay)
+    assert pusher.x_max == pytest.approx(lay.propeller.x_m)
+    assert pusher.x_min >= lay.tail_boom.x_end_m and pusher.center_m[2] == lay.tail_boom.z_m
+    assert pusher.mass_kg == pytest.approx(vbom.cruise_motor.mass_kg + vbom.cruise_propeller.mass_kg)
+    assert not pusher.is_internal
+
+
+def test_runway_clearance_is_measured_at_the_rotation_angle(vtail_g1) -> None:
+    sizing, bom = vtail_g1
+    lay = _pusher_layout(sizing, bom)
+    x_cg = lay.wing.x_ac_m - 0.11 * lay.wing.mac_m
+    gear = _layout_gear(sizing, lay, "runway", x_cg)
+    clearance = prop_clearance(lay, gear, x_cg, "runway")
+    radius = lay.propeller.diameter_m / 2
+    main = gear.contacts[1]
+    theta = math.radians(ROTATION_ANGLE_DEG)
+    expected = ((lay.propeller.z_m - radius - main.z_m) * math.cos(theta)
+                - (lay.propeller.x_m - main.x_m) * math.sin(theta))
+    assert clearance.ground_m == pytest.approx(expected)
+    assert clearance.ground_m == pytest.approx(PROP_TIP_CLEARANCE_FRACTION * radius)  # the gear rule sized the leg
+    te = max(t.planform.x_le_root_m + t.planform.root_chord_m for t in lay.tail_surfaces)
+    assert clearance.tail_gap_m == pytest.approx(lay.propeller.x_m - te)
+    assert clearance.belly_m is None and not clearance.needs_folding_prop
+
+
+def test_vertical_clearance_is_level(vtail_g1) -> None:
+    sizing, bom = vtail_g1
+    lay = _pusher_layout(sizing, bom)
+    x_cg = lay.wing.x_ac_m
+    gear = _layout_gear(sizing, lay, "vertical", x_cg)
+    clearance = prop_clearance(lay, gear, x_cg, "vertical")
+    assert clearance.ground_m == pytest.approx(lay.propeller.z_m - lay.propeller.diameter_m / 2 + gear.leg_height_m)
+
+
+def test_hand_launched_pusher_needs_folding_prop(vtail_g1) -> None:
+    sizing, bom = vtail_g1
+    lay = _pusher_layout(sizing, bom)
+    x_cg = lay.wing.x_ac_m
+    gear = _layout_gear(sizing, lay, "hand", x_cg)
+    clearance = prop_clearance(lay, gear, x_cg, "hand")
+    assert gear.kind == "none"
+    assert clearance.ground_m is None and clearance.belly_m is not None
+    assert clearance.needs_folding_prop
+
+
+def test_belly_line_is_taken_at_the_landing_pitch(designs: dict) -> None:
+    """Hand-launched tractor with a tiny propeller: clear of the belly line at BELLY_LANDING_PITCH_DEG, no fold."""
+    sizing, _ = designs["g1"]
+    lay = layout_from_sizing(sizing, propeller_diameter_m=0.02)
+    clearance = prop_clearance(lay, GearGeometry("none", (), 0.0), lay.wing.x_ac_m, "hand")
+    pitch = math.radians(BELLY_LANDING_PITCH_DEG)
+    tip_drop = -0.01 * math.cos(pitch)  # tip of the disc at the nose (x = 0)
+    lowest = min(-lay.fuselage_diameter_m / 2 * math.cos(pitch) - 0.80 * lay.fuselage_length_m * math.sin(pitch),
+                 -lay.tail_boom.diameter_m / 2 * math.cos(pitch) - lay.tail_boom.x_end_m * math.sin(pitch))
+    assert clearance.belly_m == pytest.approx(tip_drop - lowest)
+    assert clearance.belly_m > PROP_TIP_CLEARANCE_FRACTION * 0.01 and not clearance.needs_folding_prop
+
+
+def test_prop_disc_into_tail_is_a_collision(vtail_g1, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                            no_kit: None) -> None:
+    monkeypatch.setattr(sizing_layouts, "PUSHER_TAIL_GAP_FRACTION", -0.5)  # disc pulled into the V-tail
+    sizing, bom = vtail_g1
+    result = _pack_pusher(sizing, bom, tmp_path)
+    assert result.clearance.tail_gap_m < 0
+    assert result.collision_count >= 1 and not result.is_balanced
+
+
+def test_prop_ground_strike_is_reported(vtail_g1, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                        no_kit: None) -> None:
+    real = cad_packer.as_built_gear
+
+    def short_legs(sizing, x_cg_m: float, propeller: PropellerDisc) -> GearGeometry:
+        gear = real(sizing, x_cg_m, propeller)
+        stub = sizing.fuselage_diameter_m / 2
+        return _replace(gear, contacts=tuple(_replace(c, z_m=-stub) for c in gear.contacts), leg_height_m=stub)
+
+    monkeypatch.setattr(cad_packer, "as_built_gear", short_legs)
+    sizing, bom = vtail_g1
+    result = _pack_pusher(sizing, bom, tmp_path)
+    assert result.clearance.ground_m < 0
+    assert result.collision_count >= 1 and not result.is_balanced
+
+
+def test_vtail_pusher_g1_balances_on_host(vtail_g1, tmp_path: Path) -> None:
+    sizing, bom = vtail_g1
+    design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
+    packing = design.packing
+    assert packing.is_balanced and packing.interference_count == 0
+    assert design.layout.propeller.is_pusher
+    assert design.layout.propeller.diameter_m == bom.cruise_propeller.diameter_m
+    assert packing.gear == _layout_gear(sizing, design.layout, "runway", packing.mass.cg_m[0])
+    assert packing.clearance.tail_gap_m > 0 and packing.clearance.ground_m > 0
+    # the V-tail kit lands in Task 8: until then the packer falls back cleanly, not through the unexpected-error path
+    assert packing.kit is None and "V-tail" in packing.kit_warning and "unexpected" not in packing.kit_warning
+
+
+def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> None:
+    r = packed("g1")
+    sizing, bom = designs["g1"]
+    lay = _fitted_layout(sizing, bom)
+    assert r.propeller == _replace(lay.propeller, diameter_m=bom.cruise_propeller.diameter_m)
+    assert r.gear.kind == "tricycle" and isinstance(r.clearance, PropClearance)
+    assert r.clearance.tail_gap_m > 0 and r.clearance.ground_m > 0
+    gear_item = next(i for i in r.mass_items if i.name == GEAR_NAME)
+    assert gear_item.mass_kg == pytest.approx(gear_mass_kg(r.gear, sizing.airframe_topology, sizing.mtow_kg))

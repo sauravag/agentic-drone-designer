@@ -90,7 +90,8 @@ class _Search:
         if station in self.evaluated:
             return self.evaluated[station]
         n: int = len(self.evaluated) + 1
-        layout = layout_from_sizing(self.sizing, station, self.min_diameter, self.min_length)
+        layout = layout_from_sizing(self.sizing, station, self.min_diameter, self.min_length,
+                                    propeller_diameter_m=self.bom.cruise_propeller.diameter_m)
         analysis = self.analyse(layout)
         try:
             packing = pack_layout(self.sizing, self.bom, analysis.aero, layout, analysis.step_path, self.settings)

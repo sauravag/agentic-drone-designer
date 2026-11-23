@@ -30,7 +30,7 @@ from src.tools.sizing.aero_model import (
     select_airfoil,
 )
 from src.tools.gear import GearGeometry
-from src.tools.sizing.layouts import BoomSet, layout_spec
+from src.tools.sizing.layouts import BoomSet, LayoutSpec, layout_spec
 from src.tools.sizing.mass_model import (
     PropulsionLoads,
     empty_mass_breakdown,
@@ -128,6 +128,14 @@ def _validate_overrides(overrides: dict[str, float]) -> dict[str, float]:
     return {**OVERRIDE_DEFAULTS, **{k: float(v) for k, v in overrides.items()}}
 
 
+def cruise_drivetrain_efficiency(spec: LayoutSpec, assumptions: DesignAssumptions) -> float:
+    """Cruise electrical-to-thrust efficiency: the drivetrain efficiency, times the pusher installation factor for a
+    propeller working in the wake of the airframe (any pusher layout)."""
+    if spec.propeller == "tractor_nose":
+        return assumptions.drivetrain_efficiency
+    return assumptions.drivetrain_efficiency * assumptions.pusher_efficiency_factor
+
+
 def _wing_area_m2(mtow: float, design: _Design, rho_to: float, rho_c: float) -> float:
     """Binding of two constraints: stall at max_stall_speed at the take-off site, and cruise at altitude flown
     no slower than SPEED_MARGIN_OVER_STALL x local stall (CL <= CLmax / margin^2)."""
@@ -167,7 +175,7 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float, tuple[B
 
 def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     req, assumptions = design.req, design.assumptions
-    eta: float = assumptions.drivetrain_efficiency
+    eta: float = cruise_drivetrain_efficiency(layout_spec(req.airframe_layout), assumptions)
     aero, mu_c, booms = _aero_state(mtow, design)
     _, mu_to = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
     hotel: float = hotel_power_w(req, mtow, assumptions)

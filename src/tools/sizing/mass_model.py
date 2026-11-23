@@ -19,12 +19,15 @@ from src.tools.sizing.layouts import (
     QUARTER_CHORD,
     TAIL_BOOM_START_FRACTION,
     VTAIL_ASPECT_RATIO,
+    VTAIL_PAIR_ASPECT_RATIO,
     VTAIL_TAPER_RATIO,
     WING_TAPER_RATIO,
     BoomSet,
     LayoutSpec,
     layout_spec,
     lift_boom_geometry,
+    pusher_mount_length_m,
+    pusher_tail_gap_m,
     tail_arm_m,
     tail_boom_diameter_m,
     trapezoid_mac_m,
@@ -110,8 +113,27 @@ def size_geometry(
         wing_area_m2=wing_area, aspect_ratio=aspect_ratio, wingspan_m=span, mean_chord_m=chord,
         fuselage_length_m=fus_length, fuselage_diameter_m=fus_length / FUSELAGE_FINENESS,
         horizontal_tail_area_m2=h_area, vertical_tail_area_m2=v_area, tail_arm_m=tail_arm,
-        tail_surfaces=_conventional_tail(h_area, v_area, tail_arm),
+        tail_surfaces=_tail_surfaces(spec, h_area, v_area, tail_arm),
     )
+
+
+def _tail_surfaces(spec: LayoutSpec, h_area: float, v_area: float, arm: float) -> tuple[TailSurface, ...]:
+    """The tail surfaces of the layout's tail kind, carrying the sized horizontal and vertical areas."""
+    if spec.tail == "conventional":
+        return _conventional_tail(h_area, v_area, arm)
+    if spec.tail == "v":
+        return (_vtail_pair(h_area, v_area, arm),)
+    raise ValueError(f"no tail sizing rule for a {spec.tail!r} tail yet")
+
+
+def _vtail_pair(h_area: float, v_area: float, arm: float) -> TailSurface:
+    """One mirrored V-tail surface (two panels) of area S_h + S_v at dihedral atan(sqrt(S_v / S_h)), so its
+    projected areas (S cos^2, S sin^2) are exactly S_h and S_v; span = sqrt(VTAIL_PAIR_ASPECT_RATIO x area)."""
+    area: float = h_area + v_area
+    return TailSurface(name="vtail_pair", control="ruddervator", area_m2=area,
+                       span_m=math.sqrt(VTAIL_PAIR_ASPECT_RATIO * area), taper_ratio=HTAIL_TAPER_RATIO,
+                       dihedral_deg=math.degrees(math.atan(math.sqrt(v_area / h_area))), arm_m=arm,
+                       is_symmetric=True)
 
 
 def _conventional_tail(h_area: float, v_area: float, arm: float) -> tuple[TailSurface, TailSurface]:
@@ -143,16 +165,32 @@ def boom_mass_kg(boom: BoomSet) -> float:
     return boom.count * boom.length_m * CF_TUBE_WALL_KG_M2 * math.pi * boom.diameter_m
 
 
+def _sizing_propeller_diameter_m(geom: Geometry) -> float:
+    """The propeller is not chosen until the BOM: sizing assumes one no larger than the fuselage (the CAD stage
+    recomputes the gear and clearances from the real one)."""
+    return geom.fuselage_diameter_m
+
+
+def _tail_boom_end_m(geom: Geometry, spec: LayoutSpec) -> float:
+    """Aft end of the centre tail boom at DEFAULT_WING_STATION: the tail trailing edge, plus the propeller gap for a
+    boom-end pusher (the motor sits beyond it)."""
+    if not geom.tail_surfaces:
+        raise ValueError("geometry has no tail surfaces to size a tail boom for")
+    _, _, x_ac = _default_station_wing_m(geom)
+    tail_end: float = max(_surface_trailing_edge_m(s, x_ac) for s in geom.tail_surfaces)
+    if spec.propeller == "pusher_boom_end":
+        return tail_end + pusher_tail_gap_m(_sizing_propeller_diameter_m(geom))
+    return tail_end
+
+
 def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> tuple[BoomSet, ...]:
     """The boom tubes the sizing books, estimated at DEFAULT_WING_STATION exactly as the CAD layout places them:
-    a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to the tail trailing edge (none when the tail sits
+    a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to `_tail_boom_end_m` (none when the tail sits
     on the pod), and two lift booms when there are lift rotors (`rotor_diameter_m` > 0)."""
     if spec.booms != "centre":
         raise ValueError(f"no boom estimate for {spec.booms!r} booms yet")
-    if not geom.tail_surfaces:
-        raise ValueError("geometry has no tail surfaces to size a tail boom for")
+    tail_end: float = _tail_boom_end_m(geom, spec)
     root, x_le, x_ac = _default_station_wing_m(geom)
-    tail_end: float = max(_surface_trailing_edge_m(s, x_ac) for s in geom.tail_surfaces)
     start: float = TAIL_BOOM_START_FRACTION * geom.fuselage_length_m
     tail: tuple[BoomSet, ...] = (
         (BoomSet(1, tail_end - start, tail_boom_diameter_m(geom.fuselage_diameter_m), "tail_boom"),)
@@ -164,16 +202,32 @@ def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> t
     return (*tail, BoomSet(LIFT_BOOM_COUNT, length, diameter, "lift_booms"))
 
 
+def _sizing_propeller(geom: Geometry, spec: LayoutSpec) -> PropellerDisc:
+    """Sizing's propeller-disc estimate: on the nose for a tractor; for a boom-end pusher, on the boom axis (z = 0,
+    the centre boom's height) the motor-mount length behind the tail-boom end."""
+    diameter: float = _sizing_propeller_diameter_m(geom)
+    if spec.propeller == "tractor_nose":
+        return PropellerDisc(0.0, 0.0, diameter)
+    if spec.propeller == "pusher_boom_end":
+        return PropellerDisc(_tail_boom_end_m(geom, spec) + pusher_mount_length_m(diameter), 0.0, diameter)
+    raise ValueError(f"no propeller-disc estimate for {spec.propeller!r} propellers: not built yet")
+
+
 def sizing_gear(geom: Geometry, spec: LayoutSpec, launch: LaunchMethod) -> GearGeometry:
     """Landing gear from sizing's own estimates: the wing at DEFAULT_WING_STATION, the CG at the layout's target
-    static margin ahead of the wing AC, and a propeller no larger than the fuselage (the propeller is not chosen
-    until the BOM; the CAD stage recomputes the gear from the real one)."""
-    if spec.propeller != "tractor_nose":
-        raise ValueError(f"no propeller-disc estimate for {spec.propeller!r} propellers yet")
+    static margin ahead of the wing AC, and the propeller disc `_sizing_propeller` estimates."""
+    propeller: PropellerDisc = _sizing_propeller(geom, spec)
     _, _, x_ac = _default_station_wing_m(geom)
     x_cg: float = x_ac - spec.static_margin.target * geom.mean_chord_m
     return landing_gear(GearInputs(launch, geom.fuselage_length_m, geom.fuselage_diameter_m, geom.mean_chord_m,
-                                   geom.wingspan_m, x_cg, PropellerDisc(0.0, 0.0, geom.fuselage_diameter_m)))
+                                   geom.wingspan_m, x_cg, propeller))
+
+
+def as_built_gear(sizing: SizingOutput, x_cg_m: float, propeller: PropellerDisc) -> GearGeometry:
+    """The gear of a packed design: the sized airframe with the as-built CG and the real propeller disc. The CAD
+    packer (residual mass, propeller clearance) and the flight model (JSBSim contacts) both build it here."""
+    return landing_gear(GearInputs(sizing.launch_method, sizing.fuselage_length_m, sizing.fuselage_diameter_m,
+                                   sizing.mean_chord_m, sizing.wingspan_m, x_cg_m, propeller))
 
 
 def sizing_output_gear(sizing: SizingOutput) -> GearGeometry:

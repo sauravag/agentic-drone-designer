@@ -47,6 +47,10 @@ class DesignAssumptions(BaseModel):
     drivetrain_efficiency: float = Field(
         0.68, ge=0.40, le=0.95, description="Cruise electrical-to-thrust efficiency (fraction)."
     )
+    pusher_efficiency_factor: float = Field(
+        0.95, ge=0.80, le=1.00,
+        description="Pusher installation loss on the cruise drivetrain efficiency (fraction; pusher layouts only).",
+    )
     hover_figure_of_merit: float = Field(
         0.72, ge=0.40, le=0.90, description="Rotor hover figure of merit (fraction)."
     )

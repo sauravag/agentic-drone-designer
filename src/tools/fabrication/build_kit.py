@@ -35,6 +35,7 @@ from typing import Callable, Final, Optional, Sequence
 import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
+from src.schemas.requirements import LAYOUT_LABELS
 from src.schemas.state import SizingOutput
 from src.tools.aero_cad.airfoil_geometry import AirfoilShape, load_airfoil
 from src.tools.aero_cad.components import PlacedComponent
@@ -47,6 +48,7 @@ from src.tools.aero_cad.layout import (
     fuselage_radius_at,
 )
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
+from src.tools.sizing.layouts import layout_spec
 from src.tools.fabrication.boom_parts import lift_boom_keep_out
 from src.tools.fabrication.fittings import boom_parts, component_plates, cruise_motor_plate, join_notes, split_to_bed
 from src.tools.fabrication.fuselage_parts import (
@@ -435,6 +437,10 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     """The whole kit for a Group 1-2 design; raises `KitUnavailable` when any part cannot be made from stock."""
     if sizing.dod_group > MAX_DOD_GROUP:
         raise KitUnavailable("laser-cut construction covers Group 1–2 designs only")
+    spec = layout_spec(sizing.airframe_layout)
+    if spec.tail != "conventional" or spec.propeller != "tractor_nose":
+        label: str = LAYOUT_LABELS.get(sizing.airframe_layout, sizing.airframe_layout)
+        raise KitUnavailable(f"the laser-cut kit has no parts for the {label} layout yet")
     spar = stiffened_spar_plan(sizing, layout, airfoil, settings)
     _check_tail_boom(sizing, layout, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)

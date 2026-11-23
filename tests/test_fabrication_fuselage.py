@@ -296,7 +296,7 @@ def test_boom_mounts_closer_than_30mm_are_unavailable(g1_kit_inputs):
 def _real_components(designs, case: str, layout) -> tuple[PlacedComponent, ...]:
     bom = designs[case][1]
     battery = _test_battery(layout).at_x(socket_axis_m(layout, 0.0)[0])
-    return components.payload(bom, layout), components.cruise_motor(bom), battery
+    return components.payload(bom, layout), components.cruise_motor(bom, layout), battery
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])

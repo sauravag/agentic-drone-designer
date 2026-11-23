@@ -1,6 +1,7 @@
 """Discrete parts as placed solids: construction from the BOM, collision and skin-containment checks.
 
-Arrangement (tractor, pod-and-boom): cruise motor on the nose bulkhead, EO/IR gimbal in the chin bay
+Arrangement (pod-and-boom): cruise motor at its propeller station (nose bulkhead for a tractor, tail-boom end for
+a boom-end pusher), EO/IR gimbal in the chin bay
 just aft (external turret, deliberately protruding), fuel tank centred on the neutral point,
 generator directly aft of the tank, battery and avionics tray solved by the packer. Lift motors sit
 on the VTOL booms. Booms are zero-mass obstacles (their mass is in the airframe shell).
@@ -124,13 +125,17 @@ def payload(bom: SelectedBOM, layout: AircraftLayout) -> PlacedComponent:
     return PlacedComponent("payload", "box", p.mass_kg, (p.length_m, p.width_m, p.height_m), (x, 0.0, z), False)
 
 
-def cruise_motor(bom: SelectedBOM) -> PlacedComponent:
-    """Tractor motor + propeller on the nose bulkhead (ahead of x = 0). The cruise ESC is not in
-    the BOM and is omitted (a few % of motor mass)."""
+def cruise_motor(bom: SelectedBOM, layout: AircraftLayout) -> PlacedComponent:
+    """Cruise motor + propeller just ahead of the propeller station: a tractor's ahead of the nose bulkhead (x = 0),
+    a boom-end pusher's between the boom end and the hub (the mount length leaves room for any catalog motor; a
+    longer one runs into the boom and counts as a collision). The cruise ESC is not in the BOM and is omitted (a few
+    % of motor mass)."""
     m = bom.cruise_motor
+    station = layout.propeller
     mass: float = m.mass_kg + bom.cruise_propeller.mass_kg
+    aft_face: float = station.x_m if station.is_pusher else station.x_m - COMPONENT_GAP_M
     return PlacedComponent("cruise_motor", "cylinder", mass, (m.length_m, m.diameter_m, m.diameter_m),
-                           (-COMPONENT_GAP_M - m.length_m / 2, 0.0, 0.0), False)
+                           (aft_face - m.length_m / 2, station.y_m, station.z_m), False)
 
 
 def hybrid_parts(sizing: SizingOutput, bom: SelectedBOM, layout: AircraftLayout, x_np: float) -> list[PlacedComponent]:
