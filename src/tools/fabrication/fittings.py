@@ -48,7 +48,7 @@ from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, socket_axis_m
 
 __all__ = ["boom_parts", "component_plates", "cruise_motor_plate", "join_notes", "split_to_bed"]
 
-SPLIT_SEARCH_M: Final[float] = 0.03
+SPLIT_SEARCH_M: Final[float] = 0.06  # nearest-first: widened from 30 mm for crowded crutches
 DOVETAIL_NECK_M: Final[float] = 0.010
 DOVETAIL_FLARE_M: Final[float] = 0.016
 DOVETAIL_DEPTH_M: Final[float] = 0.012

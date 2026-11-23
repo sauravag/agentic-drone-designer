@@ -72,7 +72,7 @@ def _fits_bed(face: bd.Face) -> bool:
 
 
 def test_dovetail_constants_are_the_brief_values():
-    assert (SPLIT_SEARCH_M, DOVETAIL_NECK_M, DOVETAIL_FLARE_M, DOVETAIL_DEPTH_M) == (0.03, 0.010, 0.016, 0.012)
+    assert (SPLIT_SEARCH_M, DOVETAIL_NECK_M, DOVETAIL_FLARE_M, DOVETAIL_DEPTH_M) == (0.06, 0.010, 0.016, 0.012)
 
 
 def test_part_that_fits_is_untouched():

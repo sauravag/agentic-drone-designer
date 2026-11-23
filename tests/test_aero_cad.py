@@ -5,6 +5,7 @@ Pure-Python / Build123d tests run anywhere. The end-to-end OpenVSP tests need th
 """
 
 import math
+import re
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -977,6 +978,9 @@ def test_prop_ground_strike_is_reported(vtail_g1, tmp_path: Path, monkeypatch: p
     assert result.collision_count >= 1 and not result.is_balanced
 
 
+GEAR_CG_TOL_M: float = 0.005  # gear placed from the estimate CG vs the packed CG
+
+
 def test_vtail_pusher_g1_balances_on_host(vtail_g1, tmp_path: Path) -> None:
     sizing, bom = vtail_g1
     design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
@@ -984,21 +988,43 @@ def test_vtail_pusher_g1_balances_on_host(vtail_g1, tmp_path: Path) -> None:
     assert packing.is_balanced and packing.interference_count == 0
     assert design.layout.propeller.is_pusher
     assert design.layout.propeller.diameter_m == bom.cruise_propeller.diameter_m
-    assert packing.gear == _layout_gear(sizing, design.layout, "runway", packing.mass.cg_m[0])
+    # the kit's gear is built at the CG of the pass-2 estimate (target-CG residual gear), close to the packed CG
+    expected = _layout_gear(sizing, design.layout, "runway", packing.mass.cg_m[0])
+    assert packing.gear.kind == expected.kind and packing.gear.leg_height_m == pytest.approx(expected.leg_height_m,
+                                                                                               abs=GEAR_CG_TOL_M)
+    for got, want in zip(packing.gear.contacts, expected.contacts, strict=True):
+        assert (got.name, got.x_m) == (want.name, pytest.approx(want.x_m, abs=GEAR_CG_TOL_M))
     assert packing.clearance.tail_gap_m > 0 and packing.clearance.ground_m > 0
-    # a kit failure falls back cleanly to the shell model, never through the unexpected-error path
-    assert packing.kit is not None or "unexpected" not in packing.kit_warning
+    assert packing.kit is not None, packing.kit_warning  # Task 8: the balanced V-tail pusher gets its kit
+    assert BOOM_MOTOR_WIRING_NOTE in packing.kit.notes
 
 
-@pytest.mark.xfail(strict=True, reason="Task 8 open item: at the balanced station the packed crutch C-1 finds no clear "
-                   "bed-split joint within SPLIT_SEARCH_M (30 mm, a brief value); the V-tail parts themselves build")
-def test_balanced_vtail_pusher_gets_its_kit(vtail_g1, tmp_path: Path) -> None:
-    design = build.balance_design(*vtail_g1, _synthetic_analyser(tmp_path))
-    assert design.packing.kit is not None, design.packing.kit_warning
-    assert BOOM_MOTOR_WIRING_NOTE in design.packing.kit.notes and FOLDING_PROP_NOTE not in design.packing.kit.notes
+VTAIL_SCAN_STATIONS: tuple[float, ...] = (0.30, 0.35, 0.40, 0.45, 0.50)  # the balance scan's span for this design
 
 
-KIT_BUILDING_VTAIL_STATION: float = 0.40  # a station whose packed crutch splits within today's 30 mm window
+@pytest.mark.parametrize("station", VTAIL_SCAN_STATIONS)
+def test_vtail_pusher_kit_builds_across_the_balance_scan(vtail_g1, station: float, tmp_path: Path) -> None:
+    """The packed G1 V-tail gets its kit at every wing station the balance search visits (not just a lucky one:
+    the crowded crutch must still find a bed-split joint)."""
+    sizing, bom = vtail_g1
+    lay = _pusher_layout(sizing, bom, station)
+    result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
+    assert result.kit is not None, result.kit_warning
+    assert BOOM_MOTOR_WIRING_NOTE in result.kit.notes and FOLDING_PROP_NOTE not in result.kit.notes
+
+
+def test_g2_vtail_pusher_falls_back_with_the_readable_wing_reason(vtail_g2, tmp_path: Path) -> None:
+    """Default stock: the heavier G2 V-tail's wing root torque overloads the R31 anti-rotation pin, so the run packs
+    the shell model and says why (a stock choice for the user, not a tail failure)."""
+    sizing, bom = vtail_g2
+    lay = _pusher_layout(sizing, bom, 0.35)
+    result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
+    assert result.kit is None
+    assert re.search(r"^No laser kit: anti-rotation pin: \d+ N from the spar's root torque overloads even a \d+ mm rod",
+                     result.kit_warning), result.kit_warning
+
+
+KIT_BUILDING_VTAIL_STATION: float = 0.30  # the station the host V-tail balance settles at
 
 
 def test_packed_kit_notes_the_folding_prop_when_the_clearance_needs_one(vtail_g1, tmp_path: Path,
