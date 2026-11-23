@@ -8,19 +8,19 @@
   "hover_power_w": 0.0
  },
  "G2 electric quadplane": {
-  "mtow_kg": 19.43351394761043,
-  "empty_mass_kg": 8.091008162225508,
-  "battery_mass_kg": 8.34250578538492,
+  "mtow_kg": 19.879247983288806,
+  "empty_mass_kg": 8.26223313146818,
+  "battery_mass_kg": 8.617014851820626,
   "fuel_mass_kg": 0.0,
-  "cruise_power_w": 401.20210465601696,
-  "hover_power_w": 4570.098813599805
+  "cruise_power_w": 420.5447487759532,
+  "hover_power_w": 4692.39784854103
  },
  "G3 hybrid quadplane": {
-  "mtow_kg": 132.41623300159557,
-  "empty_mass_kg": 57.02677229323214,
-  "battery_mass_kg": 22.198794957181107,
-  "fuel_mass_kg": 33.19066575118232,
-  "cruise_power_w": 4719.43684616824,
-  "hover_power_w": 43474.64508299086
+  "mtow_kg": 136.56528917549824,
+  "empty_mass_kg": 59.20176115783534,
+  "battery_mass_kg": 22.572076388960777,
+  "fuel_mass_kg": 34.79145162870211,
+  "cruise_power_w": 5027.854092832867,
+  "hover_power_w": 45067.85315343619
  }
 }

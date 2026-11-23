@@ -10,46 +10,46 @@
  {
   "name": "Wing",
   "parms": {
-   "XForm.X_Rel_Location": 0.443609723,
-   "XForm.Z_Rel_Location": 0.0528106813,
+   "XForm.X_Rel_Location": 0.446975715,
+   "XForm.Z_Rel_Location": 0.0532113947,
    "XSec_1.Dihedral": 3.0,
-   "XSec_1.Root_Chord": 0.402924884,
-   "XSec_1.Span": 1.81316198,
+   "XSec_1.Root_Chord": 0.407290286,
+   "XSec_1.Span": 1.83280629,
    "XSec_1.Sweep": 0.0,
-   "XSec_1.Tip_Chord": 0.201462442
+   "XSec_1.Tip_Chord": 0.203645143
   },
   "type": "Wing"
  },
  {
   "name": "HTail",
   "parms": {
-   "XForm.X_Rel_Location": 1.35405012,
+   "XForm.X_Rel_Location": 1.36430998,
    "XForm.Z_Rel_Location": 0.0,
    "XSec_1.Dihedral": 0.0,
-   "XSec_1.Root_Chord": 0.270002724,
-   "XSec_1.Span": 0.432004359,
+   "XSec_1.Root_Chord": 0.273367357,
+   "XSec_1.Span": 0.437387771,
    "XSec_1.Sweep": 0.0,
-   "XSec_1.Tip_Chord": 0.162001635
+   "XSec_1.Tip_Chord": 0.164020414
   },
   "type": "Wing"
  },
  {
   "name": "VTail",
   "parms": {
-   "XForm.X_Rel_Location": 1.32097478,
+   "XForm.X_Rel_Location": 1.33082248,
    "XForm.Z_Rel_Location": 0.0,
    "XSec_1.Dihedral": 0.0,
-   "XSec_1.Root_Chord": 0.432004359,
-   "XSec_1.Span": 0.518405231,
+   "XSec_1.Root_Chord": 0.437387771,
+   "XSec_1.Span": 0.524865325,
    "XSec_1.Sweep": 0.0,
-   "XSec_1.Tip_Chord": 0.259202615
+   "XSec_1.Tip_Chord": 0.262432663
   },
   "type": "Wing"
  },
  {
   "name": "TailBoom",
   "parms": {
-   "XForm.X_Rel_Location": 1.33082917,
+   "XForm.X_Rel_Location": 1.34092715,
    "XForm.Z_Rel_Location": 0.0
   },
   "type": "Pod"
@@ -57,48 +57,48 @@
  {
   "name": "VtolBoom0",
   "parms": {
-   "XForm.X_Rel_Location": -0.251316111,
-   "XForm.Z_Rel_Location": 0.053227761
+   "XForm.X_Rel_Location": -0.253937006,
+   "XForm.Z_Rel_Location": 0.0536326136
   },
   "type": "Pod"
  },
  {
   "name": "VtolBoom1",
   "parms": {
-   "XForm.X_Rel_Location": -0.251316111,
-   "XForm.Z_Rel_Location": 0.053227761
+   "XForm.X_Rel_Location": -0.253937006,
+   "XForm.Z_Rel_Location": 0.0536326136
   },
   "type": "Pod"
  },
  {
   "name": "LiftRotor0",
   "parms": {
-   "XForm.X_Rel_Location": -0.161577319,
-   "XForm.Z_Rel_Location": 0.0771581056
+   "XForm.X_Rel_Location": -0.163534386,
+   "XForm.Z_Rel_Location": 0.077739979
   },
   "type": "Propeller"
  },
  {
   "name": "LiftRotor1",
   "parms": {
-   "XForm.X_Rel_Location": 1.20548978,
-   "XForm.Z_Rel_Location": 0.0771581056
+   "XForm.X_Rel_Location": 1.21587648,
+   "XForm.Z_Rel_Location": 0.077739979
   },
   "type": "Propeller"
  },
  {
   "name": "LiftRotor2",
   "parms": {
-   "XForm.X_Rel_Location": -0.161577319,
-   "XForm.Z_Rel_Location": 0.0771581056
+   "XForm.X_Rel_Location": -0.163534386,
+   "XForm.Z_Rel_Location": 0.077739979
   },
   "type": "Propeller"
  },
  {
   "name": "LiftRotor3",
   "parms": {
-   "XForm.X_Rel_Location": 1.20548978,
-   "XForm.Z_Rel_Location": 0.0771581056
+   "XForm.X_Rel_Location": 1.21587648,
+   "XForm.Z_Rel_Location": 0.077739979
   },
   "type": "Propeller"
  }

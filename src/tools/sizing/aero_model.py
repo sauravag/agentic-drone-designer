@@ -21,16 +21,16 @@ POLAR_MACH: Final[float] = 0.05
 
 VNE_TO_CRUISE: Final[float] = 1.4  # design dive speed / cruise (CS-23 style margin)
 
-# Drag area of one stopped (parked) lift rotor per diameter squared: CD0 += n * C * D^2 / S_wing (before the misc
-# factor). It is what remains of the old lump QUADPLANE_DRAG_PENALTY (0.008, booms + stopped rotors) once the lift
-# booms have their own wetted-area drag. Calibrated once (2026-11-23) on G2 so that its quadplane increment, lift-boom
-# drag + this term, is 0.008 in total CD0 (misc factor included):
-#     C = (0.008 / MISC_DRAG_FACTOR - lift_boom_term) * S_wing / (4 * D_rotor^2)
+# Drag area of one stopped (parked) lift rotor per diameter squared: CD0 += n * C * D^2 / S_wing, inside the misc
+# factor. It is what remains of the old lump QUADPLANE_DRAG_PENALTY (0.008, booms + stopped rotors, which also sat
+# inside the misc factor) once the lift booms have their own wetted-area drag. Calibrated once (2026-11-23) on G2 so
+# that lift-boom drag + this term take the lump's place and sum to 0.008 before the misc factor (0.0092 in total CD0):
+#     C = (0.008 - lift_boom_term) * S_wing / (4 * D_rotor^2)
 # Sizing depends on CD0, so C was iterated to a fixed point (size G2 with C_k, take C_{k+1} from the formula):
-# C converged in 6 steps to 0.0039662 at S_wing = 1.0957 m^2, D_rotor = 0.5982 m, lift_boom_term = 1.7747e-3,
-# MTOW 19.43 kg. Rounded to 0.00397 (G2 increment 0.008006). Each parked rotor then has a drag area of 0.0014 m^2,
-# about a 0.6 m two-blade propeller edge-on.
-STOPPED_ROTOR_DRAG_COEFF: Final[float] = 0.00397
+# C converged in 6 steps to 0.0048069 at S_wing = 1.1196 m^2, D_rotor = 0.6027 m, lift_boom_term = 1.7626e-3,
+# MTOW 19.88 kg. Rounded to 0.00481 (G2 increment 0.0080001 before the factor). Each parked rotor then has a drag
+# area of 0.0017 m^2, about a 0.6 m two-blade propeller edge-on.
+STOPPED_ROTOR_DRAG_COEFF: Final[float] = 0.00481
 MISC_DRAG_FACTOR: Final[float] = 1.15  # gimbal, antennas, cooling, interference
 FUSELAGE_WETTED_FACTOR: Final[float] = 0.75  # tapered pod vs. full cylinder
 

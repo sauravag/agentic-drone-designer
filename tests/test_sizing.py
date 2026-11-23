@@ -427,7 +427,9 @@ def test_sizing_records_the_resolved_launch(req: OperationalRequirements, expect
 # ------------------------------------------------- explicit booms and stopped-rotor drag (phase-2 re-baseline) ---
 
 TUBE_WALL_KG_M2: float = 1.6  # 1 mm carbon wall at 1600 kg/m^3, the spec value the model must use
-QUADPLANE_INCREMENT_CD0: float = 0.008  # the lump the lift booms + stopped rotors replace, calibrated on G2
+# The old lump QUADPLANE_DRAG_PENALTY sat inside the misc factor; lift booms + stopped rotors take its place, so G2's
+# increment is 0.008 before the factor, i.e. MISC_DRAG_FACTOR * 0.008 in total CD0.
+QUADPLANE_INCREMENT_BEFORE_MISC: float = 0.008
 
 
 def _tube_mass_kg(count: int, length_m: float, diameter_m: float) -> float:
@@ -445,7 +447,8 @@ def _geometry_of(s: SizingOutput) -> "mass_model.Geometry":
 
 
 def quadplane_drag_increment(s: SizingOutput, req: OperationalRequirements = G2_ELECTRIC_VTOL) -> float:
-    """CD0 with the lift booms and stopped rotors minus CD0 with neither (tail boom kept in both)."""
+    """Total CD0 (misc factor included) with the lift booms and stopped rotors minus CD0 with neither (tail boom kept
+    in both)."""
     booms = mass_model.sizing_booms(_geometry_of(s), layout_spec(s.airframe_layout), s.rotor_diameter_m)
     tail_only = mass_model.sizing_booms(_geometry_of(s), layout_spec(s.airframe_layout), 0.0)
     rho, mu = air_properties(req.service_ceiling_m, req.isa_temperature_offset_c)
@@ -479,7 +482,9 @@ def test_lift_booms_replace_boom_fraction(g2: SizingOutput) -> None:
 
 
 def test_stopped_rotor_term_calibrated_on_g2(g2: SizingOutput) -> None:
-    assert quadplane_drag_increment(g2) == pytest.approx(QUADPLANE_INCREMENT_CD0, abs=1e-4)
+    # post-factor comparison: what the old lump contributed to total CD0 (~0.0092)
+    old_lump_in_cd0 = aero_model.MISC_DRAG_FACTOR * QUADPLANE_INCREMENT_BEFORE_MISC
+    assert quadplane_drag_increment(g2) == pytest.approx(old_lump_in_cd0, abs=1e-4)
     assert not hasattr(aero_model, "QUADPLANE_DRAG_PENALTY")
 
 
