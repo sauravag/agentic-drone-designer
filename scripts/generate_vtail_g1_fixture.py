@@ -4,8 +4,7 @@ aero, cad JSON, as `tests.test_flight_control.load_design` reads them) from one 
 
     docker run --rm -v "$PWD":/app -w /app isr-forge:latest python scripts/generate_vtail_g1_fixture.py
 
-The single-boom V-tail pusher is not enabled for users yet (Task 9), so this script opens the requirement gate for its
-own run only; product code is unchanged.
+The requirements are the G1 reference mission (with its original mission name) on the single-boom V-tail pusher.
 """
 
 import json
@@ -18,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pydantic import BaseModel  # noqa: E402
 
-from src.schemas import requirements as requirements_module  # noqa: E402
 from src.tools.aero_cad.build import build_aero_cad  # noqa: E402
 from src.tools.database.matcher import select_bom  # noqa: E402
 from src.tools.database.seed_data import seed_database  # noqa: E402
@@ -38,8 +36,6 @@ def _write(name: str, record: BaseModel) -> None:
 
 
 def main() -> None:
-    requirements_module.ENABLED_LAYOUTS = requirements_module.ENABLED_LAYOUTS | {
-        (LAYOUT, "fixed_wing"), (LAYOUT, "quadplane_vtol")}  # this script's run only (see the module docstring)
     base = CASES["g1"]
     req = type(base).model_validate({**base.model_dump(), "airframe_layout": LAYOUT})
     sizing = size_aircraft(req)

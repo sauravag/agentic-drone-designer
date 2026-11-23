@@ -369,9 +369,9 @@ def _vtail_geometry() -> mm.Geometry:
     return mm.size_geometry(5.0, 0.6, 9.0, 0.45, 0.035, 1.0, layout_spec(VTAIL))
 
 
-def test_vtail_pusher_spec_is_built_but_not_enabled() -> None:
+def test_vtail_pusher_spec_is_built_and_enabled_for_both_topologies() -> None:
     assert layout_spec(VTAIL) == LayoutSpec("v", "centre", "pusher_boom_end", "straight", "tail_volume_h", TAILED_BAND)
-    assert not any(layout == VTAIL for layout, _ in requirements_module.ENABLED_LAYOUTS)
+    assert {(VTAIL, "fixed_wing"), (VTAIL, "quadplane_vtol")} <= requirements_module.ENABLED_LAYOUTS
     assert VTAIL_PAIR_ASPECT_RATIO == 4.0 and PUSHER_TAIL_GAP_FRACTION == 0.10
 
 
@@ -563,3 +563,57 @@ def test_cad_record_rejects_a_non_finite_propeller_station(bad: float) -> None:
     for field in ("propeller_x_m", "propeller_z_m"):
         with pytest.raises(ValidationError):
             CADArtifacts.model_validate({**cad.model_dump(), field: bad})
+
+
+# ------------------------------------------- V-tail pusher enabled, reference designs, chat (phase 2, Task 9) ---
+from src.agent.agent_schemas import DesignerTurn, FieldChange, ProposedChange  # noqa: E402
+from src.agent.design_chat import ChatContext, answer  # noqa: E402
+from src.tools.database.seed_data import seed_database  # noqa: E402
+from src.ui.examples import (EXAMPLE_MISSIONS, G1_HAND_LAUNCH, G1_VTAIL_PUSHER_FW,  # noqa: E402
+                             G2_VTAIL_PUSHER_VTOL)
+from tests.agent_fakes import ScriptedLLM  # noqa: E402
+from tests.reference_designs import CASES  # noqa: E402
+
+UNBUILT_LAYOUTS: tuple[str, ...] = ("twin_boom_htail_pusher", "twin_boom_inverted_v_pusher", "flying_wing")
+
+
+def test_vtail_pusher_validation_enabled() -> None:
+    fixed = _with(airframe_layout=VTAIL, airframe_topology="fixed_wing")
+    auto = _with(airframe_layout=VTAIL)  # auto may resolve to either topology: both must be built
+    quad = OperationalRequirements(**{**G2_ELECTRIC_VTOL.model_dump(), "airframe_layout": VTAIL,
+                                      "airframe_topology": "quadplane_vtol"})
+    assert (fixed.airframe_layout, auto.airframe_layout, quad.airframe_layout) == (VTAIL, VTAIL, VTAIL)
+    assert select_airframe(quad) == "quadplane_vtol" and select_airframe(fixed) == "fixed_wing"
+    for layout in UNBUILT_LAYOUTS:
+        with pytest.raises(ValidationError, match="not available yet"):
+            _with(airframe_layout=layout)
+
+
+def test_reference_designs_cover_the_vtail_pusher_and_the_hand_launch() -> None:
+    assert G1_VTAIL_PUSHER_FW == _with(mission_name=G1_VTAIL_PUSHER_FW.mission_name, airframe_layout=VTAIL)
+    assert G2_VTAIL_PUSHER_VTOL == OperationalRequirements(**{**G2_ELECTRIC_VTOL.model_dump(), "airframe_layout": VTAIL,
+                                                              "mission_name": G2_VTAIL_PUSHER_VTOL.mission_name})
+    assert G1_HAND_LAUNCH == _with(mission_name=G1_HAND_LAUNCH.mission_name, runway_available=False,
+                                   launch_method="hand")
+    assert resolved_launch_method(G1_HAND_LAUNCH) == "hand"
+    cases = {"g1_vtail": G1_VTAIL_PUSHER_FW, "g2_vtail": G2_VTAIL_PUSHER_VTOL, "g1_hand": G1_HAND_LAUNCH}
+    assert {k: CASES[k] for k in cases} == cases
+    assert set(cases.values()) <= set(EXAMPLE_MISSIONS.values())
+    assert len({r.mission_name for r in EXAMPLE_MISSIONS.values()}) == len(EXAMPLE_MISSIONS)
+
+
+def test_chat_switches_to_vtail_pusher(tmp_path: Path) -> None:
+    """Design chat 'make it a V-tail pusher' on a G1 design: the what-if is checked with the solver, the proposal
+    sets the layout and the re-run sizing carries one ruddervator pair."""
+    vtail = ProposedChange(label="V-tail pusher", changes=[FieldChange(field="airframe_layout", value=VTAIL)])
+    turns = [DesignerTurn(message="checking", what_ifs=[vtail], proposal=None, done=False),
+             DesignerTurn(message="the V-tail pusher closes", what_ifs=[], proposal=vtail, done=True)]
+    ctx = ChatContext(requirements=G1_ELECTRIC_FW, assumptions=DEFAULT_ASSUMPTIONS, failed_gates=(), options=(),
+                      allow_knobs=False, db_path=seed_database(tmp_path / "catalog.db"))
+    reply = answer(ScriptedLLM(designer_turns=turns), ctx, (), "make it a V-tail pusher")
+    (checked,) = reply.what_ifs
+    assert checked.error is None and checked.result is not None
+    assert reply.proposal is not None
+    new_req, _, _ = apply_changes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, reply.proposal)
+    assert new_req.airframe_layout == VTAIL
+    assert [t.control for t in size_aircraft(new_req).tail_surfaces] == ["ruddervator"]

@@ -111,6 +111,17 @@ def test_critic_sm_knob_is_required() -> None:
         critic.unfixable(gates, None, None, band=TAILED_BAND)  # type: ignore[call-arg]
 
 
+def test_parse_vtail_pusher_phrase(db: Path) -> None:
+    """'V-tail pusher' (or 'V tail ... pusher') drafts single_boom_vtail_pusher, which is now built for both
+    topologies; other layout phrases still draft their id and get the 'not available yet' answer."""
+    assert "V-tail" in PARSER_SYSTEM and "V tail" in PARSER_SYSTEM and "single_boom_vtail_pusher" in PARSER_SYSTEM
+    outcome = to_requirements(SRS_DRAFT.model_copy(update={"airframe_layout": "single_boom_vtail_pusher"}), db)
+    assert outcome.requirements is not None and outcome.requirements.airframe_layout == "single_boom_vtail_pusher"
+    assert LAYOUT_LABELS["single_boom_vtail_pusher"] in outcome.assumptions[0]
+    twin = to_requirements(SRS_DRAFT.model_copy(update={"airframe_layout": "twin_boom_htail_pusher"}), db)
+    assert twin.requirements is None and "not available yet" in (twin.clarification or "")
+
+
 def test_unbuilt_layout_is_explained_without_pydantic_noise(db: Path) -> None:
     outcome = to_requirements(SRS_DRAFT.model_copy(update={"airframe_layout": "flying_wing"}), db)
     assert outcome.requirements is None and outcome.clarification is not None

@@ -83,33 +83,16 @@ def g2_kit_inputs(designs: dict) -> KitInputs:
     return _kit_inputs(designs, "g2")
 
 
-VTAIL_LAYOUT: Final[str] = "single_boom_vtail_pusher"
-
-
-def _vtail_design(catalog: Path, case: str) -> tuple[SizingOutput, SelectedBOM]:
-    """A reference mission sized as a single-boom V-tail pusher (not enabled for users until Task 9, so the
-    requirement gate is opened for this sizing only) with its matched BOM."""
-    from src.schemas import requirements as requirements_module
-
-    enabled = requirements_module.ENABLED_LAYOUTS | {(VTAIL_LAYOUT, "fixed_wing"), (VTAIL_LAYOUT, "quadplane_vtol")}
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(requirements_module, "ENABLED_LAYOUTS", enabled)
-        req = CASES[case].model_copy(update={"airframe_layout": VTAIL_LAYOUT})
-        req = type(req).model_validate(req.model_dump())
-        sizing: SizingOutput = size_aircraft(req)
-    return sizing, select_bom(catalog, component_needs(sizing, req))
-
-
 @pytest.fixture(scope="module")
-def vtail_g1(catalog: Path) -> tuple[SizingOutput, SelectedBOM]:
+def vtail_g1(designs: dict) -> tuple[SizingOutput, SelectedBOM]:
     """The G1 mission sized as a single-boom V-tail pusher with its matched BOM."""
-    return _vtail_design(catalog, "g1")
+    return designs["g1_vtail"]
 
 
 @pytest.fixture(scope="module")
-def vtail_g2(catalog: Path) -> tuple[SizingOutput, SelectedBOM]:
+def vtail_g2(designs: dict) -> tuple[SizingOutput, SelectedBOM]:
     """The G2 mission (quadplane) sized as a single-boom V-tail pusher with its matched BOM."""
-    return _vtail_design(catalog, "g2")
+    return designs["g2_vtail"]
 
 
 @pytest.fixture(scope="module")

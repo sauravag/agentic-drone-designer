@@ -12,7 +12,8 @@ from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_STATION_SCAN, fuselage_radius_at, layout_from_sizing
 from src.tools.fabrication.build_kit import kit_spar_plan
 from src.tools.fabrication.fittings import split_to_bed
-from src.tools.fabrication.fuselage_parts import fuselage_parts, wing_box_floor_m
+from src.tools.fabrication.build_kit import _plate_gap_m
+from src.tools.fabrication.fuselage_parts import fuselage_parts, wing_box_floor_m, wing_box_plate_gap_m
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.kit_pod import (
     STRUCTURE_CLEARANCE_M,
@@ -22,7 +23,7 @@ from src.tools.fabrication.kit_pod import (
     seat_low,
 )
 from src.tools.fabrication.rib_outline import rect_face
-from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, plate_loads
+from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, plate_loads, size_overwrap
 
 SETTINGS = DEFAULT_FABRICATION
 COVER_M = SETTINGS.fuselage_cover_thickness_m
@@ -74,6 +75,39 @@ def test_battery_clears_the_wing_box_at_every_station_the_balance_may_pick(case,
     except KitUnavailable:
         pytest.skip("no wing box can be built at this station (no kit there)")
     assert _battery_top(designs, case, d) + STRUCTURE_CLEARANCE_M <= floor + 1e-9
+
+
+# The hand-launched G1's pod before pod sizing checked the overwrap: wide enough for the battery under the wing box,
+# but its wing-box plates stand 83 mm apart and the 22 mm socket's overwrap is 88 mm long (2 laps of 2 OD).
+HAND_POD_BEFORE_OVERWRAP_RULE_M = 0.172
+
+
+def _plan_and_loads(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION):
+    layout = _layout(designs, case, diameter_m, station)
+    sizing = designs[case][0]
+    return layout, kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), SETTINGS), plate_loads(sizing, SETTINGS)
+
+
+@pytest.mark.parametrize("case", ["g1", "g1_hand"])
+def test_plate_gap_matches_the_built_plates(case, designs):
+    """Pod sizing's plate gap is the one the kit measures on its built plates (and socket bosses when fitted)."""
+    d = kit_fuselage_diameter_m(*designs[case], SETTINGS)
+    layout, plan, loads = _plan_and_loads(designs, case, d)
+    built = fuselage_parts(layout, plan, (), SETTINGS, loads=loads)
+    assert wing_box_plate_gap_m(layout, plan, SETTINGS, loads) == pytest.approx(_plate_gap_m(built, SETTINGS))
+
+
+def test_wing_box_floor_refuses_an_overwrap_longer_than_the_plate_gap(designs):
+    with pytest.raises(KitUnavailable, match="centreline overwrap .* does not fit between the wing-box plates"):
+        _floor(designs, "g1_hand", HAND_POD_BEFORE_OVERWRAP_RULE_M)
+
+
+def test_kit_pod_widens_until_the_overwrap_fits_between_the_plates(designs):
+    sizing, bom = designs["g1_hand"]
+    d = kit_fuselage_diameter_m(sizing, bom, SETTINGS)
+    assert d > HAND_POD_BEFORE_OVERWRAP_RULE_M and pod_fits_kit(sizing, bom, d, SETTINGS)
+    layout, plan, loads = _plan_and_loads(designs, "g1_hand", d)
+    size_overwrap(plan.centre_moment_nm, plan.socket, wing_box_plate_gap_m(layout, plan, SETTINGS, loads), SETTINGS)
 
 
 def test_structure_clearance_is_half_the_component_gap():

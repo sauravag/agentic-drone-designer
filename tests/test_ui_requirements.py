@@ -102,3 +102,31 @@ def test_design_aircraft_runs_named_model(tmp_path: Path, monkeypatch: pytest.Mo
     assert any("Payload: SIYI ZT30 (0.854 kg, 9 W)" in c.value for c in at.caption)
     parts = next(df.value for df in at.dataframe if "Item" in df.value.columns)
     assert ZT30 in parts["Item"].tolist()
+
+
+VTAIL_PRESET = "G1 V-tail pusher fixed-wing (reference)"
+VTAIL = "single_boom_vtail_pusher"
+
+
+def test_layout_select_offers_the_built_layouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.schemas.requirements import ENABLED_LAYOUTS
+
+    at = _app(tmp_path, monkeypatch)
+    layout = at.selectbox(key="airframe_layout")
+    assert layout.label == "Airframe layout" and layout.value == "pod_boom_tractor"
+    assert set(layout.options) == {"Pod-and-boom tractor", "Single-boom V-tail pusher"}
+    assert {name for name, _ in ENABLED_LAYOUTS} == {"pod_boom_tractor", VTAIL}
+
+
+def test_vtail_preset_sets_the_layout_and_the_form_runs_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    at = _app(tmp_path, monkeypatch)
+    if not at.checkbox(key="with_aero_cad").disabled:
+        at.checkbox(key="with_aero_cad").uncheck()
+    at.selectbox(key="preset").set_value(VTAIL_PRESET)
+    at.run()
+    assert at.selectbox(key="airframe_layout").value == VTAIL
+    at.button(key="submit").click()
+    at.run()
+    assert not at.exception
+    tables = [t.value for t in (*at.table, *at.dataframe)]
+    assert any("Single-boom V-tail pusher" in table.to_string() for table in tables)

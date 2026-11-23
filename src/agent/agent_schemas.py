@@ -93,8 +93,8 @@ class RequirementsDraft(BaseModel):
                                   "a runway or conventional take-off; otherwise null")
     airframe_layout: Optional[AirframeLayout] = Field(
         default=None, description="Only if the user names an airframe layout: pod_boom_tractor (conventional pod "
-        "and boom), single_boom_vtail_pusher, twin_boom_htail_pusher, twin_boom_inverted_v_pusher, "
-        "flying_wing (tailless); otherwise null")
+        "and boom), single_boom_vtail_pusher ('V-tail pusher', 'V tail pusher'), twin_boom_htail_pusher, "
+        "twin_boom_inverted_v_pusher, flying_wing (tailless); otherwise null")
     flight_controller: Optional[FlightControllerId] = Field(
         default=None, description="ark_jetson_pab if the user names ARK / PAB / a Jetson carrier with autopilot; "
                                   "cube_orange_plus if they name a Cube; otherwise null")

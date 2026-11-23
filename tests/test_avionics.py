@@ -7,19 +7,21 @@ from typing import Final
 import pytest
 
 from src.tools.sizing.mission_solver import size_aircraft
-from src.ui.examples import EXAMPLE_MISSIONS
+from src.ui.examples import G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL
 
 BASELINE_PATH: Final[Path] = Path(__file__).parent / "data" / "avionics_baseline.json"
 BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "mtow_kg", "empty_mass_kg", "battery_mass_kg", "fuel_mass_kg", "cruise_power_w", "hover_power_w",
 )
 EXACT: Final[float] = 1e-9
+BASELINE_MISSIONS: Final[tuple] = (G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL)
 
 
 # Recorded from the code before the avionics change (re-recorded once at the 2026-11-23 boom re-baseline): Cube
 # Orange+ without a Jetson at default assumptions
 # must size every reference design exactly as before.
-@pytest.mark.parametrize("req", list(EXAMPLE_MISSIONS.values()), ids=lambda r: r.mission_name)
+# (The baseline holds the designs that existed then; later examples have no "before".)
+@pytest.mark.parametrize("req", BASELINE_MISSIONS, ids=lambda r: r.mission_name)
 def test_reference_designs_unchanged_without_jetson(req) -> None:
     expected: dict[str, float] = json.loads(BASELINE_PATH.read_text())[req.mission_name]
     sizing = size_aircraft(req)

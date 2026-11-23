@@ -648,14 +648,8 @@ AP_YAW_RIGHT: float = 1.0  # ArduPilot scaled rudder output above zero demands n
 
 
 def load_vtail_design() -> DesignInputs:
-    """The saved V-tail G1 design (scripts/generate_vtail_g1_fixture.py). The layout is not enabled for users until
-    Task 9, so the requirement gate is opened for loading this fixture only."""
-    from src.schemas import requirements as requirements_module
-
-    enabled = requirements_module.ENABLED_LAYOUTS | {(VTAIL_LAYOUT, "fixed_wing"), (VTAIL_LAYOUT, "quadplane_vtol")}
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(requirements_module, "ENABLED_LAYOUTS", enabled)
-        return load_design("g1_vtail")
+    """The saved V-tail G1 design (scripts/generate_vtail_g1_fixture.py)."""
+    return load_design("g1_vtail")
 
 
 @pytest.fixture(scope="module")

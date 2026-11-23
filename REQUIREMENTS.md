@@ -93,7 +93,8 @@ class OperationalRequirements(BaseModel):
     group_constraint: Optional[Literal[1, 2, 3]] = None  # Auto-assigned if None
     propulsion_type: Literal["electric", "series_hybrid", "auto"] = "auto"
     airframe_topology: Literal["fixed_wing", "quadplane_vtol", "auto"] = "auto"
-    # Only pod_boom_tractor is built; other ids are rejected with "not available yet" until their phase lands.
+    # Built (both topologies): pod_boom_tractor, single_boom_vtail_pusher. The other ids are rejected with
+    # "not available yet" until their phase lands (twin booms: phase 3/4, flying wing: phase 5).
     airframe_layout: Literal["pod_boom_tractor", "single_boom_vtail_pusher", "twin_boom_htail_pusher",
                              "twin_boom_inverted_v_pusher", "flying_wing"] = "pod_boom_tractor"
     payload_mass_kg: float = Field(..., gt=0, le=200.0)
@@ -107,6 +108,9 @@ class OperationalRequirements(BaseModel):
     takeoff_altitude_m: float = Field(default=0.0, ge=0.0, le=5000.0)  # AMSL, < service_ceiling_m (also AMSL)
     isa_temperature_offset_c: float = Field(default=0.0, ge=-40.0, le=40.0)  # Applied to the whole atmosphere
     runway_available: bool = False
+    # auto: runway fixed-wing with a runway, else VTOL quadplane. hand: thrown fixed-wing (no runway, no VTOL,
+    # Group 1 only); a quadplane needs auto, a stated runway launch needs runway_available.
+    launch_method: Literal["auto", "runway", "hand"] = "auto"
 ```
 
 ### 3.2 `DesignState` (LangGraph State)
@@ -159,6 +163,8 @@ class DesignState(TypedDict):
      * Enforce stall constraint: $S \ge \frac{2 \cdot \text{MTOW} \cdot g}{\rho \cdot V_{\text{stall}}^2 \cdot C_{L,\max}}$.
      * Layout (`layouts.py`): `LayoutSpec`, `StaticMarginBand` (tailed layouts 8–14 %, target 11 %), `static_margin_band()` and `tail_arm_m()` come from `airframe_layout`. `SizingOutput` also carries `airframe_layout` and `tail_surfaces` (a list of `TailSurface`, each with area, arm and dihedral Γ); the legacy horizontal and vertical tail areas are the effective areas Σ S·cos²Γ and Σ S·sin²Γ. The summary and report show a Layout row.
      * Booms and boom drag (`mass_model.sizing_booms`, `aero_model.parasite_drag_coefficient`): a centre tail boom from 0.9 L to the tail trailing edge (wing at the default station 0.30 L) and, on a quadplane, two lift booms of the CAD layout's length (`layouts.lift_boom_geometry`). Each tube weighs count × length × 1.6 kg/m² × π d (1 mm carbon wall) and is booked as `tail_boom` / `lift_booms` in `SizingOutput.empty_mass_breakdown`; its drag is count × $C_f(Re_{\text{boom}})$ × FF(boom fineness) × π d L / S. Each parked lift rotor adds `STOPPED_ROTOR_DRAG_COEFF` × D² / S (0.00481, calibrated on G2 so lift booms + rotors sum to 0.008 inside the misc factor, where the old lump sat: 0.0092 in total CD0).
+     * Single-boom V-tail pusher (`single_boom_vtail_pusher`): one mirrored ruddervator pair of area S_H + S_V (from the H and V tail volumes), aspect ratio 4, dihedral atan √(S_V/S_H); the propeller sits at the boom end, a 10 % tail-arm gap behind the tail, and the cruise drivetrain efficiency takes `pusher_efficiency_factor` (0.95). VSPAERO models each panel; ArduPilot mixes the pair as a V-tail (`SERVOn_FUNCTION` 79/80, mixing gain 0.5). Deferred: tail surfaces sit on the centreline (y = 0) — the lateral offset twin booms need lands in phase 3; the `wing_sweep_deg` knob (steps and bounds) lands with the flying wing in phase 5.
+     * Hand launch: flown in SITL as a 10 m/s throw from 2 m at 10° nose-up (held at rest until the throttle opens). The stall speed is capped at throw speed / 1.2 = 8.33 m/s when sizing a hand-launched design, and its MTOW is limited to Group 1 (9.07 kg).
      * Changelog — 2026-11-23: every layout re-baselined to explicit tail/lift-boom tubes and boom drag (+ stopped-rotor term); reference values updated once (MTOW / empty / CD0, before → after: G1 4.073 → 4.158 kg / 1.750 → 1.814 kg / 0.01889 → 0.01894; G2 19.36 → 19.88 kg / 7.985 → 8.262 kg / 0.02175 → 0.02214; G3 181.9 → 136.6 kg / 81.60 → 59.20 kg / 0.02366 → 0.02300, G3 now on MH 32). Golden snapshots moved to `tests/data/golden/layouts_phase2/`.
      * Output converged `SizingOutput`: `mtow_kg`, `empty_mass_kg`, `fuel_mass_kg`, `battery_mass_kg`, `wing_area_m2`, `wingspan_m`, `mean_chord_m`, `aspect_ratio`, `fuselage_length_m`, `fuselage_diameter_m`, `cruise_power_w`, `hover_power_w`, `v_stall_ms`, `v_loiter_ms`.
 
@@ -192,8 +198,9 @@ class DesignState(TypedDict):
    * Join the two fuselage socket tubes (`SK-R`/`SK-L`) at the centreline with a glued mitre and a wet-laid carbon overwrap over it, sized for the socket moment (smallest layer count within the allowed maximum, with the lap sized for epoxy lap shear). The spar roots slide into the sockets unglued, so the wings stay detachable. Also check the tail boom (bending and torsion), socket bearing in the wing-mount plates (adding a boss doubler when needed) and crutch rail width. If a check cannot be met by any stock tube or doubler, or a part cannot fit the bed even when split, the kit is unavailable.
    * Size the fuselage pod kit-aware (wide enough for the crutch rails, battery seated low), and feed the kit masses into the as-built mass and CG in place of the shell-model lump. Without a kit (Group 3 designs or an unavailable kit) the shell model is used and the run reports a warning; the run status is unaffected.
    * Write the kit outputs to `kit/`: nested DXF sheets per stock (`kit/sheets/`, millimetres, layers `CUT_OUTER`, `CUT_INNER`, `ENGRAVE`, kerf-compensated), `kit/build_sheet.md` and `kit/parts.csv`. The kit parts and tubes are also included in `assembly.step` and the viewer model.
-   * `AircraftLayout` holds general `tail_surfaces`, `tail_booms` and a `PropellerStation` (no diameter yet); `htail`, `vtail` and `tail_boom` are derived properties. The static-margin band is the layout's, not a constant.
-   * Landing gear is one shared description (`src/tools/gear.py`: tricycle only, `GEAR_FRACTION`, `gear_mass_kg`) used by sizing, the kit and the JSBSim model.
+   * `AircraftLayout` holds general `tail_surfaces`, `tail_booms` and a `PropellerStation` (nose tractor or boom-end pusher, with the matched propeller's diameter); `htail`, `vtail` and `tail_boom` are derived properties. The static-margin band is the layout's, not a constant. `PackingResult.clearance` reports the propeller's ground, tail and (hand launch) belly-line clearances and whether a folding propeller is needed.
+   * Landing gear is one shared description (`src/tools/gear.py`: `GEAR_FRACTION`, `gear_mass_kg`, `landing_gear`) used by sizing, the kit and the JSBSim model: runway and VTOL aircraft get a tricycle whose leg also keeps the propeller tip 25 % of its radius off the ground (at the 12° take-off rotation for a runway launch, level for VTOL); a hand-launched aircraft has no gear, and needs a folding propeller if its tip hangs below the belly line at the 5° belly-landing pitch.
+   * Single-boom V-tail pusher kit: V-tail root block `VR-1` at the dihedral angle on the boom, per-panel spars and ribs, boom-end motor plate and clamp (`MP-B`/`MC-B`) and a motor-wiring build note. Pod sizing widens the kit pod until every kit check on the wing box passes, the centreline overwrap fitting between the wing-box plates included.
    * Create parametric solid bounding boxes for every item in `SelectedBOM` plus a cylindrical fuel tank (if hybrid).
    * **1D Longitudinal CG Optimization:** Place the EO/IR gimbal in the forward nose/chin bay and fuel tank centroid directly at $X_{np}$ (so fuel burn causes zero CG shift). Use `scipy.optimize.minimize_scalar` to slide the battery pack and avionics tray along the fuselage $X$-axis until Static Margin:
      $$SM = \frac{X_{np} - X_{cg}}{\bar{c}} \in \text{the layout's band (tailed layouts: } [0.08, 0.14])$$

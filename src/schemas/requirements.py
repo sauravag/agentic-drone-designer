@@ -22,8 +22,10 @@ LAYOUT_LABELS: Final[dict[str, str]] = {
     "flying_wing": "Flying wing",
 }
 # (layout, topology) pairs that are built; grows as layouts land.
-ENABLED_LAYOUTS: Final[frozenset[tuple[str, str]]] = frozenset({("pod_boom_tractor", "fixed_wing"),
-                                                                ("pod_boom_tractor", "quadplane_vtol")})
+ENABLED_LAYOUTS: Final[frozenset[tuple[str, str]]] = frozenset({
+    ("pod_boom_tractor", "fixed_wing"), ("pod_boom_tractor", "quadplane_vtol"),
+    ("single_boom_vtail_pusher", "fixed_wing"), ("single_boom_vtail_pusher", "quadplane_vtol"),
+})
 PAYLOAD_EDIT_TOLERANCE: Final[float] = 1e-6  # kg and W: typed back to the datasheet value counts as unedited
 
 

@@ -1162,3 +1162,46 @@ def test_live_tractor_thrust_station_matches_the_legacy_path(designs: dict, tmp_
     assert (live_model.propeller_x_m, live_model.propeller_z_m) == (packing.propeller.x_m, packing.propeller.z_m)
     live_xml = export_jsbsim(live_model, tmp_path / "live").xml_path
     assert live_xml.read_text() == legacy_xml.read_text()
+
+
+# ------------------------------------- reference V-tail pushers and hand launch close (phase 2, Task 9) ---
+NO_KIT_PREFIX: str = "No laser kit"
+
+
+def _close(case: str, designs: dict, tmp_path: Path) -> build.BalancedDesign:
+    """A reference design closed on the host: sizing + BOM (the `designs` fixture), the balance search with the
+    synthetic aero, and the kit."""
+    sizing, bom = designs[case]
+    return build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
+
+
+@pytest.mark.parametrize("case", ["g1_vtail", "g2_vtail"])
+def test_vtail_pusher_closes_sizing_and_cad(case: str, designs: dict, tmp_path: Path) -> None:
+    design = _close(case, designs, tmp_path)
+    assert design.layout.propeller.is_pusher
+    assert design.packing.is_balanced and design.packing.interference_count == 0
+    assert design.packing.kit is not None or NO_KIT_PREFIX in (design.packing.kit_warning or "")
+    assert design.packing.clearance.ground_m is None or design.packing.clearance.ground_m >= 0
+
+
+def test_g1_vtail_reference_builds_its_kit(designs: dict, tmp_path: Path) -> None:
+    packing = _close("g1_vtail", designs, tmp_path).packing
+    assert packing.kit is not None, packing.kit_warning
+
+
+def test_g2_vtail_reference_has_no_kit_on_default_stock(designs: dict, tmp_path: Path) -> None:
+    """Task 8 ruling: the G2 V-tail's wing-root torque overloads the default anti-rotation pin stock, so the run says
+    why instead of building a kit."""
+    packing = _close("g2_vtail", designs, tmp_path).packing
+    assert packing.kit is None and (packing.kit_warning or "").startswith(NO_KIT_PREFIX)
+
+
+def test_hand_launched_g1_closes(designs: dict, tmp_path: Path) -> None:
+    sizing, _ = designs["g1_hand"]
+    assert sizing.launch_method == "hand" and sizing.gear_kind == "none"
+    packing = _close("g1_hand", designs, tmp_path).packing
+    assert packing.is_balanced and packing.interference_count == 0
+    assert packing.gear.kind == "none" and GEAR_NAME not in {i.name for i in packing.mass_items}
+    assert packing.clearance.ground_m is None and packing.clearance.belly_m is not None
+    assert packing.kit is not None, packing.kit_warning
+    assert (FOLDING_PROP_NOTE in packing.kit.notes) == packing.clearance.needs_folding_prop

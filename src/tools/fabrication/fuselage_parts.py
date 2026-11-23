@@ -72,6 +72,7 @@ from src.tools.fabrication.tubes import (
     SparPlan,
     boom_tube,
     overwrap_layers,
+    size_overwrap,
 )
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
@@ -448,20 +449,34 @@ def _mount(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings
                   y_outer - t_plate, y_outer, holes)
 
 
+def _plate_gap_m(mount: _Mount, depth_m: Optional[float], settings: FabricationSettings) -> float:
+    """Clear width between the wing-box plates' inner faces, or the socket bosses' (plate stock) when fitted."""
+    boss_m = 0.0 if depth_m is None else settings.sheet_for("plate").thickness_m
+    return 2.0 * (mount.y_inner_m - boss_m)
+
+
+def wing_box_plate_gap_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
+                         loads: PlateLoads) -> float:
+    """The clear width the centreline overwrap must fit in (R24), as the kit builds the plates and socket bosses."""
+    return _plate_gap_m(_mount(layout, spar, settings), socket_boss_depth_m(spar, settings, loads), settings)
+
+
 def wing_box_floor_m(layout: AircraftLayout, spar: SparPlan, settings: FabricationSettings,
                      loads: PlateLoads) -> float:
     """Lowest z of the wing-box structure a component must pass beneath: the plates' bottom edge, the wing bolt's
     head and washer inside the plates (R38), the socket bosses' bottom when `loads` need them (R32), or the
     underside of the socket tubes' centreline overwrap (R24, at its
     wrapped OD), where they sit lowest (the dihedral lifts them outboard). Pin bosses stay within the plates. Raises
-    `KitUnavailable` when no overwrap within the layer cap carries the centreline moment, no boss suffices, or the
-    boss's skirt would reach the crutch (the kit's own check, so pod sizing never accepts a pod the kit rejects)."""
+    `KitUnavailable` when no overwrap within the layer cap carries the centreline moment, the overwrap is longer than
+    the plate gap, no boss suffices, or the boss's skirt would reach the crutch (the kit's own checks, so pod sizing
+    never accepts a pod the kit rejects)."""
     wrap_m = overwrap_layers(spar.centre_moment_nm, spar.socket, settings) * settings.overwrap_layer_thickness_m
     mount = _mount(layout, spar, settings)
+    depth = socket_boss_depth_m(spar, settings, loads)
+    size_overwrap(spar.centre_moment_nm, spar.socket, _plate_gap_m(mount, depth, settings), settings)  # R24 fit
     bolt = _inner_face_holes(layout, spar, settings, mount).bolt  # R38: the head and washer stand inboard of it
     floors = [mount.z_m[0], socket_axis_m(layout, 0.0)[1] - spar.socket.od_m / 2.0 - wrap_m,
               bolt.y_m - BOLT_WASHER_DIAMETER_M / 2.0]
-    depth = socket_boss_depth_m(spar, settings, loads)
     if depth is not None:
         hole = _inner_face_holes(layout, spar, settings, mount).socket
         check_skirt_clears_crutch(hole, depth, settings.sheet_for("crutch").thickness_m)  # as the kit will (M7)

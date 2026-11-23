@@ -51,6 +51,21 @@ def g3() -> SizingOutput:
     return size_aircraft(G3_HYBRID_VTOL)
 
 
+@pytest.fixture(scope="module")
+def g1_vtail() -> SizingOutput:
+    return size_aircraft(CASES["g1_vtail"])
+
+
+@pytest.fixture(scope="module")
+def g2_vtail() -> SizingOutput:
+    return size_aircraft(CASES["g2_vtail"])
+
+
+@pytest.fixture(scope="module")
+def g1_hand() -> SizingOutput:
+    return size_aircraft(CASES["g1_hand"])
+
+
 # -------------------------------------------------------------- topology ---
 
 

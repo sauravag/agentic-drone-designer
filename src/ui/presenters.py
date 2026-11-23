@@ -25,6 +25,7 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "group_constraint": "DoD group",
     "propulsion_type": "Propulsion",
     "airframe_topology": "Airframe",
+    "airframe_layout": "Airframe layout",
     "payload_model": "Payload",
     "payload_mass_kg": "Payload mass (kg)",
     "payload_power_w": "Payload power (W)",

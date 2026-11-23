@@ -22,8 +22,29 @@ G3_HYBRID_VTOL: Final = OperationalRequirements(
     runway_available=False,
 )
 
+VTAIL_PUSHER: Final[str] = "single_boom_vtail_pusher"
+
+
+def _variant(base: OperationalRequirements, **changes: object) -> OperationalRequirements:
+    """`base` with `changes`, validated (model_copy would skip the layout and launch checks)."""
+    return OperationalRequirements.model_validate({**base.model_dump(), **changes})
+
+
+# The G1 and G2 missions flown on the single-boom V-tail pusher (fixed-wing off a runway; electric quadplane).
+G1_VTAIL_PUSHER_FW: Final = _variant(G1_ELECTRIC_FW, mission_name="G1 V-tail pusher fixed-wing",
+                                     airframe_layout=VTAIL_PUSHER)
+G2_VTAIL_PUSHER_VTOL: Final = _variant(G2_ELECTRIC_VTOL, mission_name="G2 V-tail pusher quadplane",
+                                       airframe_layout=VTAIL_PUSHER)
+# The G1 mission thrown by hand: no runway and no VTOL. The hand launch caps the stall speed (topology.py), so the
+# wing is larger than the runway G1's.
+G1_HAND_LAUNCH: Final = _variant(G1_ELECTRIC_FW, mission_name="G1 hand-launched fixed-wing", runway_available=False,
+                                 launch_method="hand")
+
 EXAMPLE_MISSIONS: Final[dict[str, OperationalRequirements]] = {
     "G1 electric fixed-wing (reference)": G1_ELECTRIC_FW,
     "G2 electric quadplane (reference)": G2_ELECTRIC_VTOL,
     "G3 hybrid quadplane (reference)": G3_HYBRID_VTOL,
+    "G1 V-tail pusher fixed-wing (reference)": G1_VTAIL_PUSHER_FW,
+    "G2 V-tail pusher quadplane (reference)": G2_VTAIL_PUSHER_VTOL,
+    "G1 hand-launched fixed-wing (reference)": G1_HAND_LAUNCH,
 }

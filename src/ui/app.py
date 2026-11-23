@@ -24,7 +24,8 @@ import streamlit as st  # noqa: E402
 from src import pipeline  # noqa: E402
 from src.agent.providers import LLMConfigError  # noqa: E402
 from src.agent.report import defang, inline  # noqa: E402
-from src.schemas.requirements import ARK_JETSON_PAB, OperationalRequirements  # noqa: E402
+from src.schemas.requirements import (ARK_JETSON_PAB, ENABLED_LAYOUTS, LAYOUT_LABELS,  # noqa: E402
+                                      OperationalRequirements)
 from src.tools.database.seed_data import DEFAULT_DB_PATH  # noqa: E402
 from src.schemas.assumptions import DesignAssumptions  # noqa: E402
 from src.schemas.fabrication import FabricationSettings  # noqa: E402
@@ -41,6 +42,9 @@ OUTPUTS_ROOT: Final[Path] = Path(os.environ.get("ISR_FORGE_OUTPUTS", str(pipelin
 DB_PATH: Final[Path] = Path(os.environ.get("ISR_FORGE_DB", str(DEFAULT_DB_PATH)))
 AIRFRAMES: Final[tuple[str, ...]] = ("auto", "fixed_wing", "quadplane_vtol")
 LAUNCHES: Final[tuple[str, ...]] = ("auto", "runway", "hand")
+# Layouts built for at least one topology, in LAYOUT_LABELS order; validation explains a topology it lacks.
+LAYOUTS: Final[tuple[str, ...]] = tuple(name for name in LAYOUT_LABELS
+                                        if any(name == built for built, _ in ENABLED_LAYOUTS))
 PROPULSION: Final[tuple[str, ...]] = ("auto", "electric", "series_hybrid")
 GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
@@ -133,9 +137,13 @@ def _payload_inputs() -> None:
 
 def _configuration_inputs() -> None:
     st.subheader("Configuration")
-    a, launch, p, g, r = st.columns(5)
+    a, layout, launch, p, g, r = st.columns(6)
     a.selectbox(presenters.FIELD_LABELS["airframe_topology"], AIRFRAMES, key="airframe_topology",
                 help="auto: fixed-wing with a runway or a hand launch, VTOL quadplane without")
+    layout.selectbox(presenters.FIELD_LABELS["airframe_layout"], LAYOUTS, key="airframe_layout",
+                     format_func=LAYOUT_LABELS.get,
+                     help="Pod-and-boom tractor: nose propeller, conventional tail. Single-boom V-tail pusher: "
+                          "propeller at the boom end behind a V-tail (fixed-wing or quadplane)")
     launch.selectbox(presenters.FIELD_LABELS["launch_method"], LAUNCHES, key="launch_method",
                      help="auto: off a runway if there is one, else VTOL. hand: a hand-launched fixed-wing "
                           "(Group 1, no runway)")

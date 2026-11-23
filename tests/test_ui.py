@@ -332,7 +332,7 @@ def test_assumptions_apply_to_the_structured_form_too(tmp_path: Path, monkeypatc
     assert seen and seen[0].bsfc_kg_per_kwh == pytest.approx(0.4)
 
 
-SELECT_FIELDS = ("airframe_topology", "launch_method", "propulsion_type", "group_constraint")
+SELECT_FIELDS = ("airframe_topology", "airframe_layout", "launch_method", "propulsion_type", "group_constraint")
 NO_LLM_PROBLEM = "no LLM in this test"
 
 

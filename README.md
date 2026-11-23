@@ -146,13 +146,44 @@ editing `.env`. OpenRouter requests set
 `provider.require_parameters`, so they only reach hosts that enforce the JSON schema; a model with no such host
 fails with a clear error rather than returning free text.
 
-**Airframe layout.** `OperationalRequirements.airframe_layout` picks the airframe arrangement; the LLM draft
-and the design chat carry it. Phase 1 of the layout work is a pure refactor: only `pod_boom_tractor` (the existing
-pod, tail boom and tractor propeller) is available, for both `fixed_wing` and `quadplane_vtol`. The other ids
-(`single_boom_vtail_pusher`, `twin_boom_htail_pusher`, `twin_boom_inverted_v_pusher`, `flying_wing`) are
-recognised but rejected with "not available yet". The layout supplies the static-margin band (tailed layouts:
-8-14 %, target 11 %) used by the critic, the CAD packer, the pipeline and the SITL perturbation corners, and the
-summary and report show a Layout row. Designs, CAD and SITL results are unchanged from before the refactor.
+**Airframe layout.** `OperationalRequirements.airframe_layout` picks the airframe arrangement; the web form
+(Airframe layout select), the LLM draft and the design chat carry it. Two layouts are built, each for both
+`fixed_wing` and `quadplane_vtol`:
+
+- `pod_boom_tractor` — pod, centre tail boom, conventional tail (H-stab + fin), propeller on the nose.
+- `single_boom_vtail_pusher` — the same pod and centre boom with a V-tail (one mirrored ruddervator pair sized from
+  the H and V tail volumes, aspect ratio 4, dihedral atan √(S_V/S_H)) and the propeller at the boom end, a 10 %
+  tail-arm gap behind the tail. Cruise efficiency takes `pusher_efficiency_factor` (0.95). VSPAERO models each
+  ruddervator panel; ArduPilot mixes the pair as a V-tail (`SERVOn_FUNCTION` 79/80, mixing gain 0.5); the JSBSim
+  model applies the pusher thrust at the propeller. The kit adds the V-tail root block `VR-1`, per-panel spars and
+  ribs, and the boom-end motor plate and clamp (`MP-B`/`MC-B`), with a wiring note for the motor run along the boom.
+  The parser maps "V-tail" or "V tail" with "pusher" to it.
+
+The other ids (`twin_boom_htail_pusher`, `twin_boom_inverted_v_pusher`, `flying_wing`) are recognised but rejected
+with "not available yet". The layout supplies the static-margin band (tailed layouts: 8-14 %, target 11 %) used by
+the critic, the CAD packer, the pipeline and the SITL perturbation corners; the summary and report show a Layout row.
+The examples include the G1 and G2 missions on the V-tail pusher and a hand-launched G1.
+
+**Launch method.** `launch_method` is `auto` (a runway fixed-wing if there is a runway, else a VTOL quadplane),
+`runway`, or `hand` (a thrown fixed-wing: no runway, no VTOL, Group 1 only, MTOW ≤ 9.07 kg). A hand launch is
+flown in SITL as a 10 m/s throw from 2 m at 10° nose-up, the aircraft held at rest until the throttle opens. So the
+throw stays 1.2 × above stall, a hand-launched design is sized with its stall speed capped at 10 / 1.2 = 8.33 m/s
+(the hand-launched G1 therefore gets a larger wing: about 5.3 kg, 1.13 m²). Records saved before launch methods
+existed that hold a fixed-wing with no runway load as hand launches.
+
+**Landing gear.** One rule (`src/tools/gear.py`) serves sizing, the kit and the JSBSim model. Runway and VTOL
+aircraft get a tricycle whose leg is the tallest of the fuselage/propeller ground clearance and the propeller-tip
+clearance (25 % of its radius) — taken at the 12° take-off rotation for a runway launch and level for a VTOL
+quadplane. A hand-launched aircraft has no gear; if its propeller tip hangs below the belly line (taken at the 5°
+belly-landing pitch) it needs a folding propeller, which the build sheet notes — tractors included.
+
+**Not yet (carried over).** Tail surfaces sit on the centreline (the V-tail pair is mirrored about y = 0); the
+lateral offset that twin booms need lands in phase 3. The `wing_sweep_deg` critic knob and its steps and bounds land
+with the flying wing in phase 5.
+
+**Known kit limit.** On the default fabrication stock the G2 V-tail pusher gets no laser kit: its wing-root torque
+loads the anti-rotation pin beyond the largest stock rod (the run explains this and packs the shell model). A
+heavier rod in the fabrication settings is the user's choice.
 
 2026-11-23: every layout re-baselined to explicit tail/lift-boom tubes and boom drag (+ stopped-rotor term); reference
 values updated once. The tail boom (1.6 kg/m² carbon wall × π d × length, from 0.9 of the pod to the tail trailing
