@@ -20,22 +20,22 @@ from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
 from src.agent.prompts import PARSER_SYSTEM
-from src.schemas.requirements import LAYOUT_LABELS
-from src.tools.sizing.topology import resolved_launch_method, select_airframe
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
+from src.schemas.requirements import LAYOUT_LABELS
 from src.schemas.state import CADArtifacts
 from src.tools.aero_cad import stability
 from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
 from src.tools.sizing import layouts
 from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
-
-TAILED_KNOB = critic.TAILED_SM_KNOB
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
+from src.tools.sizing.topology import resolved_launch_method, select_airframe
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
 from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
 from tests.test_flight_control import load_design
+
+TAILED_KNOB = critic.TAILED_SM_KNOB
 
 
 @pytest.fixture(scope="module")
@@ -83,6 +83,13 @@ def test_hand_launch_with_a_stated_runway_keeps_it(db: Path) -> None:
     draft = SRS_DRAFT.model_copy(update={"launch_method": "hand", "runway_available": True, "vtol_required": None})
     requirements = to_requirements(draft, db).requirements
     assert requirements is not None and requirements.runway_available
+
+
+def test_hand_launch_with_vtol_requested_notes_the_conflict(db: Path) -> None:
+    draft = SRS_DRAFT.model_copy(update={"launch_method": "hand", "runway_available": None, "vtol_required": True})
+    outcome = to_requirements(draft, db)
+    assert outcome.requirements is not None and outcome.requirements.airframe_topology == "auto"
+    assert any("hand launch and VTOL" in note for note in outcome.assumptions)
 
 
 def test_parse_echo_names_layout(db: Path) -> None:

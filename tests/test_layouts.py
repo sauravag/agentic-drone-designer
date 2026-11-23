@@ -262,7 +262,7 @@ def test_fixed_wing_without_runway_must_say_how_it_launches() -> None:
 
 
 def test_runway_launch_without_a_runway_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="needs launch_method='hand'"):
+    with pytest.raises(ValidationError, match="launch_method='runway' needs runway_available=True"):
         _with(runway_available=False, launch_method="runway")
 
 
@@ -289,3 +289,45 @@ def test_old_requirements_record_defaults_launch() -> None:
 def test_sizing_summary_has_a_launch_row() -> None:
     sizing = size_aircraft(G1_ELECTRIC_FW)
     assert ("Launch", "runway") in presenters.sizing_summary(sizing)
+
+
+def _launch_change(**fields: object) -> ChangeSet:
+    return ChangeSet(label="launch", requirements=RequirementChanges(**fields), assumptions=AssumptionChanges(),
+                     knobs=KnobChanges())
+
+
+def test_change_set_switches_a_runway_fixed_wing_to_hand_launch() -> None:
+    req, _, _ = apply_changes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, _launch_change(launch_method="hand"))
+    assert resolved_launch_method(req) == "hand"
+    rows = _launch_change(launch_method="hand").describe(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS)
+    assert ("Launch", "auto", "hand") in rows
+
+
+def test_change_set_hand_launch_on_a_quadplane_is_a_readable_error() -> None:
+    change = _launch_change(launch_method="hand", airframe_topology="quadplane_vtol")
+    with pytest.raises(ValidationError) as exc_info:
+        apply_changes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, change)
+    text = _concise(exc_info.value)
+    assert "launches vertically" in text and "Traceback" not in text and "pydantic" not in text
+
+
+def test_change_set_hand_launch_with_the_airframe_switch_succeeds() -> None:
+    from tests.reference_designs import G2_ELECTRIC_VTOL
+
+    change = _launch_change(launch_method="hand", airframe_topology="fixed_wing")
+    req, _, _ = apply_changes(G2_ELECTRIC_VTOL, DEFAULT_ASSUMPTIONS, change)
+    assert (select_airframe(req), resolved_launch_method(req)) == ("fixed_wing", "hand")
+
+
+def test_legacy_fixed_wing_without_runway_loads_as_hand_launch() -> None:
+    """The form once allowed fixed_wing with the runway box off, so such records exist: they were hand launches."""
+    data = G1_ELECTRIC_FW.model_dump()
+    data.pop("launch_method")
+    legacy = OperationalRequirements.model_validate({**data, "airframe_topology": "fixed_wing",
+                                                     "runway_available": False})
+    assert legacy.launch_method == "hand" and resolved_launch_method(legacy) == "hand"
+
+
+def test_explicit_launch_method_is_not_migrated() -> None:
+    with pytest.raises(ValidationError, match="launch_method='runway' needs runway_available=True"):
+        _with(airframe_topology="fixed_wing", runway_available=False, launch_method="runway")

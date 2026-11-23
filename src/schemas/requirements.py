@@ -11,6 +11,7 @@ CUBE_ORANGE_PLUS: Final[str] = "cube_orange_plus"
 ARK_JETSON_PAB: Final[str] = "ark_jetson_pab"  # carries the Jetson Orin NX on the same board stack
 # Defined here, not in payload_catalog, because components -> requirements; payload_catalog re-exports it.
 CUSTOM_PAYLOAD: Final[str] = "custom"
+LaunchChoice = Literal["auto", "runway", "hand"]
 AirframeLayout = Literal["pod_boom_tractor", "single_boom_vtail_pusher", "twin_boom_htail_pusher",
                          "twin_boom_inverted_v_pusher", "flying_wing"]
 LAYOUT_LABELS: Final[dict[str, str]] = {
@@ -53,7 +54,7 @@ class OperationalRequirements(BaseModel):
     runway_available: bool = False
     # How the aircraft gets airborne. auto: a runway fixed-wing if there is a runway, else a VTOL quadplane.
     # hand: a hand-launched fixed-wing (no runway, no VTOL; Group 1 only).
-    launch_method: Literal["auto", "runway", "hand"] = "auto"
+    launch_method: LaunchChoice = "auto"
     # Defaults (Cube, no Jetson) keep requirements written before the avionics choice existed unchanged.
     flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
     companion_computer: bool = False  # separate Jetson on its own carrier; only meaningful with the Cube
@@ -97,9 +98,12 @@ class OperationalRequirements(BaseModel):
             return
         stays_quadplane: bool = (self.airframe_topology == "auto" and self.launch_method == "auto"
                                  and not self.runway_available)
-        if self.launch_method != "hand" and not (self.runway_available or stays_quadplane):
-            raise ValueError("a fixed-wing without a runway needs launch_method='hand' "
-                             "(or choose a VTOL quadplane)")
+        if self.runway_available or stays_quadplane or self.launch_method == "hand":
+            return
+        if self.launch_method == "runway":
+            raise ValueError("launch_method='runway' needs runway_available=True; without a runway a fixed-wing "
+                             "launches by hand")
+        raise ValueError("a fixed-wing without a runway needs launch_method='hand' (or choose a VTOL quadplane)")
 
     def _check_layout_enabled(self) -> None:
         """A layout must be built for the topology; `auto` can resolve to either, so both must be."""
@@ -112,6 +116,16 @@ class OperationalRequirements(BaseModel):
             available = sorted({f"{layout} ({topology})" for layout, topology in ENABLED_LAYOUTS})
             raise ValueError(f"airframe layout {self.airframe_layout!r} is not available yet for "
                              f"{', '.join(missing)}; available: {', '.join(available)}")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_fixed_wing_without_runway(cls, data: Any) -> Any:
+        """Records saved before launch methods existed could hold a fixed-wing with no runway (the form allowed it);
+        that was how a hand launch was expressed. Only an absent launch_method is migrated: a stated one is strict."""
+        if (isinstance(data, dict) and "launch_method" not in data and data.get("airframe_topology") == "fixed_wing"
+                and data.get("runway_available") is False):
+            return {**data, "launch_method": "hand"}
+        return data
 
     @model_validator(mode="before")
     @classmethod

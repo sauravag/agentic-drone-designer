@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.requirements import (ARK_JETSON_PAB, CUSTOM_PAYLOAD, LAYOUT_LABELS, AirframeLayout, FlightControllerId,
-                                   OperationalRequirements)
+                                      LaunchChoice, OperationalRequirements)
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
 from src.schemas.payload_catalog import CUSTOM_LABEL, payload_spec
 
@@ -57,7 +57,7 @@ class RequirementChanges(BaseModel):
     airframe_topology: Optional[Literal["fixed_wing", "quadplane_vtol", "auto"]] = None
     airframe_layout: Optional[AirframeLayout] = None
     runway_available: Optional[bool] = None
-    launch_method: Optional[Literal["auto", "runway", "hand"]] = None
+    launch_method: Optional[LaunchChoice] = None
     group_constraint: Optional[Literal[1, 2, 3]] = None
     payload_mass_kg: Optional[float] = None
     payload_power_w: Optional[float] = None
