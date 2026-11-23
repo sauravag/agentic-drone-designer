@@ -5,13 +5,12 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 import aerosandbox as asb
 import numpy as np
 
-if TYPE_CHECKING:  # mass_model imports this module; the boom type is only needed for annotations
-    from src.tools.sizing.mass_model import BoomSet
+from src.tools.sizing.layouts import BoomSet
 
 RE_LOW_MAX: Final[float] = 3e5  # below: SD7037
 RE_MID_MAX: Final[float] = 1e6  # up to (inclusive): MH 32; above: NACA 4415
@@ -94,7 +93,7 @@ def body_form_factor(fineness: float) -> float:
     return 1.0 + 60.0 / fineness**3 + fineness / 400.0
 
 
-def boom_drag_area_ratio(boom: "BoomSet", reynolds_per_m: float, wing_area_m2: float) -> float:
+def boom_drag_area_ratio(boom: BoomSet, reynolds_per_m: float, wing_area_m2: float) -> float:
     """count x Cf(Re on the boom length) x FF(boom fineness) x wetted area / S_wing (before the misc factor)."""
     wetted: float = math.pi * boom.diameter_m * boom.length_m
     skin: float = turbulent_skin_friction(reynolds_per_m * boom.length_m)
@@ -108,7 +107,7 @@ def parasite_drag_coefficient(
     fuselage_length_m: float,
     fuselage_diameter_m: float,
     fuselage_reynolds: float,
-    booms: Sequence["BoomSet"],
+    booms: Sequence[BoomSet],
     rotor_count: int,
     rotor_diameter_m: float,
 ) -> float:

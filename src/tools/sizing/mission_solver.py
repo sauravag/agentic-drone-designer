@@ -29,9 +29,8 @@ from src.tools.sizing.aero_model import (
     reynolds_number,
     select_airfoil,
 )
-from src.tools.sizing.layouts import layout_spec
+from src.tools.sizing.layouts import BoomSet, layout_spec
 from src.tools.sizing.mass_model import (
-    BoomSet,
     PropulsionLoads,
     empty_mass_breakdown,
     required_wing_area_m2,

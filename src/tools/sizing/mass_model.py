@@ -7,7 +7,7 @@ Propulsion hardware carries the matcher's 15% margin so sized MTOW tracks the di
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final
 
 from src.schemas.state import TailSurface
 from src.tools.gear import gear_mass_kg
@@ -21,6 +21,7 @@ from src.tools.sizing.layouts import (
     VTAIL_ASPECT_RATIO,
     VTAIL_TAPER_RATIO,
     WING_TAPER_RATIO,
+    BoomSet,
     LayoutSpec,
     lift_boom_geometry,
     tail_arm_m,
@@ -56,8 +57,6 @@ FUEL_SYSTEM_FRACTION: Final[float] = 0.15  # tank + lines + pump, of fuel mass
 CF_TUBE_WALL_KG_M2: Final[float] = 1.6
 LIFT_BOOM_COUNT: Final[int] = 2  # two longitudinal booms, two lift rotors each
 
-BoomName = Literal["tail_boom", "lift_booms"]
-
 
 @dataclass(frozen=True)
 class Geometry:
@@ -75,20 +74,6 @@ class Geometry:
     @property
     def tail_area_m2(self) -> float:
         return self.horizontal_tail_area_m2 + self.vertical_tail_area_m2
-
-
-@dataclass(frozen=True)
-class BoomSet:
-    """`count` identical round tubes; `name` is the empty-mass breakdown key they are booked under."""
-
-    count: int
-    length_m: float
-    diameter_m: float
-    name: BoomName
-
-    @property
-    def mass_kg(self) -> float:
-        return self.count * self.length_m * CF_TUBE_WALL_KG_M2 * math.pi * self.diameter_m
 
 
 @dataclass(frozen=True)
@@ -152,6 +137,11 @@ def _surface_trailing_edge_m(surface: TailSurface, wing_x_ac_m: float) -> float:
     return x_le + root
 
 
+def boom_mass_kg(boom: BoomSet) -> float:
+    """count x length x tube wall mass per area x circumference."""
+    return boom.count * boom.length_m * CF_TUBE_WALL_KG_M2 * math.pi * boom.diameter_m
+
+
 def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> tuple[BoomSet, ...]:
     """The boom tubes the sizing books, estimated at DEFAULT_WING_STATION exactly as the CAD layout places them:
     a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to the tail trailing edge (none when the tail sits
@@ -183,7 +173,7 @@ def _structure_mass(mtow_kg: float, geom: Geometry, booms: Sequence[BoomSet]) ->
         "wing": sigma_wing * geom.wing_area_m2,
         "tail": TAIL_DENSITY_FACTOR * sigma_wing * geom.tail_area_m2,
         "fuselage": (FUSELAGE_AREAL_DENSITY_BASE + FUSELAGE_AREAL_DENSITY_PER_KG * mtow_kg) * fus_wetted,
-        **{boom.name: boom.mass_kg for boom in booms},
+        **{boom.name: boom_mass_kg(boom) for boom in booms},
     }
 
 

@@ -494,12 +494,18 @@ def test_boom_drag_raises_cd0_by_the_tube_wetted_area() -> None:
                   fuselage_diameter_m=0.2, fuselage_reynolds=2e6)
     bare = parasite_drag_coefficient(**common, booms=(), rotor_count=0, rotor_diameter_m=0.0)
     with_boom = parasite_drag_coefficient(**common, booms=(boom,), rotor_count=0, rotor_diameter_m=0.0)
-    fineness = boom.length_m / boom.diameter_m
-    form = 1.0 + 60.0 / fineness**3 + fineness / 400.0
+    form = aero_model.body_form_factor(boom.length_m / boom.diameter_m)  # pinned by test_body_form_factor_is_raymers
     reynolds = 2e6 * boom.length_m / 1.5  # same Re per metre as the fuselage, on the boom length
     expected = aero_model.MISC_DRAG_FACTOR * 2 * aero_model.turbulent_skin_friction(reynolds) * form * (
         math.pi * boom.diameter_m * boom.length_m)
     assert with_boom - bare == pytest.approx(expected, rel=1e-12)
+
+
+def test_body_form_factor_is_raymers() -> None:
+    """1 + 60 / f^3 + f / 400 (Raymer), pinned at fineness 10 and 33.3 (a typical lift boom)."""
+    assert aero_model.body_form_factor(10.0) == pytest.approx(1.0 + 0.06 + 0.025, rel=1e-12)
+    assert aero_model.body_form_factor(100.0 / 3.0) == pytest.approx(1.0 + 60.0 / (100.0 / 3.0) ** 3 + 1.0 / 12.0,
+                                                                     rel=1e-12)
 
 
 def test_fixed_wing_has_no_lift_booms(g1: SizingOutput) -> None:

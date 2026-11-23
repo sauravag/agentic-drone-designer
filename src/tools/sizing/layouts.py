@@ -4,6 +4,20 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 
+BoomName = Literal["tail_boom", "lift_booms"]
+
+
+@dataclass(frozen=True)
+class BoomSet:
+    """`count` identical round boom tubes; `name` is the empty-mass breakdown key they are booked under. Shared by the
+    mass model (tube mass) and the aero model (boom drag)."""
+
+    count: int
+    length_m: float
+    diameter_m: float
+    name: BoomName
+
+
 @dataclass(frozen=True)
 class StaticMarginBand:
     """Acceptable static margin (fraction of mean aerodynamic chord) and the value sizing aims for."""
