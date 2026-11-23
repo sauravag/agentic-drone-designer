@@ -1065,3 +1065,46 @@ def test_vtail_convention_check_rejects_a_swapped_panel_pair(g1_layout: Aircraft
     swapped = _cases(elevator=None, rudder=None, ruddervator_left=right, ruddervator_right=left)
     with pytest.raises(stability.AeroAnalysisError, match="ruddervator"):
         stability.derive_stability(swapped, ref, g1_layout, cd0=0.03, cl_cruise=0.6)
+
+
+_VTAIL_REF = stability.ReferenceGeometry(sref_m2=0.8, cref_m=0.3, bref_m=2.0, x_ref_m=0.6)
+_RAW_RIGHT = dict(d_cmy=-0.145, d_cmx=0.003, d_cmz=-0.007, d_cl=0.05)  # raw (1, 0): right panel, G1-like values
+_RAW_LEFT = dict(d_cmy=0.148, d_cmx=0.003, d_cmz=-0.007, d_cl=-0.05)  # raw (0, 1): left panel
+
+
+def test_vtail_gate_rejects_raw_panels_that_pitch_together(g1_layout: AircraftLayout) -> None:
+    """The raw (pre-normalisation) panel cases pitching with the same sign break the mirrored-pair convention: the
+    symmetric deflection would not pitch. The normalised records alone could never show this."""
+    same_sign_left = _coeffs(0.0, **{**_RAW_LEFT, "d_cmy": -0.148, "d_cmx": -0.003, "d_cmz": 0.007})
+    bad = _cases(elevator=None, rudder=None, ruddervator_left=same_sign_left,
+                 ruddervator_right=_coeffs(0.0, **_RAW_RIGHT))
+    with pytest.raises(stability.AeroAnalysisError, match="mirrored pair"):
+        stability.derive_stability(bad, _VTAIL_REF, g1_layout, cd0=0.03, cl_cruise=0.6)
+
+
+def test_vtail_gate_rejects_a_case_with_both_panels_deflected_symmetrically(g1_layout: AircraftLayout) -> None:
+    """Gains (1, -1) instead of (1, 0): both panels move together, pitch twice as hard, neither rolls nor yaws."""
+    symmetric_pair = _coeffs(0.0, d_cmy=-0.298, d_cmx=0.0, d_cmz=0.0, d_cl=0.105)
+    bad = _cases(elevator=None, rudder=None, ruddervator_left=_coeffs(0.0, **_RAW_LEFT),
+                 ruddervator_right=symmetric_pair)
+    with pytest.raises(stability.AeroAnalysisError, match="ruddervator_right case does not yaw"):
+        stability.derive_stability(bad, _VTAIL_REF, g1_layout, cd0=0.03, cl_cruise=0.6)
+
+
+def test_live_tractor_thrust_station_matches_the_legacy_path(designs: dict, tmp_path: Path) -> None:
+    """A tractor CAD record that carries the packed propeller station (Task 6) exports exactly the JSBSim file the
+    legacy record (no station: nose hub) gives, so the golden reference tractor is unchanged."""
+    from src.tools.flight_control.flight_model import build_flight_model
+    from src.tools.flight_control.jsbsim_exporter import export_jsbsim
+    from tests.test_flight_control import load_design
+
+    sizing, bom = designs["g1"]
+    packing = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path)).packing
+    assert (packing.propeller.x_m, packing.propeller.z_m) == (0.0, 0.0) and not packing.propeller.is_pusher
+    req, fsizing, fbom, aero, cad = load_design("g1")
+    live = cad.model_copy(update={"propeller_x_m": packing.propeller.x_m, "propeller_z_m": packing.propeller.z_m})
+    legacy_xml = export_jsbsim(build_flight_model(req, fsizing, fbom, aero, cad), tmp_path / "legacy").xml_path
+    live_model = build_flight_model(req, fsizing, fbom, aero, live)
+    assert (live_model.propeller_x_m, live_model.propeller_z_m) == (packing.propeller.x_m, packing.propeller.z_m)
+    live_xml = export_jsbsim(live_model, tmp_path / "live").xml_path
+    assert live_xml.read_text() == legacy_xml.read_text()

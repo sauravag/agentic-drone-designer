@@ -40,6 +40,8 @@ MIN_LINEAR_POINTS: Final[int] = 2
 MIN_CL_ALPHA_PER_RAD: Final[float] = 1.0  # a real wing is ~4-6 /rad; below 1 the geometry is broken
 ELEVATOR_MAX_ROLL_FRACTION: Final[float] = 0.2  # |dCMx| / |dCMy| for a symmetric elevator deflection
 PANEL_MAX_ROLL_FRACTION: Final[float] = 0.2  # |dCMx| / |dCMy| for one ruddervator alone (both deflected: ~1)
+PANEL_MIN_YAW_FRACTION: Final[float] = 0.01  # |dCMz| / |dCMy| for one ruddervator alone (G1: 0.05; symmetric: 0)
+SYMMETRIC_PITCH_DOMINANCE: Final[float] = 5.0  # raw |dCMy_R - dCMy_L| / |dCMy_R + dCMy_L| (G1: ~130)
 ALPHA_MATCH_TOL_DEG: Final[float] = 1e-6
 AILERON_SIGN: Final[float] = 1.0
 ELEVATOR_SIGN: Final[float] = -1.0
@@ -148,18 +150,34 @@ def _check_control_conventions(cases: VspaeroCases, base: AeroCoefficients) -> N
 
 def _check_vtail_conventions(panel_cases: dict[str, AeroCoefficients], base: AeroCoefficients,
                              left: ControlSurfaceDerivatives, right: ControlSurfaceDerivatives) -> None:
-    """V-tail rule. Each panel case must deflect that panel alone (pitch dominates roll; both panels together roll
-    as much as they pitch); with both trailing edges up the pair pitches nose up (Cm_L + Cm_R < 0 in the elevator
-    convention; each record's sign comes from its own pitch, so this guards that normalisation); left down and right
-    up yaws nose-left. The roll coupling is recorded, not gated."""
-    for name, case in panel_cases.items():
-        roll, pitch = abs(case.cmx - base.cmx), abs(case.cmy - base.cmy)
-        if roll >= PANEL_MAX_ROLL_FRACTION * pitch:
-            raise AeroAnalysisError(f"{name} case does not deflect one panel alone (dCMx {roll:.4g}, dCMy {pitch:.4g})")
-    if not -(left.cm_per_rad + right.cm_per_rad) > 0:
-        raise AeroAnalysisError("ruddervators deflected trailing-edge-up together do not pitch the nose up "
-                                f"(Cm_L {left.cm_per_rad:.4g}, Cm_R {right.cm_per_rad:.4g})")
-    if not left.cn_per_rad - right.cn_per_rad < 0:
+    """V-tail rule, on the raw VSPAERO panel cases (before the per-panel sign normalisation, which would make any sign
+    check pass by construction) and then on the normalised records:
+      * one panel alone: pitch dominates roll (equal gains, i.e. both panels antisymmetric, roll as much as they pitch);
+      * yaw per panel: |dCMz| is a real fraction of |dCMy| (both panels deflected together symmetrically, gains
+        (1, -1), give no yaw);
+      * symmetric pitch: OpenVSP deflects a mirrored pair antisymmetrically under equal gains, so the two raw panel
+        cases (gains (0, 1) and (1, 0)) must pitch with opposite signs, and their symmetric combination (right minus
+        left) must dominate the antisymmetric one; a same-sign pair means the gain convention or the geometry is wrong
+        and the "both trailing edges up" pair would not pitch nose up;
+      * yaw sign: on the normalised records (trailing edge down) the left panel yaws nose-left and the right
+        nose-right, so the antisymmetric pair (left down, right up) yaws nose-left; swapped panels or an inverted V
+        fail.
+    The roll coupling is recorded, not gated."""
+    deltas: dict[str, tuple[float, float, float]] = {
+        name: (case.cmx - base.cmx, case.cmy - base.cmy, case.cmz - base.cmz) for name, case in panel_cases.items()}
+    for name, (d_roll, d_pitch, d_yaw) in deltas.items():
+        if abs(d_roll) >= PANEL_MAX_ROLL_FRACTION * abs(d_pitch):
+            raise AeroAnalysisError(f"{name} case does not deflect one panel alone "
+                                    f"(dCMx {d_roll:.4g}, dCMy {d_pitch:.4g})")
+        if abs(d_yaw) < PANEL_MIN_YAW_FRACTION * abs(d_pitch):
+            raise AeroAnalysisError(f"{name} case does not yaw (dCMz {d_yaw:.4g}, dCMy {d_pitch:.4g}): both panels "
+                                    "deflected together, not one alone")
+    pitch_left, pitch_right = deltas["ruddervator_left"][1], deltas["ruddervator_right"][1]
+    symmetric, antisymmetric = abs(pitch_right - pitch_left), abs(pitch_right + pitch_left)
+    if pitch_left * pitch_right >= 0 or symmetric < SYMMETRIC_PITCH_DOMINANCE * antisymmetric:
+        raise AeroAnalysisError("ruddervator panels do not pitch as a mirrored pair (raw dCMy left "
+                                f"{pitch_left:.4g}, right {pitch_right:.4g}): the symmetric deflection would not pitch")
+    if not left.cn_per_rad < 0 < right.cn_per_rad:
         raise AeroAnalysisError("ruddervators deflected trailing-edges-left do not yaw the nose left (panels swapped "
                                 f"or the V inverted): Cn_L {left.cn_per_rad:.4g}, Cn_R {right.cn_per_rad:.4g}")
 

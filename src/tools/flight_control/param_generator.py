@@ -146,7 +146,9 @@ def fixed_wing_gains(model: FlightModel, gain_scale: float = 1.0) -> ParamSet:
 def ruddervator_params(model: FlightModel) -> ParamSet:
     """V-tail mixing: MIXING_GAIN, and each panel's SERVOn_REVERSED chosen so a nose-up (positive) ArduPilot output
     gives a nose-up moment: PWM above trim deflects the panel by bridge_sign, which pitches by bridge_sign x Cm.
-    Empty for a layout without ruddervators."""
+    Records from VSPAERO are normalised to trailing edge down (Cm < 0), so with the -1 bridge signs they always give 0;
+    the rule stays as a guard for records built any other way (hand-built or a changed convention). Empty for a layout
+    without ruddervators."""
     panels = _ruddervators(model)
     if panels is None:
         return {}

@@ -735,7 +735,10 @@ def test_vtail_pitch_up_and_yaw_right_demands_give_nose_up_and_nose_right(vtail_
 
 def test_vtail_reversal_follows_each_panels_pitch_sign(vtail_g1_design: DesignInputs,
                                                       vtail_model: FlightModel) -> None:
+    """VSPAERO records are normalised to trailing edge down (Cm < 0), so the generated design always gets
+    SERVOn_REVERSED 0; the rule is a guard for records built any other way, exercised here with a hand-flipped panel."""
     params = pg.generate_params(vtail_model, *vtail_g1_design[1:3])
+    assert (params["SERVO2_REVERSED"], params["SERVO4_REVERSED"]) == (0, 0)
     flipped = tuple(s.model_copy(update={"cm_per_rad": -s.cm_per_rad, "cn_per_rad": -s.cn_per_rad,
                                          "cl_per_rad": -s.cl_per_rad, "cl_roll_per_rad": -s.cl_roll_per_rad})
                     if s.name == "ruddervator_left" else s for s in vtail_model.surfaces)
