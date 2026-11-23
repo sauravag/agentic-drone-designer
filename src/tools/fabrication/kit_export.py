@@ -44,7 +44,7 @@ from src.schemas.kit_files import (
     SHEETS_SUBDIR,
     sheet_file_name,
 )
-from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart, part_solid
+from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart, part_solid, tube_solid
 from src.tools.fabrication.kit_labels import CURVE_SAMPLES, label_layout, label_strokes, ordered_edges
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.fabrication.kit_mass import GLUE_NAME, areal_density_kg_m2, kit_mass_items
@@ -211,12 +211,8 @@ def _part_solid(part: KitPart, settings: FabricationSettings) -> bd.Solid:
 
 
 def _tube_solid(tube: TubePart) -> bd.Solid:
-    """A hollow cylinder (a solid one for a rod) from `start_m` along `axis` for `length_m`."""
-    plane = bd.Plane(origin=tube.start_m, z_dir=tube.axis)
-    outer = bd.Solid.make_cylinder(tube.tube.od_m / 2.0, tube.length_m, plane)
-    if tube.tube.id_m <= 0.0:
-        return outer
-    return outer.cut(bd.Solid.make_cylinder(tube.tube.id_m / 2.0, tube.length_m, plane)).solids()[0]
+    """A hollow cylinder (a solid one for a rod) from `start_m` along `axis` for `length_m` (`kit.py`)."""
+    return tube_solid(tube)
 
 
 def ply_solids(kit: Kit, settings: FabricationSettings) -> list[bd.Solid]:

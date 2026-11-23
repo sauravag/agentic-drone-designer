@@ -84,6 +84,7 @@ from src.tools.fabrication.kit import (
     Vec3,
     WingBolt,
     part_solid,
+    tube_solid,
 )
 from src.tools.fabrication.rib_outline import camber_point, keeps_web, notched_profile
 from src.tools.fabrication.tubes import (
@@ -105,6 +106,7 @@ from src.tools.fabrication.tubes import (
 from src.tools.fabrication.wing_box_bosses import BOSS_LABELS
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
+    has_root_block,
     panel_planform,
     panel_point,
     panel_start_m,
@@ -504,17 +506,29 @@ def _common_volume_m3(a: bd.Shape, b: bd.Shape) -> float:
     return sum(piece.volume for piece in pieces)
 
 
-def _check_root_block_clear(blocks: Sequence[KitPart], fuselage: Sequence[KitPart],
-                            settings: FabricationSettings) -> None:
-    """A root block inside the tail cone must clear every fuselage part (formers, crutch, bulkheads, plates): the kit
-    has no relief for it, so a clash refuses the kit, naming the part."""
-    for block in blocks:
-        solid = part_solid(block, settings)
-        for part in fuselage:
-            other = part_solid(part, settings)
+def _tail_root_items(layout: AircraftLayout, parts: Sequence[KitPart], tubes: Sequence[TubePart],
+                     settings: FabricationSettings) -> list[tuple[str, bd.Shape]]:
+    """(label, solid) of the V-tail root that reaches ahead of the pod's tail: its root block, panel ribs and panel
+    spars (`tail_panels` names of each surface with a root block)."""
+    names = [name for t in layout.tail_surfaces if has_root_block(t) for _, name in tail_panels(t)]
+    rib_prefixes = tuple(f"{name}-" for name in names)
+    spars = {f"TS-{name}" for name in names}
+    items = [(p.label, part_solid(p, settings)) for p in parts if p.label.startswith(rib_prefixes)]
+    items += [(t.label, tube_solid(t)) for t in tubes if t.label in spars]
+    return [(label, solid) for label, solid in items if solid.bounding_box().min.X < layout.fuselage_length_m]
+
+
+def _check_tail_root_clear(items: Sequence[tuple[str, bd.Shape]], fuselage: Sequence[KitPart],
+                           settings: FabricationSettings) -> None:
+    """The V-tail root (block, panel ribs, spars) must clear every fuselage part (formers, crutch, bulkheads, plates)
+    where it reaches into the pod: the kit has no relief for it, so a clash refuses the kit, naming both parts."""
+    if not items:
+        return
+    others = [(part.label, part_solid(part, settings)) for part in fuselage]
+    for label, solid in items:
+        for other_label, other in others:
             if _boxes_overlap(solid, other) and _common_volume_m3(solid, other) > CLASH_VOLUME_M3:
-                raise KitUnavailable(f"{block.label}: the V-tail root block inside the tail cone runs into "
-                                     f"{part.label}")
+                raise KitUnavailable(f"{label}: the V-tail root inside the tail cone runs into {other_label}")
 
 
 def _split_all(parts: Sequence[KitPart], settings: FabricationSettings) -> tuple[KitPart, ...]:
@@ -544,13 +558,14 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
                                    lift_thrust_n=sizing.vtol_thrust_per_motor_n)
     blocks = tail_root_blocks(layout, tails, settings)
     in_pod = _root_block_in_pod(layout, blocks)
-    if in_pod:
-        _check_root_block_clear(blocks, fuselage, settings)
+    tail_tubes = _tail_spars(layout, tail, tails, settings)
+    if blocks:
+        _check_tail_root_clear(_tail_root_items(layout, (*ribs, *blocks), tail_tubes, settings), fuselage, settings)
     booms = (*booms, *blocks)
     motor = cruise_motor_plate(components, layout, settings, at_boom_end=boom_end)
     parts = _split_all((*ribs, *fuselage, *trays, *booms, *motor), settings)
     tubes = (*spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
-             *boom_tubes, *_tail_spars(layout, tail, tails, settings))
+             *boom_tubes, *tail_tubes)
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     assert_unique_labels(parts, tubes)

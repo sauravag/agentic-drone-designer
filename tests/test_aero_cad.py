@@ -20,7 +20,8 @@ from src.tools.aero_cad import build, cad_packer, components, mass_properties, s
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_selig_dat  # noqa: E402
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
 from src.tools.fabrication import kit_export  # noqa: E402
-from src.tools.fabrication.kit import BOOM_MOTOR_WIRING_NOTE, FOLDING_PROP_NOTE, KitUnavailable  # noqa: E402
+from src.tools.fabrication.kit import (BOOM_MOTOR_WIRING_NOTE, FOLDING_PROP_NOTE, TAIL_CONE_SLOT_NOTE,  # noqa: E402
+                                       KitUnavailable)
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
 from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
@@ -1039,7 +1040,8 @@ def test_packed_kit_notes_the_folding_prop_when_the_clearance_needs_one(vtail_g1
     lay = _pusher_layout(sizing, bom, KIT_BUILDING_VTAIL_STATION)
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
     assert result.kit is not None, result.kit_warning
-    assert BOOM_MOTOR_WIRING_NOTE in result.kit.notes and result.kit.notes[-1] == FOLDING_PROP_NOTE
+    # station 0.30: boom-end motor, VR-1 inside the tail cone, then the packer's folding-prop note
+    assert result.kit.notes == (BOOM_MOTOR_WIRING_NOTE, TAIL_CONE_SLOT_NOTE, FOLDING_PROP_NOTE)
 
 
 def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> None:

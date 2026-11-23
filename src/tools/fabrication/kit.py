@@ -33,7 +33,7 @@ from src.tools.fabrication.wing_retention import WingBolt
 
 __all__ = ["BOOM_MOTOR_WIRING_NOTE", "Box2", "CoverSurface", "FOLDING_PROP_NOTE", "Kit", "KitPart", "KitUnavailable",
            "LinearStock", "OVERWRAP_LABEL", "Overwrap", "TAIL_CONE_SLOT_NOTE", "TubePart", "Vec3", "WingBolt",
-           "part_solid", "with_clearance_notes"]
+           "part_solid", "tube_solid", "with_clearance_notes"]
 
 Vec3 = tuple[float, float, float]
 Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local XY
@@ -76,6 +76,15 @@ class TubePart:
     length_m: float
     start_m: Vec3
     axis: Vec3
+
+
+def tube_solid(tube: TubePart) -> bd.Solid:
+    """A hollow cylinder (a solid one for a rod) from `start_m` along `axis` for `length_m`."""
+    plane = bd.Plane(origin=tube.start_m, z_dir=tube.axis)
+    outer = bd.Solid.make_cylinder(tube.tube.od_m / 2.0, tube.length_m, plane)
+    if tube.tube.id_m <= 0.0:
+        return outer
+    return outer.cut(bd.Solid.make_cylinder(tube.tube.id_m / 2.0, tube.length_m, plane)).solids()[0]
 
 
 @dataclass(frozen=True)

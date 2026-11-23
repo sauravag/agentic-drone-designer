@@ -22,6 +22,7 @@ from src.tools.fabrication.kit import (
     FOLDING_PROP_NOTE,
     TAIL_CONE_SLOT_NOTE,
     Kit,
+    KitPart,
     KitUnavailable,
     TubePart,
     with_clearance_notes,
@@ -699,11 +700,19 @@ def test_no_tail_cone_slot_note_when_the_root_block_is_aft_of_the_pod(vtail_kits
     assert TAIL_CONE_SLOT_NOTE not in c.kit.notes
 
 
-def test_root_block_clashing_with_a_fuselage_part_refuses_the_kit(vtail_kits):
-    """No relief exists for VR-1 in a former: a clash makes the kit unavailable, naming the part."""
-    from src.tools.fabrication.build_kit import _check_root_block_clear
+@pytest.mark.parametrize("label", ["VR-1", "VR-01", "TS-VL"])
+def test_tail_root_clashing_with_a_fuselage_part_refuses_the_kit(label, vtail_kits):
+    """No relief exists for the V-tail root in a former: a clash of its block, a panel rib or a panel spar makes the
+    kit unavailable, naming both parts (constructed former F-9 through the item's middle)."""
+    from src.tools.fabrication.build_kit import _check_tail_root_clear
+    from src.tools.fabrication.fuselage_parts import station_location
+    from src.tools.fabrication.rib_outline import rect_face
 
-    block = next(p for p in vtail_kits["g1"].kit.parts if p.label == "VR-1")
-    former = dataclasses.replace(block, label="F-9", family="former")
-    with pytest.raises(KitUnavailable, match="VR-1: the V-tail root block inside the tail cone runs into F-9"):
-        _check_root_block_clear((block,), (former,), SETTINGS)
+    kit = vtail_kits["g1"].kit
+    item = next((p for p in kit.parts if p.label == label), None)
+    solid = part_solid(item, SETTINGS) if item is not None else tube_solid(next(t for t in kit.tubes
+                                                                                if t.label == label))
+    box = solid.bounding_box()
+    former = KitPart("F-9", "former", rect_face(-1.0, -1.0, 1.0, 1.0), station_location((box.min.X + box.max.X) / 2.0))
+    with pytest.raises(KitUnavailable, match=rf"{re.escape(label)}: the V-tail root inside the tail cone runs into F-9"):
+        _check_tail_root_clear(((label, solid),), (former,), SETTINGS)
