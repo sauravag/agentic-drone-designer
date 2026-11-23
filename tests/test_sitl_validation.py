@@ -8,7 +8,7 @@ need the arduplane binary:
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -422,6 +422,46 @@ def test_reversed_ruddervator_fails_sitl(tmp_path: Path) -> None:
 
 
 @pytest.mark.docker
+def test_vtail_passes_the_full_robustness_check(tmp_path: Path) -> None:
+    """The as-built V-tail G1 (kit inertia) passes the SITL check on all three plants (nominal, hot, sluggish), within
+    the retry budget and the unchanged limits: the capped rate D keeps the hot corner from ringing at the gains the
+    sluggish corner needs."""
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    if not sv.sitl_available():
+        pytest.skip("arduplane not installed (run in the Docker image)")
+    fcs = sv.generate_and_verify_fcs(*load_vtail_design(), tmp_path)
+    assert fcs.passed, fcs
+    assert {c.case for c in fcs.perturbation_cases} == {"nominal", "hot", "sluggish"}
+    for case in fcs.perturbation_cases:
+        assert case.error is None, case
+        assert case.roll_settling_s < sv.MAX_SETTLING_S and case.pitch_settling_s < sv.MAX_SETTLING_S, case
+        assert case.roll_overshoot < sv.MAX_OVERSHOOT and case.pitch_overshoot < sv.MAX_OVERSHOOT, case
+
+
+MIXER_SETTLE_TIMEOUT_S: float = 10.0  # sim seconds for a stick change to reach the servo outputs
+STABLE_SERVO_FRAMES: int = 200  # consecutive identical bridge frames (~0.2 s sim) that count as settled
+LIVE_SERVO_CHANNELS: tuple[int, ...] = (0, 1, 2, 3)  # SERVO1-4: aileron, V-tail left, throttle, V-tail right
+
+
+def _settled_servo_frame(pilot: Any, received: list[tuple[int, ...]], previous: Optional[tuple[int, ...]],
+                         what: str) -> tuple[int, ...]:
+    """The servo PWM frame the bridge receives once a stick change has gone through ArduPilot: it differs from the
+    previous settled frame (any live frame when there is none: the neutral baseline) and holds for
+    STABLE_SERVO_FRAMES frames. At boot the bridge sees all-zero frames, then live trim frames (~2 s sim) before the
+    RC override reaches the mixer; a fixed hold could land in that window (the old flake). Waiting on the condition
+    removes the race."""
+    def settled() -> bool:
+        if len(received) < STABLE_SERVO_FRAMES:
+            return False
+        tail = received[-STABLE_SERVO_FRAMES:]
+        frame = tail[-1]
+        live = all(frame[k] > 0 for k in LIVE_SERVO_CHANNELS)  # outputs read 0 until arduplane drives them
+        return live and all(f == frame for f in tail) and frame != previous
+    pilot.require(MIXER_SETTLE_TIMEOUT_S, settled, f"servo outputs for {what}")
+    return received[-1]
+
+
+@pytest.mark.docker
 def test_arduplane_vtail_mixer_matches_the_modelled_mix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The host sign-chain test (test_flight_control) models ArduPlane's V-tail mixer as left = g (e + r),
     right = g (e - r): check it against arduplane itself with MANUAL-mode stick inputs, so the yaw sense (which the
@@ -462,11 +502,12 @@ def test_arduplane_vtail_mixer_matches_the_modelled_mix(tmp_path: Path, monkeypa
         pilot = SitlPilot(conn, health=sv._health(bridge, proc, tmp_path))
         pilot.connect()
         pilot.set_mode("MANUAL")  # surfaces follow the sticks directly, armed or not
-        for elevator, rudder, rc in sticks.values():
+        previous = _settled_servo_frame(pilot, received, None, "neutral sticks")
+        for name, (elevator, rudder, rc) in sticks.items():
             pilot.rc = rc
-            pilot.wait(2.0)
+            pwm = _settled_servo_frame(pilot, received, previous, name)
+            previous = pwm
             left, right = _ardupilot_vtail_mix(elevator, rudder, params["MIXING_GAIN"])
-            pwm = received[-1]
             assert (pwm[1] - 1500) / 500 == pytest.approx(left, abs=0.02)  # SERVO2: VTail left (79)
             assert (pwm[3] - 1500) / 500 == pytest.approx(right, abs=0.02)  # SERVO4: VTail right (80)
 
