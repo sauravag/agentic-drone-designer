@@ -1039,7 +1039,7 @@ def test_packed_kit_notes_the_folding_prop_when_the_clearance_needs_one(vtail_g1
     lay = _pusher_layout(sizing, bom, KIT_BUILDING_VTAIL_STATION)
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
     assert result.kit is not None, result.kit_warning
-    assert result.kit.notes == (BOOM_MOTOR_WIRING_NOTE, FOLDING_PROP_NOTE)
+    assert BOOM_MOTOR_WIRING_NOTE in result.kit.notes and result.kit.notes[-1] == FOLDING_PROP_NOTE
 
 
 def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> None:

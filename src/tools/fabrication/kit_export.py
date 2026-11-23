@@ -44,7 +44,7 @@ from src.schemas.kit_files import (
     SHEETS_SUBDIR,
     sheet_file_name,
 )
-from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart
+from src.tools.fabrication.kit import OVERWRAP_LABEL, Kit, KitPart, KitUnavailable, LinearKind, TubePart, part_solid
 from src.tools.fabrication.kit_labels import CURVE_SAMPLES, label_layout, label_strokes, ordered_edges
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.fabrication.kit_mass import GLUE_NAME, areal_density_kg_m2, kit_mass_items
@@ -207,8 +207,7 @@ def write_sheets(placements: Mapping[str, Sequence[Placement]], settings: Fabric
 # ------------------------------------------------------------------------------------- kit solids ---
 def _part_solid(part: KitPart, settings: FabricationSettings) -> bd.Solid:
     """The outline extruded along local +Z by its sheet thickness, moved into the aircraft frame (`kit.py`)."""
-    thickness = settings.sheet_for(part.family).thickness_m
-    return bd.Solid.extrude(part.outline, bd.Vector(0.0, 0.0, thickness)).moved(part.location)
+    return part_solid(part, settings)
 
 
 def _tube_solid(tube: TubePart) -> bd.Solid:

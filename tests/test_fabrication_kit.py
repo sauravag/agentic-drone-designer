@@ -20,6 +20,7 @@ from src.tools.fabrication.fuselage_parts import STRINGER_COUNT, former_stations
 from src.tools.fabrication.kit import (
     BOOM_MOTOR_WIRING_NOTE,
     FOLDING_PROP_NOTE,
+    TAIL_CONE_SLOT_NOTE,
     Kit,
     KitUnavailable,
     TubePart,
@@ -669,3 +670,40 @@ def test_skin_governed_vtail_root_still_meets_its_root_block(vtail_g1):
     for rib, spar in (("VR-01", "TS-VR"), ("VL-01", "TS-VL")):
         assert block.distance_to(part_solid(parts[rib], SETTINGS)) < TOUCH_M, rib
         assert block.distance_to(tube_solid(tubes[spar])) < SETTINGS.sheet_for("rib").thickness_m, spar
+
+
+# ------------------------------------------------------------ V-tail root inside the tail cone (M5 ruling) ---
+@pytest.mark.parametrize("case,station,in_pod", [("g1", 0.30, True), ("g1", 0.35, False), ("g2", 0.30, True),
+                                                 ("g2", 0.35, False)])
+def test_vtail_root_block_in_the_tail_cone_clears_every_part(case, station, in_pod, request):
+    """Where the V-tail root chord lies over the pod's tail cone (the skin sets its root station), VR-1, the root ribs
+    and the spars clear every former, the crutch and every other kit part. At 0.30 VR-1 itself lies inside the pod (a
+    blended root) and the build sheet says to slot the tail-cone covering; at 0.35 it is already aft of the pod."""
+    sizing, bom = request.getfixturevalue(f"vtail_{case}")
+    layout = _fitted_layout(sizing, bom, station, with_propeller=True)
+    placed = _vtail_placed(bom, layout)
+    kit = build_kit(sizing, layout, load_airfoil(layout.airfoil), placed, VTAIL_SETTINGS[case])
+    block = next(p for p in kit.parts if p.label == "VR-1")
+    assert (block.location.position.X < layout.fuselage_length_m) == in_pod
+    assert (TAIL_CONE_SLOT_NOTE in kit.notes) == in_pod
+    solids = [(p.label, part_solid(p, SETTINGS)) for p in kit.parts]
+    solids += [(_mitre_name(t.label), tube_solid(t)) for t in kit.tubes]
+    motor = next(p for p in placed if p.name == "cruise_motor")
+    _assert_no_intersections([*solids, ("cruise_motor", motor.solid())])
+
+
+def test_no_tail_cone_slot_note_when_the_root_block_is_aft_of_the_pod(vtail_kits):
+    c = vtail_kits["g1"]  # station 0.45: the V-tail root is behind the pod
+    block = next(p for p in c.kit.parts if p.label == "VR-1")
+    assert block.location.position.X > c.layout.fuselage_length_m
+    assert TAIL_CONE_SLOT_NOTE not in c.kit.notes
+
+
+def test_root_block_clashing_with_a_fuselage_part_refuses_the_kit(vtail_kits):
+    """No relief exists for VR-1 in a former: a clash makes the kit unavailable, naming the part."""
+    from src.tools.fabrication.build_kit import _check_root_block_clear
+
+    block = next(p for p in vtail_kits["g1"].kit.parts if p.label == "VR-1")
+    former = dataclasses.replace(block, label="F-9", family="former")
+    with pytest.raises(KitUnavailable, match="VR-1: the V-tail root block inside the tail cone runs into F-9"):
+        _check_root_block_clear((block,), (former,), SETTINGS)

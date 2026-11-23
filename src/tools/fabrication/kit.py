@@ -27,12 +27,13 @@ from typing import Final, Literal
 
 import build123d as bd
 
-from src.schemas.fabrication import PartFamily, TubeStock
+from src.schemas.fabrication import FabricationSettings, PartFamily, TubeStock
 from src.tools.fabrication.tubes import KitUnavailable, Overwrap, SparPlan
 from src.tools.fabrication.wing_retention import WingBolt
 
 __all__ = ["BOOM_MOTOR_WIRING_NOTE", "Box2", "CoverSurface", "FOLDING_PROP_NOTE", "Kit", "KitPart", "KitUnavailable",
-           "LinearStock", "OVERWRAP_LABEL", "Overwrap", "TubePart", "Vec3", "WingBolt", "with_clearance_notes"]
+           "LinearStock", "OVERWRAP_LABEL", "Overwrap", "TAIL_CONE_SLOT_NOTE", "TubePart", "Vec3", "WingBolt",
+           "part_solid", "with_clearance_notes"]
 
 Vec3 = tuple[float, float, float]
 Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local XY
@@ -42,6 +43,8 @@ LinearKind = Literal["stringer", "le", "te"]
 CoverKind = Literal["film", "fuselage", "dbox"]
 BOOM_MOTOR_WIRING_NOTE: Final[str] = "Motor wiring runs along the tail boom to the boom-end motor"
 FOLDING_PROP_NOTE: Final[str] = "Folding propeller required (belly landing)"
+TAIL_CONE_SLOT_NOTE: Final[str] = ("Slot the tail-cone covering for the V-tail panels: the root block VR-1 sits "
+                                   "inside the pod's tail cone (a blended tail root)")
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,12 @@ class KitPart:
     def area_m2(self) -> float:
         """Nominal outline area (holes removed) of one piece (m^2)."""
         return self.outline.area
+
+
+def part_solid(part: KitPart, settings: FabricationSettings) -> bd.Solid:
+    """The outline extruded along local +Z by its sheet thickness, moved into the aircraft frame."""
+    thickness = settings.sheet_for(part.family).thickness_m
+    return bd.Solid.extrude(part.outline, bd.Vector(0.0, 0.0, thickness)).moved(part.location)
 
 
 @dataclass(frozen=True)

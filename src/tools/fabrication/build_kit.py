@@ -71,6 +71,7 @@ from src.tools.fabrication.fuselage_parts import (
 )
 from src.tools.fabrication.kit import (
     BOOM_MOTOR_WIRING_NOTE,
+    TAIL_CONE_SLOT_NOTE,
     CoverSurface,
     Kit,
     KitPart,
@@ -82,6 +83,7 @@ from src.tools.fabrication.kit import (
     TubeRole,
     Vec3,
     WingBolt,
+    part_solid,
 )
 from src.tools.fabrication.rib_outline import camber_point, keeps_web, notched_profile
 from src.tools.fabrication.tubes import (
@@ -139,6 +141,7 @@ MAX_DOD_GROUP: Final[int] = 2
 BUILT_LAYOUT_PARTS: Final[frozenset[tuple[str, str, str]]] = frozenset({("conventional", "tractor_nose", "centre"),
                                                                        ("v", "pusher_boom_end", "centre")})
 BOOM_END_PROPELLER: Final[str] = "pusher_boom_end"  # LayoutSpec.propeller of a motor at the tail boom's end
+CLASH_VOLUME_M3: Final[float] = 1e-12  # solids sharing more than this volume intersect
 PIN_REACH_M: Final[float] = 0.020  # R18: pin end this far outboard of the root doubler
 MITRE_LABELS: Final[tuple[str, ...]] = ("SK-R", "SK-L", "SP-R1", "SP-L1")
 SIDES: Final[tuple[tuple[float, str], ...]] = ((1.0, "R"), (-1.0, "L"))
@@ -484,6 +487,36 @@ def _check_tail_boom(sizing: SizingOutput, layout: AircraftLayout, components: S
                         _boom_tip_mass(components, boom_end))
 
 
+def _root_block_in_pod(layout: AircraftLayout, blocks: Sequence[KitPart]) -> bool:
+    """A V-tail root block whose plate starts ahead of the pod's tail lies inside the tail cone (a blended root)."""
+    return any(b.location.position.X < layout.fuselage_length_m for b in blocks)
+
+
+def _boxes_overlap(a: bd.Shape, b: bd.Shape) -> bool:
+    ba, bb = a.bounding_box(), b.bounding_box()
+    return all(lo_a < hi_b and lo_b < hi_a for lo_a, hi_a, lo_b, hi_b in zip(ba.min, ba.max, bb.min, bb.max))
+
+
+def _common_volume_m3(a: bd.Shape, b: bd.Shape) -> float:
+    """Volume two solids share (`intersect` may give one shape, a list of them, or nothing)."""
+    common = a.intersect(b)
+    pieces = common if isinstance(common, list) else ([] if common is None else [common])
+    return sum(piece.volume for piece in pieces)
+
+
+def _check_root_block_clear(blocks: Sequence[KitPart], fuselage: Sequence[KitPart],
+                            settings: FabricationSettings) -> None:
+    """A root block inside the tail cone must clear every fuselage part (formers, crutch, bulkheads, plates): the kit
+    has no relief for it, so a clash refuses the kit, naming the part."""
+    for block in blocks:
+        solid = part_solid(block, settings)
+        for part in fuselage:
+            other = part_solid(part, settings)
+            if _boxes_overlap(solid, other) and _common_volume_m3(solid, other) > CLASH_VOLUME_M3:
+                raise KitUnavailable(f"{block.label}: the V-tail root block inside the tail cone runs into "
+                                     f"{part.label}")
+
+
 def _split_all(parts: Sequence[KitPart], settings: FabricationSettings) -> tuple[KitPart, ...]:
     return tuple(piece for part in parts for piece in split_to_bed(part, settings))
 
@@ -509,7 +542,11 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     trays = component_plates(components, layout, settings, spar=spar)
     booms, boom_tubes = boom_parts(layout, spar, settings, components=components,
                                    lift_thrust_n=sizing.vtol_thrust_per_motor_n)
-    booms = (*booms, *tail_root_blocks(layout, tails, settings))
+    blocks = tail_root_blocks(layout, tails, settings)
+    in_pod = _root_block_in_pod(layout, blocks)
+    if in_pod:
+        _check_root_block_clear(blocks, fuselage, settings)
+    booms = (*booms, *blocks)
     motor = cruise_motor_plate(components, layout, settings, at_boom_end=boom_end)
     parts = _split_all((*ribs, *fuselage, *trays, *booms, *motor), settings)
     tubes = (*spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
@@ -517,7 +554,7 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     assert_unique_labels(parts, tubes)
-    notes = (BOOM_MOTOR_WIRING_NOTE,) if boom_end else ()
+    notes = (*((BOOM_MOTOR_WIRING_NOTE,) if boom_end else ()), *((TAIL_CONE_SLOT_NOTE,) if in_pod else ()))
     return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout, airfoil, spar, settings), spar=spar,
                joins=join_notes(parts), overwrap=overwrap, wing_bolt=_wing_bolt(layout, spar, fuselage, settings),
                notes=notes)
