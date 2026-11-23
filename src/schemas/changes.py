@@ -21,7 +21,7 @@ LABEL_MAX_LEN: Final[int] = 120
 FIELD_LABELS: Final[dict[str, str]] = {
     # requirements
     "propulsion_type": "Propulsion", "airframe_topology": "Airframe", "airframe_layout": "Airframe layout",
-    "runway_available": "Runway available",
+    "runway_available": "Runway available", "launch_method": "Launch",
     "group_constraint": "Group limit", "payload_mass_kg": "Payload mass (kg)", "payload_power_w": "Payload power (W)",
     "endurance_hours": "Endurance (h)", "combat_radius_km": "Combat radius (km)",
     "cruise_speed_ms": "Cruise speed (m/s)", "service_ceiling_m": "Service ceiling (m)",
@@ -57,6 +57,7 @@ class RequirementChanges(BaseModel):
     airframe_topology: Optional[Literal["fixed_wing", "quadplane_vtol", "auto"]] = None
     airframe_layout: Optional[AirframeLayout] = None
     runway_available: Optional[bool] = None
+    launch_method: Optional[Literal["auto", "runway", "hand"]] = None
     group_constraint: Optional[Literal[1, 2, 3]] = None
     payload_mass_kg: Optional[float] = None
     payload_power_w: Optional[float] = None

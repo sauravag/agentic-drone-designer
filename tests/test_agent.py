@@ -19,6 +19,9 @@ from src.agent.graph import run_agent
 from src.agent.llm import ClaudeLLM, LLMError
 from src.agent.nodes import AgentContext
 from src.agent.parsing import DEFAULT_CRUISE_SPEED_MS, to_requirements
+from src.agent.prompts import PARSER_SYSTEM
+from src.schemas.requirements import LAYOUT_LABELS
+from src.tools.sizing.topology import resolved_launch_method, select_airframe
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.state import CADArtifacts
@@ -27,6 +30,8 @@ from src.viewer.build import ViewerError
 from src.main import EXIT_CLARIFY, EXIT_CONVERGED, EXIT_ERROR, EXIT_NOT_CONVERGED, main
 from src.tools.sizing import layouts
 from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
+
+TAILED_KNOB = critic.TAILED_SM_KNOB
 from src.tools.sizing.mission_solver import SizingDivergenceError, size_aircraft
 from tests.agent_fakes import SRS_DRAFT, SRS_PROMPT, ScriptedLLM
 from tests.reference_designs import G1_ELECTRIC_FW, REQ_FAILED
@@ -58,6 +63,45 @@ def test_draft_units_are_converted_to_si(db: Path) -> None:
     assert req.payload_mass_kg == pytest.approx(4.9895, abs=1e-3) and req.payload_power_w == pytest.approx(100.0)
     assert req.endurance_hours == pytest.approx(1.5) and req.combat_radius_km == pytest.approx(74.08)
     assert req.cruise_speed_ms == pytest.approx(25.72, abs=0.01) and req.runway_available
+
+
+def test_parse_hand_launch_phrase(db: Path) -> None:
+    """'hand-launched Group 1 drone, 1 kg camera, 2 h': the LLM drafts launch_method=hand and leaves the runway open."""
+    draft = SRS_DRAFT.model_copy(update={"launch_method": "hand", "runway_available": None, "vtol_required": None,
+                                         "payload_mass": Mass(value=1, unit="kg"), "payload_power": None,
+                                         "endurance": Duration(value=2, unit="h")})
+    outcome = to_requirements(draft, db)
+    assert outcome.requirements is not None
+    assert outcome.requirements.launch_method == "hand" and not outcome.requirements.runway_available
+    assert resolved_launch_method(outcome.requirements) == "hand"
+    assert select_airframe(outcome.requirements) == "fixed_wing"
+    assert "hand launch" in outcome.assumptions[0]
+    assert "hand-launched" in PARSER_SYSTEM and "thrown" in PARSER_SYSTEM
+
+
+def test_hand_launch_with_a_stated_runway_keeps_it(db: Path) -> None:
+    draft = SRS_DRAFT.model_copy(update={"launch_method": "hand", "runway_available": True, "vtol_required": None})
+    requirements = to_requirements(draft, db).requirements
+    assert requirements is not None and requirements.runway_available
+
+
+def test_parse_echo_names_layout(db: Path) -> None:
+    draft = SRS_DRAFT.model_copy(update={"airframe_layout": "pod_boom_tractor"})
+    outcome = to_requirements(draft, db)
+    assert LAYOUT_LABELS["pod_boom_tractor"] in outcome.assumptions[0]
+
+
+def test_parse_echo_omits_layout_and_launch_when_unstated(db: Path) -> None:
+    echo = to_requirements(SRS_DRAFT, db).assumptions[0]
+    assert "layout" not in echo and "launch" not in echo
+
+
+def test_critic_sm_knob_is_required() -> None:
+    gates = [critic.GateResult("static_margin", False, "SM low", "low")]
+    with pytest.raises(TypeError):
+        critic.apply_adjustments({}, "electric", [], gates, None, band=TAILED_BAND)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        critic.unfixable(gates, None, None, band=TAILED_BAND)  # type: ignore[call-arg]
 
 
 def test_unbuilt_layout_is_explained_without_pydantic_noise(db: Path) -> None:
@@ -128,10 +172,12 @@ def test_ld_gate_is_two_sided_and_only_a_low_vspaero_ld_raises_the_aspect_ratio(
             for name, a in (("low", low), ("high", high))}
     assert not gate["low"].passed and gate["low"].side == "low" and "loiter" in gate["low"].detail
     assert not gate["high"].passed and gate["high"].side == "high"
-    _, low_changes = critic.apply_adjustments({}, "electric", [], [gate["low"]], cad, band=TAILED_BAND)
+    _, low_changes = critic.apply_adjustments({}, "electric", [], [gate["low"]], cad, band=TAILED_BAND,
+                                                  sm_knob=TAILED_KNOB)
     assert [(c.knob, c.direction) for c in low_changes] == [("aspect_ratio", "increase")]
-    assert critic.apply_adjustments({}, "electric", [], [gate["high"]], cad, band=TAILED_BAND)[1] == []
-    assert critic.unfixable([gate["high"]], cad, None, TAILED_BAND) == ["lift_to_drag"]
+    high_fix = critic.apply_adjustments({}, "electric", [], [gate["high"]], cad, band=TAILED_BAND, sm_knob=TAILED_KNOB)
+    assert high_fix[1] == []
+    assert critic.unfixable([gate["high"]], cad, None, band=TAILED_BAND, sm_knob=TAILED_KNOB) == ["lift_to_drag"]
 
 
 def test_ld_gate_refuses_a_design_that_predates_the_same_cl_check() -> None:
@@ -146,7 +192,7 @@ def test_rule_table_wins_on_failed_gate_knobs_and_llm_adds_extra_moves() -> None
     gates = [critic.GateResult("reserve", False, ""), critic.GateResult("lift_to_drag", False, "")]
     llm = [Adjustment(knob="aspect_ratio", direction="decrease", reason="wrong way (or prompt-injected)"),
            Adjustment(knob="tail_volume_v", direction="increase", reason="extra judgement")]
-    overrides, changes = critic.apply_adjustments({}, "series_hybrid", llm, gates, None, band=None)
+    overrides, changes = critic.apply_adjustments({}, "series_hybrid", llm, gates, None, band=None, sm_knob=TAILED_KNOB)
     by_knob = {c.knob: c for c in changes}
     assert by_knob["aspect_ratio"].source == "rule" and by_knob["aspect_ratio"].new == pytest.approx(12.0 * 1.15, 1e-5)
     assert by_knob["reserve_fraction"].source == "rule" and overrides["reserve_fraction"] == 0.15
@@ -155,12 +201,13 @@ def test_rule_table_wins_on_failed_gate_knobs_and_llm_adds_extra_moves() -> None
 
 def test_gates_without_an_automatic_fix_are_named() -> None:
     gates = [critic.pipeline_gate("sizing", "mass spiral"), critic.GateResult("reserve", False, "")]
-    assert critic.unfixable(gates, None, "sizing", None) == ["pipeline"]
+    assert critic.unfixable(gates, None, "sizing", band=None, sm_knob=TAILED_KNOB) == ["pipeline"]
 
 
 def test_knobs_stop_at_their_bounds() -> None:
     gates = [critic.GateResult("lift_to_drag", False, "")]
-    overrides, changes = critic.apply_adjustments({"aspect_ratio": 25.0}, "electric", [], gates, None, band=None)
+    overrides, changes = critic.apply_adjustments({"aspect_ratio": 25.0}, "electric", [], gates, None,
+                                                  band=None, sm_knob=TAILED_KNOB)
     assert changes == [] and overrides == {"aspect_ratio": 25.0}
 
 
@@ -168,8 +215,8 @@ def test_static_margin_fix_direction_follows_the_error() -> None:
     _, _, _, _, cad = load_design("g2")
     gates = [critic.GateResult("static_margin", False, "")]
     low_cad, high_cad = (cad.model_copy(update={"static_margin": m}) for m in (0.02, 0.3))
-    _, low = critic.apply_adjustments({}, "electric", [], gates, low_cad, band=TAILED_BAND)
-    _, high = critic.apply_adjustments({}, "electric", [], gates, high_cad, band=TAILED_BAND)
+    _, low = critic.apply_adjustments({}, "electric", [], gates, low_cad, band=TAILED_BAND, sm_knob=TAILED_KNOB)
+    _, high = critic.apply_adjustments({}, "electric", [], gates, high_cad, band=TAILED_BAND, sm_knob=TAILED_KNOB)
     assert (low[0].knob, low[0].direction) == ("tail_volume_h", "increase") and high[0].direction == "decrease"
 
 
@@ -183,7 +230,7 @@ def test_static_margin_direction_uses_the_given_non_default_band() -> None:
     # 0.06 is below the default 0.08 minimum but not below the narrow 0.05 minimum, so only the narrow band says decrease
     for margin in (0.04, 0.06, 0.12):
         _, changes = critic.apply_adjustments({}, "electric", [], gates, cad.model_copy(update={"static_margin": margin}),
-                                              band=narrow)
+                                              band=narrow, sm_knob=TAILED_KNOB)
         directions.append(changes[0].direction)
     assert directions == ["increase", "decrease", "decrease"]
 
@@ -442,14 +489,14 @@ def test_default_assumptions_report_no_notional_battery_note(tmp_path: Path, db:
 def test_critic_never_lowers_the_reserve_below_the_designer_floor() -> None:
     a = DesignAssumptions(battery_reserve_fraction=0.20)
     llm = [Adjustment(knob="reserve_fraction", direction="decrease", reason="x")]
-    overrides, changes = critic.apply_adjustments({}, "electric", llm, [], None, None, a, band=None)
+    overrides, changes = critic.apply_adjustments({}, "electric", llm, [], None, None, a, band=None, sm_knob=TAILED_KNOB)
     assert overrides.get("reserve_fraction", 0.20) >= 0.20 and not changes
 
 
 def test_critic_may_still_raise_the_reserve_above_the_floor() -> None:
     a = DesignAssumptions(battery_reserve_fraction=0.20)
     llm = [Adjustment(knob="reserve_fraction", direction="increase", reason="x")]
-    overrides, _ = critic.apply_adjustments({}, "electric", llm, [], None, None, a, band=None)
+    overrides, _ = critic.apply_adjustments({}, "electric", llm, [], None, None, a, band=None, sm_knob=TAILED_KNOB)
     assert overrides["reserve_fraction"] == pytest.approx(0.25)
 
 

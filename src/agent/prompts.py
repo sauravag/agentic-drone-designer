@@ -13,9 +13,10 @@ Record each quantity exactly as the user stated it, with the unit they used. Do 
 do not compute derived values, and do not invent values: leave a field null when the request does \
 not state it. A "datalink radius", "combat radius" or "mission radius" is the one-way radius; only \
 use total_range when the user gives a round-trip or total distance. "Runway-independent", \
-"VTOL", ship or field operations mean runway_available=false. Only set dod_group if the user names a \
-group. Set flight_controller to ark_jetson_pab when the user names ARK, PAB or a Jetson carrier with an \
-autopilot, to cube_orange_plus when they name a Cube, otherwise leave it null. Set companion_computer=true \
+"VTOL", ship or field operations mean runway_available=false. Set launch_method=hand \
+for "hand-launched", "hand launch" or "thrown" (a hand launch needs no runway or VTOL), runway for a stated runway \
+launch, otherwise leave it null. Only set dod_group if the user names a group. Set flight_controller \
+to ark_jetson_pab when the user names ARK, PAB or a Jetson carrier with an autopilot, to cube_orange_plus when they name a Cube, otherwise leave it null. Set companion_computer=true \
 for autonomous operation, onboard AI or a named Jetson / companion computer, false only if the user \
 explicitly excludes one, otherwise leave it null. List anything ambiguous or contradictory in ambiguities. Give the mission a short name.
 """ + ("Set payload_model to the product name when the user names a specific payload (catalogue gimbals: "

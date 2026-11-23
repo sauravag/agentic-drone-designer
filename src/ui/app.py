@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 OUTPUTS_ROOT: Final[Path] = Path(os.environ.get("ISR_FORGE_OUTPUTS", str(pipeline.DEFAULT_OUTPUTS_ROOT)))
 DB_PATH: Final[Path] = Path(os.environ.get("ISR_FORGE_DB", str(DEFAULT_DB_PATH)))
 AIRFRAMES: Final[tuple[str, ...]] = ("auto", "fixed_wing", "quadplane_vtol")
+LAUNCHES: Final[tuple[str, ...]] = ("auto", "runway", "hand")
 PROPULSION: Final[tuple[str, ...]] = ("auto", "electric", "series_hybrid")
 GROUPS: Final[tuple[int | str, ...]] = ("auto", 1, 2, 3)
 MAX_PROMPT_CHARS: Final[int] = 2000
@@ -132,9 +133,12 @@ def _payload_inputs() -> None:
 
 def _configuration_inputs() -> None:
     st.subheader("Configuration")
-    a, p, g, r = st.columns(4)
+    a, launch, p, g, r = st.columns(5)
     a.selectbox(presenters.FIELD_LABELS["airframe_topology"], AIRFRAMES, key="airframe_topology",
-                help="auto: fixed-wing with a runway, VTOL quadplane without")
+                help="auto: fixed-wing with a runway or a hand launch, VTOL quadplane without")
+    launch.selectbox(presenters.FIELD_LABELS["launch_method"], LAUNCHES, key="launch_method",
+                     help="auto: off a runway if there is one, else VTOL. hand: a hand-launched fixed-wing "
+                          "(Group 1, no runway)")
     p.selectbox(presenters.FIELD_LABELS["propulsion_type"], PROPULSION, key="propulsion_type",
                 help="auto: battery-electric, falling back to series-hybrid when electric cannot close")
     g.selectbox(presenters.FIELD_LABELS["group_constraint"], GROUPS, key="group_constraint",

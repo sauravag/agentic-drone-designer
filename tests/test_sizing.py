@@ -397,3 +397,21 @@ def test_vne_ratio_is_shared_from_the_aero_model() -> None:
     from src.tools.sizing.aero_model import VNE_TO_CRUISE
 
     assert VNE_TO_CRUISE == 1.4 and flight_model.VNE_TO_CRUISE is VNE_TO_CRUISE
+
+
+def test_hand_launch_over_group1_fails_sizing() -> None:
+    req = OperationalRequirements.model_validate({**G2_ELECTRIC_VTOL.model_dump(), "airframe_topology": "fixed_wing",
+                                                  "runway_available": False, "launch_method": "hand"})
+    with pytest.raises(SizingDivergenceError, match=r"hand launch.*9\.07 kg"):  # G2 sizes to ~22 kg
+        size_aircraft(req)
+
+
+def test_hand_launched_g1_sizes_with_launch_recorded() -> None:
+    req = OperationalRequirements.model_validate({**G1_ELECTRIC_FW.model_dump(), "runway_available": False,
+                                                  "launch_method": "hand"})
+    assert size_aircraft(req).launch_method == "hand"
+
+
+@pytest.mark.parametrize(("req", "expected"), [(G1_ELECTRIC_FW, "runway"), (G2_ELECTRIC_VTOL, "vertical")])
+def test_sizing_records_the_resolved_launch(req: OperationalRequirements, expected: str) -> None:
+    assert size_aircraft(req).launch_method == expected

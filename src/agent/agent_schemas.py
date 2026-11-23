@@ -88,6 +88,9 @@ class RequirementsDraft(BaseModel):
     runway_available: Optional[bool] = Field(
         default=None, description="false for runway-independent, VTOL or ship/field operations")
     vtol_required: Optional[bool] = None
+    launch_method: Optional[Literal["runway", "hand"]] = Field(
+        default=None, description="hand if the user says hand-launched, hand launch or thrown; runway if they say "
+                                  "a runway or conventional take-off; otherwise null")
     airframe_layout: Optional[AirframeLayout] = Field(
         default=None, description="Only if the user names an airframe layout: pod_boom_tractor (conventional pod "
         "and boom), single_boom_vtail_pusher, twin_boom_htail_pusher, twin_boom_inverted_v_pusher, "

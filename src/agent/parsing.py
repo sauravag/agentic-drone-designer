@@ -14,7 +14,8 @@ from pydantic import ValidationError
 from src.agent.agent_schemas import Altitude, Distance, Duration, Mass, Power, RequirementsDraft, Speed, Temperature
 from src.schemas.components import Payload
 from src.schemas.payload_catalog import SENSOR_LABELS, is_custom_name, payload_spec, resolve_payload_name
-from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, OperationalRequirements
+from src.schemas.requirements import (ARK_JETSON_PAB, CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, LAYOUT_LABELS,
+                                      OperationalRequirements)
 from src.tools.database.matcher import ComponentNotFoundError, match_payload
 from src.units import (DAY_TO_S, FT_TO_M, G_TO_KG, HOUR_TO_S, KM_TO_M, KMH_TO_MS, KNOT_TO_MS, KW_TO_W, LB_TO_KG,
                        MILE_TO_M, MIN_TO_S, MPH_TO_MS, NMI_TO_M, OZ_TO_KG, FAHRENHEIT_OFFSET,
@@ -139,6 +140,15 @@ def _airframe_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, ob
 
 
 def _topology_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, object]:
+    if draft.launch_method == "hand":
+        # A hand launch is its own fixed-wing mode: the runway stays false unless the user also stated one.
+        return {"launch_method": "hand", "runway_available": bool(draft.runway_available)}
+    if draft.launch_method == "runway":
+        return {"launch_method": "runway", "runway_available": draft.runway_available is not False}
+    return _runway_fields(draft, notes)
+
+
+def _runway_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, object]:
     if draft.vtol_required:
         return {"airframe_topology": "quadplane_vtol", "runway_available": False}
     if draft.vtol_required is False and draft.runway_available is None:
@@ -237,4 +247,8 @@ def _parsed_echo(draft: RequirementsDraft) -> str:
     """What the LLM read from the request, in the user's own units, so a mis-read is visible."""
     stated: list[str] = [f"{name.replace('_', ' ')} {q.value:g} {q.unit}" for name in ECHO_FIELDS
                          if (q := getattr(draft, name)) is not None]
+    if draft.airframe_layout is not None:
+        stated.append(f"airframe layout {LAYOUT_LABELS[draft.airframe_layout]}")
+    if draft.launch_method is not None:
+        stated.append(f"{draft.launch_method} launch")
     return "Read from the request: " + (", ".join(stated) or "no quantities") + "."

@@ -51,6 +51,9 @@ class OperationalRequirements(BaseModel):
     takeoff_altitude_m: float = Field(default=0.0, ge=0.0, le=5000.0)
     isa_temperature_offset_c: float = Field(default=0.0, ge=-40.0, le=40.0)
     runway_available: bool = False
+    # How the aircraft gets airborne. auto: a runway fixed-wing if there is a runway, else a VTOL quadplane.
+    # hand: a hand-launched fixed-wing (no runway, no VTOL; Group 1 only).
+    launch_method: Literal["auto", "runway", "hand"] = "auto"
     # Defaults (Cube, no Jetson) keep requirements written before the avionics choice existed unchanged.
     flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
     companion_computer: bool = False  # separate Jetson on its own carrier; only meaningful with the Cube
@@ -82,12 +85,28 @@ class OperationalRequirements(BaseModel):
         if self.takeoff_altitude_m >= self.service_ceiling_m:
             raise ValueError(f"take-off altitude {self.takeoff_altitude_m} m must be below the service ceiling "
                              f"{self.service_ceiling_m} m (both above mean sea level)")
+        self._check_launch()
         self._check_layout_enabled()
         return self
 
+    def _check_launch(self) -> None:
+        """The launch method, the topology and the runway must agree (see `resolved_launch_method`)."""
+        if self.airframe_topology == "quadplane_vtol":
+            if self.launch_method != "auto":
+                raise ValueError("a quadplane launches vertically: set launch_method='auto'")
+            return
+        stays_quadplane: bool = (self.airframe_topology == "auto" and self.launch_method == "auto"
+                                 and not self.runway_available)
+        if self.launch_method != "hand" and not (self.runway_available or stays_quadplane):
+            raise ValueError("a fixed-wing without a runway needs launch_method='hand' "
+                             "(or choose a VTOL quadplane)")
+
     def _check_layout_enabled(self) -> None:
         """A layout must be built for the topology; `auto` can resolve to either, so both must be."""
-        topologies = ("fixed_wing", "quadplane_vtol") if self.airframe_topology == "auto" else (self.airframe_topology,)
+        if self.airframe_topology != "auto":
+            topologies: tuple[str, ...] = (self.airframe_topology,)
+        else:  # a hand launch rules the quadplane out
+            topologies = ("fixed_wing",) if self.launch_method == "hand" else ("fixed_wing", "quadplane_vtol")
         missing = [t for t in topologies if (self.airframe_layout, t) not in ENABLED_LAYOUTS]
         if missing:
             available = sorted({f"{layout} ({topology})" for layout, topology in ENABLED_LAYOUTS})

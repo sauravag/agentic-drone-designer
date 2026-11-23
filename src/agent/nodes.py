@@ -217,7 +217,7 @@ def _adjust(state: DesignState, gates: list[critic.GateResult], failed: list[cri
     overrides, changes = critic.apply_adjustments(state.get("sizing_overrides") or {}, _propulsion(state),
                                                   decision.adjustments, gates, cad, stage,
                                                   _assumptions(state), band=band, sm_knob=knob)
-    stuck: list[str] = critic.unfixable(gates, cad, stage, band, knob)
+    stuck: list[str] = critic.unfixable(gates, cad, stage, band=band, sm_knob=knob)
     entry["summary"] = decision.summary + (f" No automatic fix for: {', '.join(stuck)}." if stuck else "")
     entry["changes"] = [f"{c.knob} {c.old:.3g} -> {c.new:.3g} ({c.source}: {c.reason})" for c in changes]
     entry["applied"] = [asdict(c) for c in changes]

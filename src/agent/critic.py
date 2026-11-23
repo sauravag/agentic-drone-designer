@@ -121,7 +121,7 @@ def static_margin_basis(layout: str) -> tuple[StaticMarginBand, str]:
 
 
 def _rule_fixes(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
-                band: Optional[StaticMarginBand], knob: str = TAILED_SM_KNOB) -> list[Adjustment]:
+                band: Optional[StaticMarginBand], knob: str) -> list[Adjustment]:
     """Textbook response to each failed gate (the safety net under the LLM's choices). `knob` is the layout's
     static-margin knob; one the step table cannot move yet is an error, not a silent no-op."""
     fixes: list[Adjustment] = []
@@ -167,7 +167,7 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
                       gates: list[GateResult], cad: Optional[CADArtifacts],
                       stage: Optional[str] = None,
                       assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS, *,
-                      band: Optional[StaticMarginBand], sm_knob: str = TAILED_SM_KNOB) -> tuple[dict[str, float], list[AppliedChange]]:
+                      band: Optional[StaticMarginBand], sm_knob: str) -> tuple[dict[str, float], list[AppliedChange]]:
     """New overrides (a copy) plus the changes made. One move per knob. The rule table wins on every knob
     a failed gate governs (so a poor or prompt-injected LLM choice cannot push a knob the wrong way); the
     LLM may add moves on other knobs. The designer's reserve is a floor: a reserve step that would cross
@@ -190,7 +190,7 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
 
 
 def unfixable(gates: list[GateResult], cad: Optional[CADArtifacts], stage: Optional[str],
-              band: Optional[StaticMarginBand], sm_knob: str = TAILED_SM_KNOB) -> list[str]:
+              *, band: Optional[StaticMarginBand], sm_knob: str) -> list[str]:
     """Failed gates the rule table has no automatic fix for (e.g. a mass overrun, a sizing divergence)."""
     fixed_by_rule: set[str] = set()
     for gate in (g for g in gates if not g.passed):

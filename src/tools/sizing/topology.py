@@ -7,11 +7,13 @@ from src.schemas.requirements import OperationalRequirements
 
 Airframe = Literal["fixed_wing", "quadplane_vtol"]
 Propulsion = Literal["electric", "series_hybrid"]
+LaunchMethod = Literal["runway", "hand", "vertical"]
 
 GROUP1_UPPER_KG: Final[float] = 9.07  # 20 lb
 GROUP2_UPPER_KG: Final[float] = 24.95  # 55 lb
 GROUP3_UPPER_KG: Final[float] = 599.0  # 1,320 lb
 
+HAND_LAUNCH_MAX_MTOW_KG: Final[float] = GROUP1_UPPER_KG  # a thrown aircraft is Group 1
 ELECTRIC_MAX_MTOW_KG: Final[float] = 15.0
 ELECTRIC_MAX_ENDURANCE_H: Final[float] = 3.0
 
@@ -36,7 +38,16 @@ def classify_group(mtow_kg: float) -> Literal[1, 2, 3]:
 def select_airframe(req: OperationalRequirements) -> Airframe:
     if req.airframe_topology != "auto":
         return req.airframe_topology
+    if req.launch_method == "hand":
+        return "fixed_wing"
     return "fixed_wing" if req.runway_available else "quadplane_vtol"
+
+
+def resolved_launch_method(req: OperationalRequirements) -> LaunchMethod:
+    """How the resolved aircraft launches: a quadplane vertically, a fixed-wing by hand or off a runway."""
+    if select_airframe(req) == "quadplane_vtol":
+        return "vertical"
+    return "hand" if req.launch_method == "hand" else "runway"
 
 
 def select_propulsion(req: OperationalRequirements, estimated_mtow_kg: float) -> Propulsion:

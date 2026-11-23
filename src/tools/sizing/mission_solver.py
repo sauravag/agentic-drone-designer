@@ -52,7 +52,8 @@ from src.tools.sizing.mission_profile import (
     phase_plan,
     simulate,
 )
-from src.tools.sizing.topology import Airframe, Propulsion, classify_group, select_airframe, select_propulsion
+from src.tools.sizing.topology import (HAND_LAUNCH_MAX_MTOW_KG, Airframe, LaunchMethod, Propulsion, classify_group,
+                                        resolved_launch_method, select_airframe, select_propulsion)
 from src.units import G0, KWH_TO_J
 
 logger = logging.getLogger(__name__)
@@ -290,6 +291,10 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         group = classify_group(mtow)
     except ValueError as exc:
         raise SizingDivergenceError(str(exc)) from exc
+    launch: LaunchMethod = resolved_launch_method(req)
+    if launch == "hand" and mtow > HAND_LAUNCH_MAX_MTOW_KG:
+        raise SizingDivergenceError(f"hand launch needs MTOW <= {HAND_LAUNCH_MAX_MTOW_KG:g} kg (Group 1); "
+                                    f"this design sizes to {mtow:.1f} kg")
     weight: float = mtow * G0
     cl_max: float = design.stall_polar.cl_max_3d
     v_loiter: float = loiter_speed(weight, aero, design.cruise_polar.cl_max_3d)
@@ -305,7 +310,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         aspect_ratio=geom.aspect_ratio, fuselage_length_m=geom.fuselage_length_m,
         fuselage_diameter_m=geom.fuselage_diameter_m, horizontal_tail_area_m2=geom.horizontal_tail_area_m2,
         vertical_tail_area_m2=geom.vertical_tail_area_m2, tail_arm_m=geom.tail_arm_m,
-        airframe_layout=req.airframe_layout, tail_surfaces=geom.tail_surfaces,
+        launch_method=launch, airframe_layout=req.airframe_layout, tail_surfaces=geom.tail_surfaces,
         cruise_power_w=ev.cruise_total_w, hover_power_w=ev.trace.peak_hover_w,
         v_stall_ms=math.sqrt(2.0 * weight / (RHO_SEA_LEVEL * geom.wing_area_m2 * cl_max)),
         v_stall_takeoff_ms=math.sqrt(2.0 * weight / (aero.rho_takeoff * geom.wing_area_m2 * cl_max)),

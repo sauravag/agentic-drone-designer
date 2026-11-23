@@ -21,6 +21,7 @@ from src.tools.flight_control.flight_model import build_flight_model
 from src.tools.flight_control.param_generator import generate_params
 from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
 from src.tools.sizing.mission_solver import size_aircraft
+from src.tools.sizing.topology import resolved_launch_method, select_airframe
 from src.ui import presenters
 from tests.reference_designs import G1_ELECTRIC_FW
 from tests.test_flight_control import load_design
@@ -247,3 +248,44 @@ def test_bridge_applies_each_channel() -> None:
     bridge._apply_channels(fdm, channels, tuple(pwm))
     assert fdm["fcs/elevator-cmd-norm"] == -bridge._centred(1600)
     assert fdm["fcs/aileron-cmd-norm"] == 0.0 and fdm["fcs/rudder-cmd-norm"] == 0.0
+
+
+def test_hand_launch_resolves_fixed_wing() -> None:
+    req = _with(runway_available=False, launch_method="hand")
+    assert resolved_launch_method(req) == "hand"
+    assert select_airframe(req) == "fixed_wing"
+
+
+def test_fixed_wing_without_runway_must_say_how_it_launches() -> None:
+    with pytest.raises(ValidationError, match="needs launch_method='hand'"):
+        _with(runway_available=False, airframe_topology="fixed_wing")
+
+
+def test_runway_launch_without_a_runway_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="needs launch_method='hand'"):
+        _with(runway_available=False, launch_method="runway")
+
+
+def test_quadplane_rejects_hand_launch() -> None:
+    with pytest.raises(ValidationError, match="launches vertically"):
+        _with(launch_method="hand", airframe_topology="quadplane_vtol", runway_available=False)
+
+
+def test_auto_without_runway_stays_a_vertical_quadplane() -> None:
+    req = _with(runway_available=False)
+    assert (select_airframe(req), resolved_launch_method(req)) == ("quadplane_vtol", "vertical")
+
+
+def test_runway_fixed_wing_resolves_to_a_runway_launch() -> None:
+    assert resolved_launch_method(G1_ELECTRIC_FW) == "runway"
+
+
+def test_old_requirements_record_defaults_launch() -> None:
+    data = G1_ELECTRIC_FW.model_dump()
+    data.pop("launch_method")
+    assert OperationalRequirements.model_validate(data).launch_method == "auto"
+
+
+def test_sizing_summary_has_a_launch_row() -> None:
+    sizing = size_aircraft(G1_ELECTRIC_FW)
+    assert ("Launch", "runway") in presenters.sizing_summary(sizing)

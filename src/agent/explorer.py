@@ -223,7 +223,8 @@ def _discrete_candidates(req: OperationalRequirements) -> list[tuple[str, Change
     """Propulsion flips to the other powertrain; the runway lever is skipped if already fixed-wing with runway."""
     target = ELECTRIC if req.propulsion_type == SERIES_HYBRID else SERIES_HYBRID
     candidates = [("propulsion", _change(f"Propulsion → {target}", {"propulsion_type": target}))]
-    if not (req.runway_available and req.airframe_topology == "fixed_wing"):
+    is_hand_launched: bool = req.launch_method == "hand"  # a thrown fixed-wing has no runway to allow
+    if not (is_hand_launched or (req.runway_available and req.airframe_topology == "fixed_wing")):
         runway = {"runway_available": True, "airframe_topology": "fixed_wing"}
         candidates.append(("runway", _change("Allow runway, fixed-wing instead of VTOL", runway)))
     return candidates

@@ -36,7 +36,7 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "design_wind_ms": "Design headwind (m/s)",
     "takeoff_altitude_m": "Take-off altitude (m)",
     "isa_temperature_offset_c": "ISA temperature offset (°C)",
-    "runway_available": "Runway available",
+    "runway_available": "Runway available", "launch_method": "Launch",
     "flight_controller": "Flight controller",
     "companion_computer": "Jetson companion computer",
 }
@@ -125,6 +125,7 @@ def sizing_summary(s: SizingOutput) -> list[tuple[str, str]]:
         ("DoD group", f"Group {s.dod_group}"),
         ("Airframe", s.airframe_topology.replace("_", " ")),
         ("Layout", LAYOUT_LABELS[s.airframe_layout]),
+        ("Launch", s.launch_method),
         ("Propulsion", s.propulsion_type.replace("_", " ")),
         ("Airfoil", s.airfoil),
         ("Wingspan", f"{s.wingspan_m:.2f} m"),
