@@ -17,15 +17,16 @@ import pytest
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, ControlSurfaceDerivatives, SizingOutput
-from src.tools.flight_control import sitl_bridge
-from src.tools.flight_control.control_channels import SurfaceDerivatives, control_channels, steering_channel
-from src.tools.flight_control.perturbation import SLUGGISH, perturbed_model
-from src.tools.sizing.layouts import TAILED_BAND
 from src.tools.flight_control import param_generator as pg
+from src.tools.flight_control import sitl_bridge
+from src.tools.flight_control.control_channels import (ControlChannel, SurfaceDerivatives, channels_with_steering,
+                                                       control_channels, jsbsim_stem, steering_channel)
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
 from src.tools.flight_control.jsbsim_exporter import (export_jsbsim, lift_table, lift_thrust_curve)
 from src.tools.gear import TIP_BACK_ANGLE_DEG, GearInputs, PropellerDisc, landing_gear
+from src.tools.sizing.layouts import TAILED_BAND
+from src.tools.flight_control.perturbation import SLUGGISH, perturbed_model
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
 
 DATA = Path(__file__).parent / "data"
@@ -389,7 +390,7 @@ def _surface(name: str, **overrides: float) -> ControlSurfaceDerivatives:
 
 
 def _tractor_surfaces(a: Any) -> tuple[ControlSurfaceDerivatives, ...]:
-    """The three records the tractor path writes, equal to the aggregated derivatives."""
+    """Tractor records built from the aggregated derivatives, to prove the per-surface mapping path matches."""
     return (
         _surface("aileron", cl_per_rad=0.0, cl_roll_per_rad=a.cl_delta_a, cm_per_rad=0.0, cn_per_rad=a.cn_delta_a),
         _surface("elevator", cl_per_rad=a.cl_delta_e, cl_roll_per_rad=0.0, cm_per_rad=a.cm_delta_e, cn_per_rad=0.0),
@@ -443,7 +444,7 @@ def test_no_rudder_gets_ground_steering_servo() -> None:
     assert steer is not None
     assert (steer.surface, steer.servo, steer.servo_function) == ("steering", 5, 26)
     assert steer.steers_nose_wheel
-    quad = steering_channel(control_channels(model.aero, vt, quad_motors=True), quad_motors=True)
+    quad = steering_channel(control_channels(model.aero, vt), quad_motors=True)
     assert quad is not None and quad.servo == 9
 
 
@@ -485,3 +486,29 @@ def test_bridge_drives_steering_from_the_channel_that_steers() -> None:
     pwm = [1500, 1500, 1000, 1500, 1750]  # servo 5 (steering) at +0.5
     sitl_bridge._apply_channels(fdm, model.channels, pwm)
     assert fdm["fcs/steer-cmd-norm"] == pytest.approx(0.5)
+
+
+def test_no_free_output_for_steering_is_an_error() -> None:
+    model = build_flight_model(*load_design("g1"))
+    full = tuple(ControlChannel(f"s{n}", n, 100 + n, 1.0, 0.3, SurfaceDerivatives()) for n in range(1, 17))
+    with pytest.raises(ValueError, match="steering"):
+        channels_with_steering(full, quad_motors=False)
+    assert model.channels  # the real tractor still builds
+
+
+def test_missing_elevator_is_a_clear_parameter_error() -> None:
+    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+    with pytest.raises(pg.ParamGenerationError, match="elevator"):
+        pg.fixed_wing_gains(model)
+
+
+def test_jsbsim_stem_hyphenates_surface_names() -> None:
+    assert jsbsim_stem("ruddervator_left") == "ruddervator-left"
+    assert [jsbsim_stem(n) for n in ("aileron", "elevator", "rudder")] == ["aileron", "elevator", "rudder"]
+
+
+def test_bridge_and_exporter_agree_on_property_names() -> None:
+    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+    fdm: dict[str, float] = {}
+    sitl_bridge._apply_channels(fdm, model.channels, [1500] * 16)
+    assert "fcs/ruddervator-left-cmd-norm" in fdm and "fcs/ruddervator_left-cmd-norm" not in fdm

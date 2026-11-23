@@ -104,6 +104,9 @@ def fixed_wing_gains(model: FlightModel, gain_scale: float = 1.0) -> ParamSet:
     ff_pitch: float = abs((a.cm_alpha * alpha_per_q + a.cm_q * c / (2 * v)) / a.cm_delta_e)
     gains: ParamSet = {"RLL2SRV_TCONST": ANGLE_TIME_CONSTANT_S, "PTCH2SRV_TCONST": ANGLE_TIME_CONSTANT_S}
     max_defl: dict[str, float] = {c.surface: c.max_deflection_rad for c in model.channels}  # the JSBSim limits
+    missing: list[str] = [name for name in ("aileron", "elevator") if name not in max_defl]
+    if missing:
+        raise ParamGenerationError(f"rate gains need an aileron and an elevator channel; missing {missing}")
     gains |= _rate_gains("RLL_RATE", -l_p / l_da, l_p, l_da, max_defl["aileron"], gain_scale)
     gains |= _rate_gains("PTCH_RATE", ff_pitch, m_q, m_de, max_defl["elevator"], gain_scale)
     return gains

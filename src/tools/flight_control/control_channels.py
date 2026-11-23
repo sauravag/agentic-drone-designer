@@ -88,23 +88,32 @@ def _tractor_records(aero: AeroCoefficients) -> tuple[ControlSurfaceDerivatives,
     )
 
 
-def control_channels(aero: AeroCoefficients, surfaces: Sequence[ControlSurfaceDerivatives] = (),
-                     quad_motors: bool = False) -> tuple[ControlChannel, ...]:
+def jsbsim_stem(surface: str) -> str:
+    """JSBSim property-name stem of a surface: underscores become hyphens (ruddervator_left -> ruddervator-left).
+    The exporter and the SITL bridge both build `fcs/<stem>-...` names from this so they always agree."""
+    return surface.replace("_", "-")
+
+
+def control_channels(aero: AeroCoefficients,
+                     surfaces: Sequence[ControlSurfaceDerivatives] = ()) -> tuple[ControlChannel, ...]:
     """One channel per servo-driven surface, in order: from `surfaces` when given, else the tractor triple derived
-    from the aggregated derivatives. `quad_motors` is accepted for symmetry with `steering_channel`."""
+    from the aggregated derivatives."""
     return tuple(_channel(r) for r in (surfaces or _tractor_records(aero)))
 
 
-def steering_channel(channels: Sequence[ControlChannel], quad_motors: bool) -> Optional[ControlChannel]:
+def steering_channel(channels: Sequence[ControlChannel], quad_motors: bool) -> ControlChannel:
     """The channel that steers the nose wheel: the rudder when there is one, otherwise a dedicated ground-steering
-    channel on the first output not used by a surface, the throttle or (with lift motors) outputs 5-8."""
+    channel on the first output not used by a surface, the throttle or (with lift motors) outputs 5-8. ValueError
+    when every output is taken."""
     rudder = next((c for c in channels if c.surface == RUDDER_SURFACE), None)
     if rudder is not None:
         return replace(rudder, steers_nose_wheel=True)
-    taken: set[int] = {c.servo for c in channels} | {THROTTLE_SERVO} | (set(LIFT_MOTOR_SERVOS) if quad_motors else set())
+    taken: set[int] = {c.servo for c in channels} | {THROTTLE_SERVO}
+    if quad_motors:
+        taken |= set(LIFT_MOTOR_SERVOS)
     servo = next((n for n in range(1, MAX_SERVO_OUTPUT + 1) if n not in taken), None)
     if servo is None:
-        return None
+        raise ValueError(f"no free servo output for ground steering (outputs 1-{MAX_SERVO_OUTPUT} are all in use)")
     return ControlChannel(STEERING_SURFACE, servo, STEERING_SERVO_FUNCTION, 1.0, 0.0, SurfaceDerivatives(),
                           steers_nose_wheel=True)
 
@@ -113,5 +122,4 @@ def channels_with_steering(channels: tuple[ControlChannel, ...], quad_motors: bo
     """`channels` plus the dedicated steering channel when no surface steers the nose wheel."""
     if any(c.steers_nose_wheel for c in channels):
         return channels
-    steer = steering_channel(channels, quad_motors)
-    return channels if steer is None else (*channels, steer)
+    return (*channels, steering_channel(channels, quad_motors))

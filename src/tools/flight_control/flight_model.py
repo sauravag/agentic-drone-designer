@@ -132,7 +132,7 @@ class FlightModel:
     @property
     def channels(self) -> tuple[ControlChannel, ...]:
         """One channel per servo-driven surface, plus the dedicated ground-steering channel when no rudder steers."""
-        return channels_with_steering(control_channels(self.aero, self.surfaces, self.is_quadplane), self.is_quadplane)
+        return channels_with_steering(control_channels(self.aero, self.surfaces), self.is_quadplane)
 
     @property
     def weight_n(self) -> float:

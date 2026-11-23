@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Sequence
 
-from src.tools.flight_control.control_channels import ControlChannel
+from src.tools.flight_control.control_channels import ControlChannel, jsbsim_stem
 from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
                                                    THRUST_EXPO, FlightModel)
 from src.tools.flight_control.param_generator import MOTOR_SPIN_MAX, MOTOR_SPIN_MIN
@@ -165,7 +165,8 @@ def _flight_control(root: ET.Element, model: FlightModel) -> None:
         _sub(fcs, "property", prop, value="0")
     surfaces = _sub(fcs, "channel", name="surfaces")
     for c in model.channels:
-        _actuator(surfaces, f"{c.surface}-pos-rad", f"fcs/{c.surface}-cmd-norm", SERVO_TIME_CONSTANT_S,
+        stem: str = jsbsim_stem(c.surface)
+        _actuator(surfaces, f"{stem}-pos-rad", f"fcs/{stem}-cmd-norm", SERVO_TIME_CONSTANT_S,
                   c.max_deflection_rad)
     propulsion = _sub(fcs, "channel", name="propulsion")
     _cruise_propulsion(propulsion, model)
@@ -224,7 +225,7 @@ def _surface_terms(model: FlightModel, axis_name: str) -> tuple[tuple[str, float
     """Control-surface coefficients of one axis: one per non-zero derivative of each channel."""
     _require_mapped_derivatives(model)
     by_surface = {c.surface: c for c in model.channels}
-    return tuple((name, value, (f"fcs/{surface}-pos-rad",))
+    return tuple((name, value, (f"fcs/{jsbsim_stem(surface)}-pos-rad",))
                  for surface, attr, name, axis in SURFACE_COEFFICIENTS if axis == axis_name and surface in by_surface
                  if (value := getattr(by_surface[surface].derivatives, attr)) != 0.0)
 

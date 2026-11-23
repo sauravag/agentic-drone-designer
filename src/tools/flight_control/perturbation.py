@@ -9,7 +9,8 @@ two off-nominal plants so a design that only works on its own model is caught.
 Only the roll/pitch terms (Cl_delta_a, Cm_delta_e, Cl_p, Cm_q), the inertia and the static margin change. Yaw/rudder
 terms of the tractor aggregates and the VTOL lift rotors are not perturbed, and the lift-rotor geometry stays
 referenced to the nominal CG, so the hover sees the inertia change but no CG imbalance. A layout with per-surface
-records (V-tail) scales every surface's roll, pitch and yaw moment power by the case factor. The transition gate uses the nominal flight.
+records (V-tail) scales every surface's roll, pitch and yaw moment power by the case factor.
+The transition gate uses the nominal flight.
 
 Known gap: mixed corners (e.g. high control power with high damping) are not flown.
 

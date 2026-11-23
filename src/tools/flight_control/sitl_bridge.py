@@ -26,7 +26,7 @@ from typing import Final, MutableMapping, Optional, Sequence
 
 import jsbsim
 
-from src.tools.flight_control.control_channels import THROTTLE_SERVO, ControlChannel
+from src.tools.flight_control.control_channels import THROTTLE_SERVO, ControlChannel, jsbsim_stem
 from src.tools.flight_control.jsbsim_exporter import JSBSimModel
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ def _apply_channels(fdm: MutableMapping[str, float], channels: Sequence[ControlC
                     pwm: Sequence[float]) -> None:
     """Each servo drives its own surface; ArduPilot has already mixed, so nothing is un-mixed here."""
     for c in channels:
-        fdm[f"fcs/{c.surface}-cmd-norm"] = c.bridge_sign * _centred(pwm[c.servo - 1])
+        fdm[f"fcs/{jsbsim_stem(c.surface)}-cmd-norm"] = c.bridge_sign * _centred(pwm[c.servo - 1])
         if c.steers_nose_wheel:  # the nose wheel follows the rudder servo, or the dedicated steering servo
             fdm["fcs/steer-cmd-norm"] = _centred(pwm[c.servo - 1])
 
