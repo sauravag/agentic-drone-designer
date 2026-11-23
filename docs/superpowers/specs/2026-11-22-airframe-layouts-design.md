@@ -256,3 +256,17 @@ sizing-plus-CAD closure test, enables those combinations in validation, and upda
   named for phase 2; a boom-end pusher feasibility probe opening phase 2 and one shared gear geometry; tail
   aspect-ratio bounds; every enabled combination closure-tested, untested ones rejected by validation; legacy tail
   fields defined as effective areas.
+- 2026-11-23 (phase-2 feasibility probe, real VSPAERO + packer + kit, G1/G2 with the motor at the boom end): both
+  balance at 11 % static margin with the kit; the balance loop moves the wing aft (G1 station 0.35 → 0.45, G2 0.30 →
+  0.35), the battery stays in the pod, no collisions. Propeller ground clearance fails on G1 (runway): −110 mm at
+  12° take-off rotation on today's gear legs, −91 mm against the belly line; G2 (vertical landing) clears level by
+  +51 mm. Note: G1 has `runway_available=True`, so it is a wheeled aircraft, not the hand-launched case assumed above.
+- 2026-11-23 (designer, after the probe): **taller gear**: runway missions get main-gear legs sized so the propeller
+  tip clears at the take-off rotation angle; fixed-wing missions without a runway get no gear and a folding propeller
+  (build-sheet note); VTOL keeps legs sized for level clearance.
+- 2026-11-23 (designer): **hand launch is its own option** for Group 1 fixed-wing: a requirement field
+  `launch_method` (runway or hand; quadplanes are vertical), parsed from "hand-launched" phrases. A hand-launched
+  aircraft has **no landing gear** (belly landing) and must size within Group 1 (MTOW ≤ 9.07 kg / 20 lb). Hand launch
+  is allowed with every layout (the tractor stays the default and is the usual choice); a hand-launched pusher gets a
+  mandatory folding propeller noted on the build sheet. The SITL check launches it in the air at throw speed instead
+  of a runway take-off. A fixed-wing without a runway must say how it launches (no silent hand launch).
