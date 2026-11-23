@@ -5,6 +5,7 @@ Pure-Python / Build123d tests run anywhere. The end-to-end OpenVSP tests need th
 """
 
 import math
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -736,3 +737,68 @@ def test_fallback_cleanup_failure_is_reported_as_cleanup(packed, tmp_path: Path,
     art = cad_packer.export_artifacts(r, tmp_path / "oml.vsp3", tmp_path / "oml.step", tmp_path)
     assert art.kit_warning == f"{r.kit_warning}; stale kit files could not be removed: kit/parts.csv: permission denied"
     assert "could not be written" not in art.kit_warning
+
+
+class _FakeDesign:
+    """Just what the balance refinement reads: station, SM against the band, packing configuration."""
+
+    def __init__(self, station: float, static_margin: float, config: str) -> None:
+        self.layout = SimpleNamespace(wing_station=station)
+        self.packing = SimpleNamespace(static_margin=static_margin, band=TAILED_BAND,
+                                       is_balanced=TAILED_BAND.minimum <= static_margin <= TAILED_BAND.maximum)
+        self._config = config
+
+    def signature(self) -> tuple[str, ...]:
+        return (self._config,)
+
+
+class _FakeSearch:
+    """SM jumps from 0.065 to 0.85 at station 0.445 (a slider changes slot); 0.41-0.445 balances (as G3 does)."""
+
+    def __init__(self) -> None:
+        self.evaluated: dict[float, _FakeDesign | None] = {}
+
+    @staticmethod
+    def _design(station: float) -> _FakeDesign:
+        if station < 0.445:
+            return _FakeDesign(station, 0.065 + 2.0 * (station - 0.40), "battery-fore")
+        return _FakeDesign(station, 0.85 + 1.5 * (station - 0.45), "battery-aft")
+
+    @property
+    def budget_left(self) -> bool:
+        return len(self.evaluated) < build.MAX_BALANCE_ITERATIONS
+
+    @property
+    def done(self) -> bool:
+        return any(d is not None and d.packing.is_balanced for d in self.evaluated.values())
+
+    def evaluate(self, station: float) -> _FakeDesign:
+        station = round(station, 6)
+        self.evaluated.setdefault(station, self._design(station))
+        return self.evaluated[station]
+
+
+def test_refine_bisects_across_a_packing_jump_to_a_balanced_station() -> None:
+    search = _FakeSearch()
+    for station in (0.35, 0.40, 0.45):
+        search.evaluate(station)
+    build._refine(search)
+    assert search.done
+    balanced = [s for s, d in search.evaluated.items() if d is not None and d.packing.is_balanced]
+    assert all(0.40 < s < 0.445 for s in balanced)  # found by bisection, never by a secant across the jump
+
+
+def test_refine_stops_when_the_jump_midpoint_cannot_be_packed() -> None:
+    class Unpackable(_FakeSearch):
+        def evaluate(self, station: float):
+            station = round(station, 6)
+            if 0.40 < station < 0.45:
+                self.evaluated.setdefault(station, None)
+                return None
+            return super().evaluate(station)
+
+    search = Unpackable()
+    for station in (0.40, 0.45):
+        search.evaluate(station)
+    build._refine(search)  # must return (no endless re-evaluation of the cached midpoint)
+    assert not search.done and len(search.evaluated) == 3

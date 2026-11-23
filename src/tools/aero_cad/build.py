@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 MAX_BALANCE_ITERATIONS: Final[int] = 12
 SCAN_STATIONS: Final[tuple[float, ...]] = WING_STATION_SCAN
 STATION_TOLERANCE: Final[float] = 1e-4
+STATION_DECIMALS: Final[int] = 6  # evaluated stations are keyed rounded to this
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ class _Search:
         return self.best is not None and self.best.packing.is_balanced
 
     def evaluate(self, station: float) -> BalancedDesign | None:
-        station = round(station, 6)
+        station = round(station, STATION_DECIMALS)
         if station in self.evaluated:
             return self.evaluated[station]
         n: int = len(self.evaluated) + 1
@@ -102,29 +103,58 @@ class _Search:
         return design
 
 
+def _straddles(a: BalancedDesign, b: BalancedDesign) -> bool:
+    """SM on opposite sides of the band target at the two designs."""
+    return (a.packing.static_margin - a.packing.band.target) * (b.packing.static_margin - b.packing.band.target) < 0
+
+
+def _adjacent_straddles(search: _Search, same_configuration: bool) -> list[tuple[BalancedDesign, BalancedDesign]]:
+    """Adjacent evaluated stations whose SM straddles the target, with the same (or a different) packing
+    configuration at the two ends."""
+    feasible = sorted((d for d in search.evaluated.values() if d is not None), key=lambda d: d.layout.wing_station)
+    return [(a, b) for a, b in zip(feasible, feasible[1:])
+            if _straddles(a, b) and (a.signature() == b.signature()) == same_configuration]
+
+
 def _bracket(search: _Search) -> tuple[BalancedDesign, BalancedDesign] | None:
     """Adjacent evaluated stations with SM on opposite sides of the target and the same packing
     configuration (so a root exists between them), narrowest first."""
-    feasible = sorted((d for d in search.evaluated.values() if d is not None), key=lambda d: d.layout.wing_station)
-    pairs = [
-        (a, b) for a, b in zip(feasible, feasible[1:])
-        if a.signature() == b.signature()
-        and (a.packing.static_margin - a.packing.band.target) * (b.packing.static_margin - b.packing.band.target) < 0
-    ]
+    pairs = _adjacent_straddles(search, same_configuration=True)
     return min(pairs, key=lambda p: p[1].layout.wing_station - p[0].layout.wing_station) if pairs else None
 
 
+def _jump(search: _Search) -> tuple[BalancedDesign, BalancedDesign] | None:
+    """Adjacent stations that straddle the target across a configuration change, wider than STATION_TOLERANCE:
+    the band may still be reached on either side of the jump, so the gap is bisected (never extrapolated)."""
+    pairs = [(a, b) for a, b in _adjacent_straddles(search, same_configuration=False)
+             if b.layout.wing_station - a.layout.wing_station > 2.0 * STATION_TOLERANCE]
+    return min(pairs, key=lambda p: p[1].layout.wing_station - p[0].layout.wing_station) if pairs else None
+
+
+def _seen(search: _Search, station: float) -> bool:
+    """`station` was already evaluated (as `_Search.evaluate` keys it): evaluating it again adds nothing."""
+    return round(station, STATION_DECIMALS) in search.evaluated
+
+
 def _refine(search: _Search) -> None:
-    """Secant (regula falsi) inside same-configuration brackets until balanced or out of budget."""
+    """Secant (regula falsi) inside same-configuration brackets; where the only straddle crosses a configuration
+    change, bisect it to find the jump (or a balanced station beside it). Until balanced or out of budget."""
     while search.budget_left and not search.done:
         pair = _bracket(search)
         if pair is None:
-            return
+            jump = _jump(search)
+            if jump is None:
+                return
+            mid: float = 0.5 * (jump[0].layout.wing_station + jump[1].layout.wing_station)
+            if _seen(search, mid):  # the midpoint had no packable slot: no progress possible here
+                return
+            search.evaluate(mid)
+            continue
         (a, b) = pair
         sa, sb = a.packing.static_margin - a.packing.band.target, b.packing.static_margin - b.packing.band.target
         xa, xb = a.layout.wing_station, b.layout.wing_station
         x_new: float = xa - sa * (xb - xa) / (sb - sa)
-        if min(abs(x_new - xa), abs(x_new - xb)) < STATION_TOLERANCE:
+        if min(abs(x_new - xa), abs(x_new - xb)) < STATION_TOLERANCE or _seen(search, x_new):
             return
         search.evaluate(x_new)
 
