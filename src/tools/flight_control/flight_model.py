@@ -28,6 +28,7 @@ from src.tools.aero_cad.stability import cruise_lift_coefficient
 from src.tools.flight_control.control_channels import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,  # noqa: F401 (re-exported)
                                                        RUDDER_MAX_RAD, ControlChannel, channels_with_steering,
                                                        control_channels)
+from src.tools.gear import GearGeometry, GearInputs, PropellerDisc, landing_gear
 from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor
 from src.units import G0
 
@@ -121,6 +122,8 @@ class FlightModel:
     cruise_motor_lag_s: float
     lift_rotors: tuple[LiftRotor, ...]
     lift_motor_lag_s: float
+    gear: GearGeometry  # the one landing-gear rule; kind "none" for a hand launch
+    launch: Literal["runway", "hand", "vertical"]
     # Per-surface derivatives for layouts whose surfaces are not the tractor triple; empty means the tractor
     # aileron/elevator/rudder, derived from the aggregated `aero` so a perturbed plant keeps them consistent.
     surfaces: tuple[ControlSurfaceDerivatives, ...] = ()
@@ -131,8 +134,12 @@ class FlightModel:
 
     @property
     def channels(self) -> tuple[ControlChannel, ...]:
-        """One channel per servo-driven surface, plus the dedicated ground-steering channel when no rudder steers."""
-        return channels_with_steering(control_channels(self.aero, self.surfaces), self.is_quadplane)
+        """One channel per servo-driven surface, plus the dedicated ground-steering channel when no rudder steers
+        and there is a nose wheel to steer (a gearless aircraft needs none)."""
+        channels = control_channels(self.aero, self.surfaces)
+        if self.gear.kind == "none":
+            return channels
+        return channels_with_steering(channels, self.is_quadplane)
 
     @property
     def weight_n(self) -> float:
@@ -245,6 +252,9 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
     rho, _ = air_properties(SITL_ALTITUDE_M)
     cl_cruise: float = cruise_lift_coefficient(cad.as_built_mass_kg, rho, req.cruise_speed_ms, sizing.wing_area_m2)
     shaft_w: float = min(bom.cruise_motor.max_power_w, bom.cruise_propeller.max_power_w)
+    gear: GearGeometry = landing_gear(GearInputs(
+        sizing.launch_method, sizing.fuselage_length_m, sizing.fuselage_diameter_m, sizing.mean_chord_m,
+        sizing.wingspan_m, cad.x_cg_m, PropellerDisc(0.0, 0.0, bom.cruise_propeller.diameter_m)))
     model = FlightModel(
         mass_kg=cad.as_built_mass_kg, ixx_kgm2=cad.ixx_kgm2, iyy_kgm2=cad.iyy_kgm2, izz_kgm2=cad.izz_kgm2,
         ixz_kgm2=cad.ixz_kgm2, x_cg_m=cad.x_cg_m, static_margin=cad.static_margin,
@@ -258,7 +268,7 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
         cruise_motor_lag_s=motor_lag_s(bom.cruise_propeller.diameter_m),
         lift_rotors=_lift_rotors(sizing, bom, aero, cad),
         lift_motor_lag_s=motor_lag_s(bom.vtol_propeller.diameter_m) if bom.vtol_propeller else 0.0,
-        surfaces=_model_surfaces(aero),
+        gear=gear, launch=sizing.launch_method, surfaces=_model_surfaces(aero),
     )
     _check_flyable(model)
     return model

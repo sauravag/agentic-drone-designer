@@ -17,9 +17,12 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Final, Mapping, Optional
+from typing import Any, Callable, Final, Literal, Mapping, Optional
 
 from pymavlink import mavutil
+
+from src.tools.flight_control.hand_launch import (HAND_LAUNCH_HEIGHT_M,  # noqa: F401 (re-exported)
+                                                  HAND_LAUNCH_PITCH_DEG, HAND_LAUNCH_SPEED_MS)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ TRANSITION_TIMEOUT_S: Final[float] = 60.0
 TRANSITION_DONE_TEXT: Final[str] = "transition done"
 POST_TRANSITION_S: Final[float] = 3.0
 TAKEOFF_TIMEOUT_S: Final[float] = 150.0
+GROUND_CONTACT_MARGIN_M: Final[float] = 0.1  # altitude above the ground at which a hand-launched flight has failed
 ARM_TIMEOUT_S: Final[float] = 120.0
 ARM_RETRY_S: Final[float] = 3.0
 MODE_TIMEOUT_S: Final[float] = 10.0
@@ -228,6 +232,29 @@ def _take_off_fixed_wing(pilot: SitlPilot, params: Mapping[str, float]) -> None:
     pilot.set_rc(1, PWM_TRIM)
 
 
+def _clear_of_the_ground(pilot: SitlPilot, target_alt_m: float) -> Callable[[], bool]:
+    """Condition for the hand-launch climb: reaches the target altitude; raises if the aircraft comes down to the
+    ground first. Altitude is relative to the release point, which is HAND_LAUNCH_HEIGHT_M above the ground."""
+    def reached() -> bool:
+        if pilot.alt_m <= GROUND_CONTACT_MARGIN_M - HAND_LAUNCH_HEIGHT_M:
+            raise SitlFlightError(f"the hand-launched aircraft came down to the ground ({pilot.alt_m:.1f} m "
+                                  f"relative to the release point) before reaching {target_alt_m:.0f} m")
+        return pilot.alt_m >= target_alt_m
+    return reached
+
+
+def _take_off_hand_launched(pilot: SitlPilot, params: Mapping[str, float]) -> None:
+    """Hand launch: the bridge holds the aircraft at the release pose until the throttle opens. The pilot arms in
+    FBWA, holds the take-off pitch stick, then opens full throttle (the throw), and climbs without touching the
+    ground to the SITL take-off altitude."""
+    pilot.arm("FBWA")
+    pilot.rc[1] = stick_pwm(PITCH_UP_PWM_SIGN * TAKEOFF_PITCH_DEG / params["PTCH_LIM_MAX_DEG"])
+    pilot.set_rc(2, throttle_pwm(1.0))
+    target: float = TAKEOFF_ALT_FRACTION * params["TKOFF_ALT"]
+    pilot.require(TAKEOFF_TIMEOUT_S, _clear_of_the_ground(pilot, target), f"climb to {target:.0f} m after the throw")
+    pilot.set_rc(1, PWM_TRIM)
+
+
 def _take_off_quadplane(pilot: SitlPilot) -> None:
     pilot.arm("QHOVER")
     pilot.set_rc(2, QUAD_CLIMB_STICK_PWM)
@@ -289,12 +316,16 @@ def _doublets(pilot: SitlPilot, params: Mapping[str, float], climb_throttle_pct:
 
 
 def fly_acceptance_test(pilot: SitlPilot, params: Mapping[str, float], is_quadplane: bool,
-                        climb_throttle_pct: float) -> FlightLog:
+                        climb_throttle_pct: float,
+                        launch: Literal["runway", "hand", "vertical"] = "runway") -> FlightLog:
     """Fly the full sequence. `params` is the merged vehicle + SITL parameter set; climb_throttle_pct is
-    the extra throttle (percent) the flight model needs to climb at +PITCH_STEP_DEG at cruise speed."""
+    the extra throttle (percent) the flight model needs to climb at +PITCH_STEP_DEG at cruise speed; `launch`
+    picks the take-off (runway roll or hand launch; a quadplane always climbs vertically)."""
     pilot.connect()
     if is_quadplane:
         _take_off_quadplane(pilot)
+    elif launch == "hand":
+        _take_off_hand_launched(pilot, params)
     else:
         _take_off_fixed_wing(pilot, params)
     _enter_cruise(pilot, params, is_quadplane)

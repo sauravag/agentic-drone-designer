@@ -26,6 +26,8 @@ from typing import Final, MutableMapping, Optional, Sequence
 
 import jsbsim
 
+from src.tools.flight_control.hand_launch import (HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG,
+                                                  HAND_LAUNCH_SPEED_MS)
 from src.tools.flight_control.control_channels import THROTTLE_SERVO, ControlChannel, jsbsim_stem
 from src.tools.flight_control.jsbsim_exporter import JSBSimModel
 
@@ -46,6 +48,8 @@ RECV_TIMEOUT_S: Final[float] = 0.5
 INITIAL_GROUND_GAP_M: Final[float] = 0.01
 LIFT_MOTOR_FIRST_CHANNEL: Final[int] = 4  # zero-based index of SERVO5
 MAX_LOGGED_ERRORS: Final[int] = 20
+THROW_THROTTLE_PWM: Final[int] = 1500  # a hand launch is released when the pilot opens the throttle past this
+G0_MS2: Final[float] = 9.80665
 TRUTH_RATE_HZ: Final[float] = 25.0  # ground-truth log rate (JSBSim state, for diagnosis and the report)
 TRUTH_PROPS: Final[tuple[tuple[str, str, float], ...]] = (  # (key, JSBSim property, scale to SI)
     ("airspeed_ms", "velocities/vt-fps", FT_TO_M), ("alpha_deg", "aero/alpha-deg", 1.0),
@@ -129,6 +133,8 @@ class JsonPhysicsBridge:
         self._origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._last_count: int = -1
         self._last_reply: bytes = b""
+        self._held: bool = False  # a hand-launched aircraft waits in the hand until the throw
+        self._held_s: float = 0.0  # simulation time spent held (the reported clock keeps running)
         self.stats = BridgeStats()
 
     def __enter__(self) -> "JsonPhysicsBridge":
@@ -167,16 +173,25 @@ class JsonPhysicsBridge:
         return fdm
 
     def _initialise(self, fdm: jsbsim.FGFDMExec) -> None:
+        self._set_initial_conditions(fdm)
+        self._held, self._held_s = self._model.launch == "hand", 0.0
+        self._origin = (fdm["position/lat-geod-rad"], fdm["position/long-gc-rad"], fdm["position/h-sl-meters"])
+
+    def _set_initial_conditions(self, fdm: jsbsim.FGFDMExec) -> None:
+        """A ground start at rest on the gear, or a hand launch in the air at throw speed, nose up, along the body
+        x axis."""
         h = self._home
         fdm["ic/lat-geod-deg"], fdm["ic/long-gc-deg"] = h.lat_deg, h.lon_deg
         fdm["ic/terrain-elevation-ft"] = h.alt_m / FT_TO_M
-        fdm["ic/h-agl-ft"] = (self._model.rest_height_m + INITIAL_GROUND_GAP_M) / FT_TO_M
+        hand: bool = self._model.launch == "hand"
+        height_m: float = HAND_LAUNCH_HEIGHT_M if hand else self._model.rest_height_m + INITIAL_GROUND_GAP_M
+        fdm["ic/h-agl-ft"] = height_m / FT_TO_M
         fdm["ic/psi-true-deg"] = h.heading_deg
-        for axis in "uvw":
-            fdm[f"ic/{axis}-fps"] = 0.0
+        fdm["ic/theta-deg"] = HAND_LAUNCH_PITCH_DEG if hand else 0.0
+        for axis in "uvw":  # a thrown aircraft leaves the hand along its body x axis
+            fdm[f"ic/{axis}-fps"] = HAND_LAUNCH_SPEED_MS / FT_TO_M if hand and axis == "u" else 0.0
         if not fdm.run_ic():
             raise RuntimeError("JSBSim rejected the initial conditions")
-        self._origin = (fdm["position/lat-geod-rad"], fdm["position/long-gc-rad"], fdm["position/h-sl-meters"])
 
     def _serve(self) -> None:
         assert self._sock is not None
@@ -208,6 +223,13 @@ class JsonPhysicsBridge:
         if rate != self.stats.frame_rate:
             fdm.set_dt(1.0 / rate)
             self.stats.frame_rate = rate
+        if self._held and pwm[THROTTLE_SERVO - 1] > THROW_THROTTLE_PWM:
+            self._held = False  # the throw: JSBSim takes over, at throw speed from the launch pose
+        if self._held:  # ArduPilot boots and arms while the aircraft is still in the hand
+            self._held_s += 1.0 / rate
+            self._last_count, self.stats.frames = count, self.stats.frames + 1
+            self._last_reply = ("\n" + json.dumps(self._held_state(fdm)) + "\n").encode()
+            return self._last_reply
         self._apply(pwm)
         fdm.run()
         self._last_count, self.stats.frames = count, self.stats.frames + 1
@@ -232,6 +254,16 @@ class JsonPhysicsBridge:
         for motor in self._model.lift_motor_numbers:
             fdm[f"fcs/lift{motor}-cmd"] = _unit(pwm[LIFT_MOTOR_FIRST_CHANNEL + motor - 1])
 
+    def _held_state(self, fdm: jsbsim.FGFDMExec) -> dict[str, object]:
+        """The aircraft at rest in the hand at the launch pose: no motion, the specific force of a static body."""
+        phi, theta, psi = fdm["attitude/phi-rad"], fdm["attitude/theta-rad"], fdm["attitude/psi-rad"]
+        static_force = [G0_MS2 * math.sin(theta), -G0_MS2 * math.sin(phi) * math.cos(theta),
+                        -G0_MS2 * math.cos(phi) * math.cos(theta)]
+        return {"timestamp": fdm.get_sim_time() + self._held_s,
+                "imu": {"gyro": [0.0, 0.0, 0.0], "accel_body": static_force},
+                "position": [0.0, 0.0, 0.0], "attitude": [phi, theta, psi],
+                "velocity": [0.0, 0.0, 0.0], "airspeed": 0.0}
+
     def _state(self) -> dict[str, object]:
         fdm = self._fdm
         assert fdm is not None
@@ -239,7 +271,7 @@ class JsonPhysicsBridge:
         mass_slug: float = fdm["inertia/mass-slugs"]
         north, east = north_east_m(fdm["position/lat-geod-rad"], fdm["position/long-gc-rad"], lat0, lon0)
         return {
-            "timestamp": fdm.get_sim_time(),
+            "timestamp": fdm.get_sim_time() + self._held_s,
             "imu": {"gyro": [fdm["velocities/p-rad_sec"], fdm["velocities/q-rad_sec"], fdm["velocities/r-rad_sec"]],
                     "accel_body": [fdm[f"forces/fb{a}-total-lbs"] / mass_slug * FT_TO_M for a in "xyz"]},
             "position": [north, east, h0 - fdm["position/h-sl-meters"]],

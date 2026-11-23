@@ -165,7 +165,7 @@ def fly(model: FlightModel, params: pg.ParamSet, work_dir: Path, config: SitlCon
         pilot = SitlPilot(conn, health=_health(bridge, proc, work_dir))
         stack.callback(_dump_log, pilot.log, work_dir / TELEMETRY_FILE)
         stack.callback(_stop, proc)  # LIFO: runs first, so arduplane stops before the logs are written
-        return fly_acceptance_test(pilot, merged, model.is_quadplane, climb_throttle_pct(model))
+        return fly_acceptance_test(pilot, merged, model.is_quadplane, climb_throttle_pct(model), model.launch)
 
 
 def _dump_log(log: FlightLog, path: Path) -> None:

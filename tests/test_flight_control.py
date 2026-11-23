@@ -23,11 +23,13 @@ from src.tools.flight_control.control_channels import (ControlChannel, SurfaceDe
                                                        control_channels, jsbsim_stem, steering_channel)
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
+from src.tools.flight_control.hand_launch import (HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG,
+                                                  HAND_LAUNCH_SPEED_MS)
 from src.tools.flight_control.jsbsim_exporter import (export_jsbsim, lift_table, lift_thrust_curve)
-from src.tools.gear import TIP_BACK_ANGLE_DEG, GearInputs, PropellerDisc, landing_gear
-from src.tools.sizing.layouts import TAILED_BAND
 from src.tools.flight_control.perturbation import SLUGGISH, perturbed_model
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
+from src.tools.gear import TIP_BACK_ANGLE_DEG, GearInputs, PropellerDisc, landing_gear
+from src.tools.sizing.layouts import TAILED_BAND
 
 DATA = Path(__file__).parent / "data"
 KNOWN_PARAMS: frozenset[str] = frozenset((DATA / "arduplane_4.7.2_param_names.txt").read_text().split())
@@ -402,6 +404,12 @@ def _vtail_surfaces() -> tuple[ControlSurfaceDerivatives, ...]:
     return (_surface("aileron"), _surface("ruddervator_left"), _surface("ruddervator_right"))
 
 
+def _zero_derivative_vtail() -> tuple[ControlSurfaceDerivatives, ...]:
+    """V-tail records the exporter can write (it has no coefficient for ruddervator derivatives yet)."""
+    zero = {"cl_per_rad": 0.0, "cl_roll_per_rad": 0.0, "cm_per_rad": 0.0, "cn_per_rad": 0.0}
+    return tuple(_surface(n, **zero) for n in ("aileron", "ruddervator_left", "ruddervator_right"))
+
+
 def test_legacy_aero_record_gives_tractor_channels() -> None:
     _, sizing, bom, aero, cad = load_design("g1")  # saved before phase 2: no control_surfaces
     assert aero.control_surfaces == ()
@@ -507,8 +515,112 @@ def test_jsbsim_stem_hyphenates_surface_names() -> None:
     assert [jsbsim_stem(n) for n in ("aileron", "elevator", "rudder")] == ["aileron", "elevator", "rudder"]
 
 
-def test_bridge_and_exporter_agree_on_property_names() -> None:
-    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+def test_bridge_and_exporter_agree_on_property_names(tmp_path: Path) -> None:
+    model = replace(build_flight_model(*load_design("g1")), surfaces=_zero_derivative_vtail())
     fdm: dict[str, float] = {}
     sitl_bridge._apply_channels(fdm, model.channels, [1500] * 16)
     assert "fcs/ruddervator-left-cmd-norm" in fdm and "fcs/ruddervator_left-cmd-norm" not in fdm
+    root = ET.parse(export_jsbsim(model, tmp_path).xml_path).getroot()
+    exported_inputs = {node.text.strip() for node in root.findall("flight_control/channel/lag_filter/input")
+                       if node.text and node.text.strip().endswith("-cmd-norm")}
+    assert {f"fcs/{jsbsim_stem(c.surface)}-cmd-norm" for c in model.channels} == exported_inputs
+    assert exported_inputs == {name for name in fdm if name.endswith("-cmd-norm") and name != "fcs/steer-cmd-norm"}
+
+
+# ------------------------------------------------ hand launch and gear-aware export (phase 2, Task 5) ---
+def _hand_design() -> DesignInputs:
+    req, sizing, bom, aero, cad = load_design("g1")
+    return req, sizing.model_copy(update={"launch_method": "hand", "gear_kind": "none"}), bom, aero, cad
+
+
+def test_flight_model_gear_comes_from_the_launch_method_and_the_real_propeller() -> None:
+    _, sizing, bom, _, _ = load_design("g1")
+    runway = build_flight_model(*load_design("g1"))
+    expected = landing_gear(GearInputs(
+        "runway", sizing.fuselage_length_m, sizing.fuselage_diameter_m, sizing.mean_chord_m, sizing.wingspan_m,
+        runway.x_cg_m, PropellerDisc(0.0, 0.0, bom.cruise_propeller.diameter_m)))
+    assert runway.launch == "runway" and runway.gear == expected and runway.gear.kind == "tricycle"
+    hand = build_flight_model(*_hand_design())
+    assert hand.launch == "hand" and hand.gear.kind == "none" and hand.gear.contacts == ()
+
+
+def test_export_without_gear_writes_belly_contacts(tmp_path: Path) -> None:
+    model = build_flight_model(*_hand_design())
+    xml = export_jsbsim(model, tmp_path).xml_path.read_text()
+    assert xml.count('type="STRUCTURE"') == 2 and 'type="BOGEY"' not in xml
+    contacts = ET.fromstring(xml).findall("ground_reactions/contact")
+    xs = sorted(float(c.find("location/x").text) for c in contacts)  # type: ignore[union-attr]
+    assert xs == pytest.approx(sorted([model.x_cg_m, 0.8 * model.fuselage_length_m]))
+    for c in contacts:
+        assert float(c.find("location/z").text) == pytest.approx(-model.fuselage_diameter_m / 2)  # type: ignore[union-attr]
+        assert float(c.find("max_steer").text) == 0.0  # type: ignore[union-attr]
+
+
+def test_runway_export_is_unchanged_bogeys(tmp_path: Path) -> None:
+    xml = export_jsbsim(build_flight_model(*load_design("g1")), tmp_path).xml_path.read_text()
+    assert xml.count('type="BOGEY"') == 3 and 'type="STRUCTURE"' not in xml
+
+
+def test_hand_launch_params_omit_runway_takeoff() -> None:
+    inputs = _hand_design()
+    params = pg.generate_params(build_flight_model(*inputs), inputs[1], inputs[2])
+    runway = load_design("g1")
+    runway_params = pg.generate_params(build_flight_model(*runway), runway[1], runway[2])
+    assert "TKOFF_ROTATE_SPD" in runway_params
+    assert not {name for name in params if name.startswith("TKOFF_")}
+    assert set(runway_params) - set(params) == {name for name in runway_params if name.startswith("TKOFF_")}
+
+
+def test_gearless_aircraft_needs_no_steering_channel() -> None:
+    model = replace(build_flight_model(*_hand_design()), surfaces=_vtail_surfaces())
+    assert [c.surface for c in model.channels] == ["aileron", "ruddervator_left", "ruddervator_right"]
+    assert "SERVO5_FUNCTION" not in pg.fw_servo_functions(model)
+
+
+def test_gearless_aircraft_is_caught_by_the_ground_model_in_jsbsim(tmp_path: Path) -> None:
+    jsbsim = pytest.importorskip("jsbsim")
+    model = build_flight_model(*_hand_design())
+    jsb = export_jsbsim(model, tmp_path)
+    assert jsb.rest_height_m == pytest.approx(model.fuselage_diameter_m / 2) and jsb.launch == "hand"
+    fdm = jsbsim.FGFDMExec(str(tmp_path), None)
+    fdm.set_debug_level(0)
+    assert fdm.load_model(jsb.name)
+    fdm["ic/h-agl-ft"] = (jsb.rest_height_m + 0.01) / 0.3048
+    fdm.run_ic()
+    for _ in range(1200):
+        fdm.run()
+    # two centreline contacts give no roll support, so it may lie over; the ground model still catches it
+    assert abs(fdm["position/h-agl-ft"] * 0.3048) < model.fuselage_diameter_m * 2
+    assert fdm["velocities/vt-fps"] * 0.3048 < 0.5
+
+
+def test_hand_launch_initial_state_is_airborne_at_throw_speed(tmp_path: Path) -> None:
+    jsbsim = pytest.importorskip("jsbsim")
+    jsb = export_jsbsim(build_flight_model(*_hand_design()), tmp_path)
+    bridge = sitl_bridge.JsonPhysicsBridge(jsb, sitl_bridge.Home(), port=0)
+    fdm = jsbsim.FGFDMExec(str(tmp_path), None)
+    fdm.set_debug_level(0)
+    assert fdm.load_model(jsb.name)
+    bridge._initialise(fdm)
+    assert fdm["position/h-agl-ft"] * 0.3048 == pytest.approx(HAND_LAUNCH_HEIGHT_M, abs=0.05)
+    assert fdm["velocities/u-fps"] * 0.3048 == pytest.approx(HAND_LAUNCH_SPEED_MS, rel=1e-3)
+    assert fdm["attitude/theta-deg"] == pytest.approx(HAND_LAUNCH_PITCH_DEG, abs=0.05)
+
+
+def test_hand_launch_is_held_until_the_throttle_opens(tmp_path: Path) -> None:
+    jsbsim = pytest.importorskip("jsbsim")
+    jsb = export_jsbsim(build_flight_model(*_hand_design()), tmp_path)
+    bridge = sitl_bridge.JsonPhysicsBridge(jsb, sitl_bridge.Home(), port=0)
+    bridge._fdm = bridge._load_fdm()
+
+    def frame(count: int, throttle_pwm: int) -> dict[str, Any]:
+        pwm = [1500, 1500, throttle_pwm, 1500, *([1000] * 12)]
+        packet = sitl_bridge.PWM_16.pack(sitl_bridge.MAGIC_16, 400, count, *pwm)
+        return json.loads(bridge._handle(packet))
+
+    held = [frame(n, 1000) for n in range(1, 50)]
+    assert all(s["position"] == [0.0, 0.0, 0.0] and s["airspeed"] == 0.0 for s in held)
+    assert held[-1]["timestamp"] > held[0]["timestamp"]  # ArduPilot's clock keeps running
+    thrown = [frame(n, 2000) for n in range(50, 100)]
+    assert thrown[-1]["airspeed"] > HAND_LAUNCH_SPEED_MS / 2 and thrown[-1]["position"][0] > 0.0
+    assert thrown[0]["timestamp"] > held[-1]["timestamp"]

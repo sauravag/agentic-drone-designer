@@ -160,14 +160,16 @@ def envelope_params(model: FlightModel) -> ParamSet:
     drag: float = model.drag_n(model.v_cruise_ms, model.cruise_lift_coefficient(model.v_cruise_ms))
     trim_pct: float = 100 * drag / model.cruise_thrust_n(1.0, model.v_cruise_ms)
     lo, hi = TRIM_THROTTLE_BOUNDS
-    return {
+    params: ParamSet = {
         "AIRSPEED_MIN": a_min, "AIRSPEED_MAX": a_max, "AIRSPEED_CRUISE": round(model.v_cruise_ms, 1),
         "AIRSPEED_STALL": round(model.v_stall_ms, 1), "SCALING_SPEED": round(model.v_cruise_ms, 1),
         "ARSPD_USE": 1, "TRIM_THROTTLE": int(round(min(max(trim_pct, lo), hi))), "THR_MAX": 100,
         "ROLL_LIMIT_DEG": ROLL_LIMIT_DEG, "PTCH_LIM_MAX_DEG": PITCH_LIMIT_MAX_DEG,
-        "PTCH_LIM_MIN_DEG": PITCH_LIMIT_MIN_DEG, "TKOFF_ROTATE_SPD": round(ROTATE_TO_STALL * model.v_stall_ms, 1),
-        "TKOFF_THR_MAX": 100, **fw_servo_functions(model),
+        "PTCH_LIM_MIN_DEG": PITCH_LIMIT_MIN_DEG, **fw_servo_functions(model),
     }
+    if model.launch != "hand":  # a hand-launched aircraft has no take-off roll to configure
+        params |= {"TKOFF_ROTATE_SPD": round(ROTATE_TO_STALL * model.v_stall_ms, 1), "TKOFF_THR_MAX": 100}
+    return params
 
 
 def fw_servo_functions(model: FlightModel) -> ParamSet:
