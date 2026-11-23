@@ -61,6 +61,9 @@ class SizingOutput(_Frozen):
     # --- SRS §4.1 fields ---
     mtow_kg: Positive
     empty_mass_kg: Positive  # everything except payload, battery and fuel
+    # Itemised empty mass [kg] at the converged MTOW (structure incl. "tail_boom"/"lift_booms" tubes, propulsion,
+    # gear, avionics, systems); sums to empty_mass_kg. Empty in records that predate it.
+    empty_mass_breakdown: dict[str, NonNegative] = Field(default_factory=dict)
     fuel_mass_kg: NonNegative
     battery_mass_kg: NonNegative
     wing_area_m2: Positive

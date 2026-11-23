@@ -279,8 +279,10 @@ def test_airframe_mass_round_trips_the_sizing_breakdown() -> None:
     geom = mm.size_geometry(mtow, 1.0, 12.0, 0.5, 0.04, 1.0, layout_spec("pod_boom_tractor"))
     loads = mm.PropulsionLoads(cruise_motor_power_w=800.0, vtol_total_thrust_n=280.0, generator_power_w=0.0)
     avionics: float = DEFAULT_ASSUMPTIONS.avionics_mass_kg(mtow, "cube_orange_plus", False)
-    parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads, avionics)
-    structural: float = parts["wing"] + parts["tail"] + parts["fuselage"] + parts["landing_gear"] + mm.BOOM_FRACTION * mtow
+    booms = mm.sizing_booms(geom, layout_spec("pod_boom_tractor"), rotor_diameter_m=0.4)
+    parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads, avionics, booms)
+    structural: float = (parts["wing"] + parts["tail"] + parts["fuselage"] + parts["landing_gear"]
+                         + parts.get("tail_boom", 0.0) + parts["lift_booms"])
     assert mm.airframe_mass_kg(mtow, sum(parts.values()), loads, avionics) == pytest.approx(structural)
 
 

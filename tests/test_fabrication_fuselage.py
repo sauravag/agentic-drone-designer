@@ -40,6 +40,12 @@ def _common_volume(a: bd.Solid, b: bd.Solid) -> float:
     return sum(shape.volume for shape in (common if isinstance(common, list) else [common]))
 
 
+# Longer than any former gap, so it always crosses a former. The default 0.10 m battery crossed one only by chance of
+# the G1 pod length (no longer after the 2026-11-23 boom re-baseline); it stays the default because the kit golden
+# snapshot places it.
+CROSSING_BATTERY_LENGTH_M = 1.5 * FORMER_PITCH_M
+
+
 def _test_battery(layout, length_m: float = 0.10, width_frac: float = 0.5) -> PlacedComponent:
     """A battery on the axis just aft of the wing-mount plates (clear of the socket, pin and tail boom)."""
     wing = layout.wing
@@ -114,9 +120,10 @@ def test_formers_follow_the_oml_minus_covering(g1_kit_inputs, fuselage):
         assert f.family == "former"
 
 
-def test_component_crossing_a_former_gets_an_opening(g1_kit_inputs, fuselage):
+def test_component_crossing_a_former_gets_an_opening(g1_kit_inputs):
     layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
-    battery = _test_battery(layout)
+    battery = _test_battery(layout, length_m=CROSSING_BATTERY_LENGTH_M)
+    fuselage = _fuselage(g1_kit_inputs, components=(battery,))
     crossed = [f for f in _formers(fuselage) if _slab_x(f, settings)[1] > battery.x_min and _slab_x(f, settings)[0] < battery.x_max]
     assert len(crossed) >= 2  # an upper and a lower half
     for f in crossed:
@@ -355,7 +362,7 @@ def test_empty_components_give_only_lightening_holes(g1_kit_inputs):
 
 def test_oversized_component_breaking_a_former_rim_is_unavailable(g1_kit_inputs):
     layout = g1_kit_inputs[0]
-    fat = _test_battery(layout, width_frac=0.95)
+    fat = _test_battery(layout, length_m=CROSSING_BATTERY_LENGTH_M, width_frac=0.95)
     with pytest.raises(KitUnavailable, match=r"F-\d\d[UL].*battery"):
         _fuselage(g1_kit_inputs, components=(fat,))
 

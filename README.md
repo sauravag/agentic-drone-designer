@@ -154,6 +154,16 @@ recognised but rejected with "not available yet". The layout supplies the static
 8-14 %, target 11 %) used by the critic, the CAD packer, the pipeline and the SITL perturbation corners, and the
 summary and report show a Layout row. Designs, CAD and SITL results are unchanged from before the refactor.
 
+2026-11-23: every layout re-baselined to explicit tail/lift-boom tubes and boom drag (+ stopped-rotor term); reference
+values updated once. The tail boom (1.6 kg/m² carbon wall × π d × length, from 0.9 of the pod to the tail trailing
+edge) and the two lift booms (their real length) are booked in the empty-mass breakdown as `tail_boom` and
+`lift_booms`, replacing the 4 % MTOW lift-boom lump; their wetted-area drag plus a stopped-rotor term (calibrated so
+G2's quadplane increment stays 0.008) replaces the 0.008 quadplane drag lump. `SizingOutput.empty_mass_breakdown`
+now carries the itemised empty mass. Reference designs (MTOW / empty mass / CD0, before → after):
+G1 4.073 → 4.158 kg / 1.750 → 1.814 kg / 0.01889 → 0.01894; G2 19.36 → 19.43 kg / 7.985 → 8.091 kg /
+0.02175 → 0.02105; G3 181.9 → 132.4 kg / 81.60 → 57.03 kg / 0.02366 → 0.02149 (G3's lighter lift booms and
+smaller wing drop its cruise Reynolds number just below 10⁶, so it now takes MH 32 instead of NACA 4415).
+
 ### Command line
 
 ```bash

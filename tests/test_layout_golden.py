@@ -1,7 +1,7 @@
-"""Phase 1 gate: every reference output is unchanged by the airframe-layout refactor.
+"""Gate: every reference output is unchanged by the airframe-layout work.
 
-The stored snapshots come from the code before the refactor (scripts/regenerate_layout_golden.py). If one of these
-fails, the code is wrong: fix the code, never the snapshot.
+The stored snapshots were re-baselined once, deliberately, in phase 2 (scripts/regenerate_layout_golden.py; explicit
+boom tubes and boom drag). If one of these fails, the code is wrong: fix the code, never the snapshot.
 """
 
 import pytest

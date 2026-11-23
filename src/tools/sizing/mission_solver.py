@@ -31,10 +31,12 @@ from src.tools.sizing.aero_model import (
 )
 from src.tools.sizing.layouts import layout_spec
 from src.tools.sizing.mass_model import (
+    BoomSet,
     PropulsionLoads,
     empty_mass_breakdown,
     required_wing_area_m2,
     size_geometry,
+    sizing_booms,
 )
 from src.tools.sizing.mission_profile import (
     GENERATOR_MARGIN,
@@ -103,6 +105,7 @@ class _Evaluation:
     cruise_total_w: float
     wing_reynolds: float
     stall_reynolds: float
+    empty_breakdown: dict[str, float]
 
 
 def reserve_fraction(
@@ -132,28 +135,36 @@ def _wing_area_m2(mtow: float, design: _Design, rho_to: float, rho_c: float) -> 
     return max(by_stall, by_cruise)
 
 
-def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float]:
-    """Geometry + drag polar at this MTOW. Returns (aero, mu at cruise altitude)."""
+def _rotor_diameter_m(disk_area_m2: float) -> float:
+    """Diameter of each of the VTOL_ROTOR_COUNT lift rotors sharing `disk_area_m2` (0 without rotors)."""
+    return math.sqrt(4.0 * disk_area_m2 / VTOL_ROTOR_COUNT / math.pi)
+
+
+def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float, tuple[BoomSet, ...]]:
+    """Geometry + drag polar at this MTOW. Returns (aero, mu at cruise altitude, the boom tubes): the booms are built
+    once here and feed both the drag build-up and the empty mass."""
     req, p = design.req, design.params
+    spec = layout_spec(req.airframe_layout)
     rho_to, _ = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
     rho_c, mu_c = air_properties(req.service_ceiling_m, req.isa_temperature_offset_c)
     geom = size_geometry(mtow, _wing_area_m2(mtow, design, rho_to, rho_c), p["aspect_ratio"],
-                         p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"],
-                         layout_spec(req.airframe_layout))
+                         p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"], spec)
     is_quad: bool = design.airframe == "quadplane_vtol"
+    disk: float = mtow * G0 / disk_loading_n_m2(mtow) if is_quad else 0.0
+    rotor_d: float = _rotor_diameter_m(disk)
+    booms = sizing_booms(geom, spec, rotor_d)
     cd0: float = parasite_drag_coefficient(
         geom.wing_area_m2, geom.tail_area_m2, design.cruise_polar.cd_min, geom.fuselage_length_m,
-        geom.fuselage_diameter_m,
-        reynolds_number(rho_c, req.cruise_speed_ms, geom.fuselage_length_m, mu_c), is_quad,
+        geom.fuselage_diameter_m, reynolds_number(rho_c, req.cruise_speed_ms, geom.fuselage_length_m, mu_c),
+        booms, VTOL_ROTOR_COUNT if is_quad else 0, rotor_d,
     )
-    disk: float = mtow * G0 / disk_loading_n_m2(mtow) if is_quad else 0.0
-    return AeroState(geom, cd0, induced_drag_factor(p["aspect_ratio"]), rho_to, rho_c, disk), mu_c
+    return AeroState(geom, cd0, induced_drag_factor(p["aspect_ratio"]), rho_to, rho_c, disk), mu_c, booms
 
 
 def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     req, assumptions = design.req, design.assumptions
     eta: float = assumptions.drivetrain_efficiency
-    aero, mu_c = _aero_state(mtow, design)
+    aero, mu_c, booms = _aero_state(mtow, design)
     _, mu_to = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
     hotel: float = hotel_power_w(req, mtow, assumptions)
     cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, eta) + hotel
@@ -170,13 +181,15 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
     loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
     avionics: float = assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer)
-    empty: float = sum(empty_mass_breakdown(mtow, aero.geom, design.airframe, loads, avionics).values())
+    breakdown: dict[str, float] = empty_mass_breakdown(mtow, aero.geom, design.airframe, loads, avionics, booms)
+    empty: float = sum(breakdown.values())
     return _Evaluation(
         mtow_in=mtow, mtow_out=empty + req.payload_mass_kg + storage.battery_mass_kg + storage.fuel_mass_kg,
         design=design, aero=aero, trace=trace, storage=storage, generator_power_w=gen_w,
         cruise_total_w=cruise_total,
         wing_reynolds=reynolds_number(aero.rho_cruise, req.cruise_speed_ms, aero.geom.mean_chord_m, mu_c),
         stall_reynolds=reynolds_number(aero.rho_takeoff, req.max_stall_speed_ms, aero.geom.mean_chord_m, mu_to),
+        empty_breakdown=breakdown,
     )
 
 
@@ -304,6 +317,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
     return SizingOutput(
         mtow_kg=mtow,
         empty_mass_kg=mtow - req.payload_mass_kg - storage.battery_mass_kg - storage.fuel_mass_kg,
+        empty_mass_breakdown=ev.empty_breakdown,
         payload_mass_kg=req.payload_mass_kg, fuel_mass_kg=storage.fuel_mass_kg,
         battery_mass_kg=storage.battery_mass_kg,
         wing_area_m2=geom.wing_area_m2, wingspan_m=geom.wingspan_m, mean_chord_m=geom.mean_chord_m,
@@ -322,7 +336,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         battery_energy_j=storage.battery_energy_j, battery_peak_power_w=storage.battery_peak_w,
         generator_power_w=ev.generator_power_w, cruise_motor_power_w=ev.trace.max_forward_propulsive_w,
         vtol_thrust_per_motor_n=VTOL_THRUST_TO_WEIGHT * weight / VTOL_ROTOR_COUNT if is_quad else 0.0,
-        rotor_diameter_m=math.sqrt(4.0 * aero.disk_area_m2 / VTOL_ROTOR_COUNT / math.pi) if is_quad else 0.0,
+        rotor_diameter_m=_rotor_diameter_m(aero.disk_area_m2),
         energy_reserve_fraction=reserve_fraction(design.params, design.propulsion, design.assumptions),
         phases=ev.trace.phases,
         avionics_mass_kg=design.assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer),

@@ -19,7 +19,8 @@ from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
 from src.tools.flight_control.control_channels import control_channels
 from src.tools.flight_control.flight_model import build_flight_model
 from src.tools.flight_control.param_generator import generate_params
-from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
+from src.tools.sizing.layouts import (StaticMarginBand, layout_spec, lift_boom_geometry, tail_arm_m,
+                                     tail_boom_diameter_m)
 from src.tools.sizing.mission_solver import size_aircraft
 from src.tools.sizing.topology import resolved_launch_method, select_airframe
 from src.ui import presenters
@@ -329,3 +330,18 @@ def test_legacy_fixed_wing_without_runway_loads_as_hand_launch() -> None:
 def test_explicit_launch_method_is_not_migrated() -> None:
     with pytest.raises(ValidationError, match="launch_method='runway' needs runway_available=True"):
         _with(airframe_topology="fixed_wing", runway_available=False, launch_method="runway")
+
+
+def test_layout_lift_booms_use_shared_geometry() -> None:
+    sizing = size_aircraft(G2_ELECTRIC_VTOL)
+    layout = layout_from_sizing(sizing)
+    length, diameter = lift_boom_geometry(sizing.rotor_diameter_m, layout.wing.root_chord_m,
+                                          layout.wing.x_le_root_m, layout.wing.x_ac_m)
+    assert layout.vtol_booms[0].length_m == length
+    assert layout.vtol_booms[0].diameter_m == diameter
+
+
+def test_layout_tail_boom_diameter_is_shared() -> None:
+    layout = layout_from_sizing(size_aircraft(G1_ELECTRIC_FW))
+    assert layout.tail_boom is not None
+    assert layout.tail_boom.diameter_m == tail_boom_diameter_m(layout.fuselage_diameter_m)

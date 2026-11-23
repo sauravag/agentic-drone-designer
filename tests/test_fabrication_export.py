@@ -322,7 +322,8 @@ def test_build_sheet_summary_carries_the_packing_kit_mass_and_sheet_counts(kit, 
 def test_build_sheet_tubes_give_od_id_and_length_in_mm(kit, kit_files):
     tubes = _section(kit_files.build_sheet.read_text(), "Tubes")
     spar = next(t for t in kit.tubes if t.label == "SP-R1")
-    assert f"| SP-R1 | spar | 12.0 × 10.0 | {spar.length_m * 1000:.1f} |" in tubes
+    # 14 x 12 root step since the 2026-11-23 boom re-baseline (G1 MTOW 4.07 -> 4.16 kg); 12 x 10 before
+    assert f"| SP-R1 | spar | 14.0 × 12.0 | {spar.length_m * 1000:.1f} |" in tubes
 
 
 def test_build_sheet_linear_stock_totals_each_kind(kit, kit_files):

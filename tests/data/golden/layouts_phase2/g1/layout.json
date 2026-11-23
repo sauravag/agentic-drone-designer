@@ -1,0 +1,43 @@
+{
+ "airfoil": "sd7037",
+ "fuselage_diameter_m": 0.126346942,
+ "fuselage_length_m": 0.884428594,
+ "htail": {
+  "dihedral_deg": 0.0,
+  "is_symmetric": true,
+  "root_chord_m": 0.14307678,
+  "semi_span_m": 0.228922849,
+  "tip_chord_m": 0.0858460683,
+  "x_le_root_m": 0.810000515,
+  "z_root_m": 0.0
+ },
+ "rotor_diameter_m": 0.0,
+ "rotor_positions": [],
+ "tail_boom": {
+  "diameter_m": 0.0315867355,
+  "length_m": 0.225410724,
+  "x_start_m": 0.795985734,
+  "y_m": 0.0,
+  "z_m": 0.0
+ },
+ "vtail": {
+  "dihedral_deg": 0.0,
+  "is_symmetric": false,
+  "root_chord_m": 0.228922849,
+  "semi_span_m": 0.274707418,
+  "tip_chord_m": 0.137353709,
+  "x_le_root_m": 0.792473609,
+  "z_root_m": 0.0
+ },
+ "vtol_booms": [],
+ "wing": {
+  "dihedral_deg": 3.0,
+  "is_symmetric": true,
+  "root_chord_m": 0.222306634,
+  "semi_span_m": 1.00037985,
+  "tip_chord_m": 0.111153317,
+  "x_le_root_m": 0.265328578,
+  "z_root_m": 0.0315867355
+ },
+ "wing_station": 0.3
+}

@@ -5,19 +5,28 @@ Propulsion hardware carries the matcher's 15% margin so sized MTOW tracks the di
 """
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 from src.schemas.state import TailSurface
 from src.tools.gear import gear_mass_kg
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.layouts import (
+    DEFAULT_WING_STATION,
     HTAIL_ASPECT_RATIO,
     HTAIL_TAPER_RATIO,
+    QUARTER_CHORD,
+    TAIL_BOOM_START_FRACTION,
     VTAIL_ASPECT_RATIO,
     VTAIL_TAPER_RATIO,
+    WING_TAPER_RATIO,
     LayoutSpec,
+    lift_boom_geometry,
     tail_arm_m,
+    tail_boom_diameter_m,
+    trapezoid_mac_m,
+    trapezoid_root_chord_m,
 )
 from src.tools.sizing.topology import Airframe
 from src.units import G0
@@ -41,9 +50,13 @@ MATCH_MARGIN: Final[float] = 1.15
 CRUISE_PROPULSION_W_PER_KG: Final[float] = 3_000.0  # motor + ESC + prop
 VTOL_THRUST_N_PER_KG: Final[float] = 280.0  # lift motor
 VTOL_INSTALL_FACTOR: Final[float] = 1.3  # + props, ESCs, mounts
-BOOM_FRACTION: Final[float] = 0.04
 GENSET_W_PER_KG: Final[float] = 700.0
 FUEL_SYSTEM_FRACTION: Final[float] = 0.15  # tank + lines + pump, of fuel mass
+# Boom tube wall mass per area: 1 mm carbon at 1600 kg/m^3 (= aero_cad.structure.COMPOSITE_DENSITY_KG_M3).
+CF_TUBE_WALL_KG_M2: Final[float] = 1.6
+LIFT_BOOM_COUNT: Final[int] = 2  # two longitudinal booms, two lift rotors each
+
+BoomName = Literal["tail_boom", "lift_booms"]
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,20 @@ class Geometry:
     @property
     def tail_area_m2(self) -> float:
         return self.horizontal_tail_area_m2 + self.vertical_tail_area_m2
+
+
+@dataclass(frozen=True)
+class BoomSet:
+    """`count` identical round tubes; `name` is the empty-mass breakdown key they are booked under."""
+
+    count: int
+    length_m: float
+    diameter_m: float
+    name: BoomName
+
+    @property
+    def mass_kg(self) -> float:
+        return self.count * self.length_m * CF_TUBE_WALL_KG_M2 * math.pi * self.diameter_m
 
 
 @dataclass(frozen=True)
@@ -111,7 +138,42 @@ def _conventional_tail(h_area: float, v_area: float, arm: float) -> tuple[TailSu
     )
 
 
-def _structure_mass(mtow_kg: float, geom: Geometry) -> dict[str, float]:
+def _default_station_wing_m(geom: Geometry) -> tuple[float, float, float]:
+    """(root chord, root LE, AC) of the CAD wing (taper WING_TAPER_RATIO) at the default wing station."""
+    root: float = trapezoid_root_chord_m(geom.wing_area_m2, geom.wingspan_m, WING_TAPER_RATIO)
+    x_le: float = DEFAULT_WING_STATION * geom.fuselage_length_m
+    return root, x_le, x_le + QUARTER_CHORD * trapezoid_mac_m(root, WING_TAPER_RATIO)
+
+
+def _surface_trailing_edge_m(surface: TailSurface, wing_x_ac_m: float) -> float:
+    """Root trailing edge of a tail surface whose MAC quarter-chord sits its arm behind the wing AC."""
+    root: float = trapezoid_root_chord_m(surface.area_m2, surface.span_m, surface.taper_ratio)
+    x_le: float = wing_x_ac_m + surface.arm_m - QUARTER_CHORD * trapezoid_mac_m(root, surface.taper_ratio)
+    return x_le + root
+
+
+def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> tuple[BoomSet, ...]:
+    """The boom tubes the sizing books, estimated at DEFAULT_WING_STATION exactly as the CAD layout places them:
+    a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to the tail trailing edge (none when the tail sits
+    on the pod), and two lift booms when there are lift rotors (`rotor_diameter_m` > 0)."""
+    if spec.booms != "centre":
+        raise ValueError(f"no boom estimate for {spec.booms!r} booms yet")
+    if not geom.tail_surfaces:
+        raise ValueError("geometry has no tail surfaces to size a tail boom for")
+    root, x_le, x_ac = _default_station_wing_m(geom)
+    tail_end: float = max(_surface_trailing_edge_m(s, x_ac) for s in geom.tail_surfaces)
+    start: float = TAIL_BOOM_START_FRACTION * geom.fuselage_length_m
+    tail: tuple[BoomSet, ...] = (
+        (BoomSet(1, tail_end - start, tail_boom_diameter_m(geom.fuselage_diameter_m), "tail_boom"),)
+        if tail_end > geom.fuselage_length_m else ()
+    )
+    if rotor_diameter_m <= 0:
+        return tail
+    length, diameter = lift_boom_geometry(rotor_diameter_m, root, x_le, x_ac)
+    return (*tail, BoomSet(LIFT_BOOM_COUNT, length, diameter, "lift_booms"))
+
+
+def _structure_mass(mtow_kg: float, geom: Geometry, booms: Sequence[BoomSet]) -> dict[str, float]:
     wing_loading: float = mtow_kg * G0 / geom.wing_area_m2
     sigma_wing: float = (WING_AREAL_DENSITY_BASE + WING_AREAL_DENSITY_PER_LOADING * wing_loading) * (
         geom.aspect_ratio / WING_AR_REFERENCE
@@ -121,14 +183,13 @@ def _structure_mass(mtow_kg: float, geom: Geometry) -> dict[str, float]:
         "wing": sigma_wing * geom.wing_area_m2,
         "tail": TAIL_DENSITY_FACTOR * sigma_wing * geom.tail_area_m2,
         "fuselage": (FUSELAGE_AREAL_DENSITY_BASE + FUSELAGE_AREAL_DENSITY_PER_KG * mtow_kg) * fus_wetted,
+        **{boom.name: boom.mass_kg for boom in booms},
     }
 
 
-def _propulsion_mass(mtow_kg: float, loads: PropulsionLoads) -> dict[str, float]:
-    vtol: float = 0.0
-    if loads.vtol_total_thrust_n > 0:
-        motors: float = MATCH_MARGIN * loads.vtol_total_thrust_n / VTOL_THRUST_N_PER_KG
-        vtol = motors * VTOL_INSTALL_FACTOR + BOOM_FRACTION * mtow_kg
+def _propulsion_mass(loads: PropulsionLoads) -> dict[str, float]:
+    """Lift motors with their props/ESCs/mounts; the lift booms are structure (`sizing_booms`)."""
+    vtol: float = MATCH_MARGIN * loads.vtol_total_thrust_n / VTOL_THRUST_N_PER_KG * VTOL_INSTALL_FACTOR
     return {
         "cruise_propulsion": MATCH_MARGIN * loads.cruise_motor_power_w / CRUISE_PROPULSION_W_PER_KG,
         "vtol_system": vtol,
@@ -138,25 +199,26 @@ def _propulsion_mass(mtow_kg: float, loads: PropulsionLoads) -> dict[str, float]
 
 
 def airframe_mass_kg(mtow_kg: float, empty_mass_kg: float, loads: PropulsionLoads, avionics_mass_kg: float) -> float:
-    """Structure (incl. VTOL booms) + landing gear of a converged design: empty mass minus
-    propulsion hardware, avionics and systems. The CAD shell carries this mass; booms are part of
-    the OML, so their share stays in the airframe."""
+    """Structure (incl. the tail and lift boom tubes) + landing gear of a converged design: empty mass minus
+    propulsion hardware, avionics and systems. The CAD shell carries this mass; the booms are part of the OML and
+    already sit in the structure breakdown, so their share stays in the airframe."""
     non_structural: float = (
-        sum(_propulsion_mass(mtow_kg, loads).values())
+        sum(_propulsion_mass(loads).values())
         + avionics_mass_kg
         + SYSTEMS_FRACTION * mtow_kg
     )
-    booms: float = BOOM_FRACTION * mtow_kg if loads.vtol_total_thrust_n > 0 else 0.0
-    return empty_mass_kg - non_structural + booms
+    return empty_mass_kg - non_structural
 
 
 def empty_mass_breakdown(
-    mtow_kg: float, geom: Geometry, airframe: Airframe, loads: PropulsionLoads, avionics_mass_kg: float
+    mtow_kg: float, geom: Geometry, airframe: Airframe, loads: PropulsionLoads, avionics_mass_kg: float,
+    booms: Sequence[BoomSet],
 ) -> dict[str, float]:
-    """Itemised empty mass [kg]. `avionics_mass_kg` comes from DesignAssumptions.avionics_mass_kg."""
+    """Itemised empty mass [kg]. `avionics_mass_kg` comes from DesignAssumptions.avionics_mass_kg; `booms` from
+    `sizing_booms` (booked under their names, e.g. "tail_boom" and "lift_booms")."""
     return {
-        **_structure_mass(mtow_kg, geom),
-        **_propulsion_mass(mtow_kg, loads),
+        **_structure_mass(mtow_kg, geom, booms),
+        **_propulsion_mass(loads),
         "landing_gear": gear_mass_kg(airframe, mtow_kg),
         "avionics": avionics_mass_kg,
         "systems": SYSTEMS_FRACTION * mtow_kg,

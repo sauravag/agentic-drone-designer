@@ -1,7 +1,8 @@
-"""Golden snapshots of the reference designs' outputs, taken before the airframe-layout refactor.
+"""Golden snapshots of the reference designs' outputs, re-baselined once in phase 2 (2026-11-23: explicit tail/lift
+boom tubes, boom drag and a stopped-rotor term) after the phase-1 airframe-layout refactor.
 
 `snapshot(case)` returns one canonical text per output key; `tests/test_layout_golden.py` compares each with the file
-stored under `tests/data/golden/layouts_phase1/<case>/<key>.json`. A changed snapshot means the code is wrong.
+stored under `tests/data/golden/layouts_phase2/<case>/<key>.json`. A changed snapshot means the code is wrong.
 """
 
 import dataclasses
@@ -22,11 +23,13 @@ from src.tools.flight_control.param_generator import generate_params
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
 from tests.reference_designs import CASES
 
-GOLDEN_DIR: Final[Path] = Path(__file__).parent / "data" / "golden" / "layouts_phase1"
+GOLDEN_DIR: Final[Path] = Path(__file__).parent / "data" / "golden" / "layouts_phase2"
 SIG_DIGITS: Final[int] = 12  # `canonical` default
 SNAPSHOT_DIGITS: Final[int] = 9  # snapshots: the last digits of a float differ between macOS and Linux libm/BLAS
 KIT_DECIMALS: Final[int] = 6  # micron: the CAD kernel differs from the 12th digit between macOS and Linux
-NEW_SIZING_KEYS: Final[frozenset[str]] = frozenset({"airframe_layout", "tail_surfaces", "launch_method"})
+# SizingOutput keys added after the stored snapshots were taken (left out of the comparison until the next deliberate
+# re-baseline). Empty since the phase-2 re-baseline stored every key.
+NEW_SIZING_KEYS: Final[frozenset[str]] = frozenset()
 SIZING_CASES: Final[tuple[str, ...]] = ("g1", "g2", "g3")
 DESIGN_CASES: Final[tuple[str, ...]] = ("g1", "g2")  # the cases with a saved flight-control design
 VSP_PARMS: Final[tuple[tuple[str, str], ...]] = (

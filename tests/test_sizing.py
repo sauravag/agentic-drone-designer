@@ -1,5 +1,6 @@
 """Milestone 2 acceptance tests: DoD group/topology rules and the time-stepped mission solver."""
 
+import dataclasses
 import logging
 import math
 from pathlib import Path
@@ -14,7 +15,11 @@ from src.schemas.state import SizingOutput
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import seed_database
 from src.tools.sizing import mission_solver
-from src.tools.sizing.aero_model import air_properties, airfoil_polar, reynolds_number, select_airfoil
+from src.tools.aero_cad.layout import layout_from_sizing
+from src.tools.sizing import aero_model, mass_model
+from src.tools.sizing.aero_model import (air_properties, airfoil_polar, parasite_drag_coefficient, reynolds_number,
+                                        select_airfoil)
+from src.tools.sizing.layouts import layout_spec
 from src.units import G0
 from src.tools.sizing.mission_solver import (
     SizingDivergenceError,
@@ -285,9 +290,11 @@ def test_c_rate_drives_electric_vtol_battery_mass() -> None:
 def test_specific_energy_and_efficiency_change_the_design() -> None:
     req = REQ_FAILED.model_copy(update={"endurance_hours": 3.0, "combat_radius_km": 50.0, "cruise_speed_ms": 22.0})
     better = size_aircraft(req, None, DesignAssumptions(liion_specific_energy_wh_kg=300))
-    assert better.mtow_kg == pytest.approx(23.1, rel=0.03)
+    assert better.mtow_kg == pytest.approx(21.9, rel=0.03)  # 23.1 before the 2026-11-23 boom re-baseline
+    # 200 Wh/kg: 3 h closed only after the 2026-11-23 boom re-baseline (46.7 kg; it spiralled before); 4 h spirals.
+    assert size_aircraft(req).mtow_kg > 2 * better.mtow_kg
     with pytest.raises(SizingDivergenceError):
-        size_aircraft(req)  # 200 Wh/kg spirals
+        size_aircraft(req.model_copy(update={"endurance_hours": 4.0}))
 
 
 def test_reserve_comes_from_assumptions_unless_overridden() -> None:
@@ -415,3 +422,89 @@ def test_hand_launched_g1_sizes_with_launch_recorded() -> None:
 @pytest.mark.parametrize(("req", "expected"), [(G1_ELECTRIC_FW, "runway"), (G2_ELECTRIC_VTOL, "vertical")])
 def test_sizing_records_the_resolved_launch(req: OperationalRequirements, expected: str) -> None:
     assert size_aircraft(req).launch_method == expected
+
+
+# ------------------------------------------------- explicit booms and stopped-rotor drag (phase-2 re-baseline) ---
+
+TUBE_WALL_KG_M2: float = 1.6  # 1 mm carbon wall at 1600 kg/m^3, the spec value the model must use
+QUADPLANE_INCREMENT_CD0: float = 0.008  # the lump the lift booms + stopped rotors replace, calibrated on G2
+
+
+def _tube_mass_kg(count: int, length_m: float, diameter_m: float) -> float:
+    return count * length_m * TUBE_WALL_KG_M2 * math.pi * diameter_m
+
+
+def _geometry_of(s: SizingOutput) -> "mass_model.Geometry":
+    """The sizing geometry, rebuilt from the output fields."""
+    return mass_model.Geometry(
+        wing_area_m2=s.wing_area_m2, aspect_ratio=s.aspect_ratio, wingspan_m=s.wingspan_m,
+        mean_chord_m=s.mean_chord_m, fuselage_length_m=s.fuselage_length_m, fuselage_diameter_m=s.fuselage_diameter_m,
+        horizontal_tail_area_m2=s.horizontal_tail_area_m2, vertical_tail_area_m2=s.vertical_tail_area_m2,
+        tail_arm_m=s.tail_arm_m, tail_surfaces=s.tail_surfaces,
+    )
+
+
+def quadplane_drag_increment(s: SizingOutput, req: OperationalRequirements = G2_ELECTRIC_VTOL) -> float:
+    """CD0 with the lift booms and stopped rotors minus CD0 with neither (tail boom kept in both)."""
+    booms = mass_model.sizing_booms(_geometry_of(s), layout_spec(s.airframe_layout), s.rotor_diameter_m)
+    tail_only = mass_model.sizing_booms(_geometry_of(s), layout_spec(s.airframe_layout), 0.0)
+    rho, mu = air_properties(req.service_ceiling_m, req.isa_temperature_offset_c)
+    common = dict(wing_area_m2=s.wing_area_m2, tail_area_m2=s.horizontal_tail_area_m2 + s.vertical_tail_area_m2,
+                  profile_cd=0.01, fuselage_length_m=s.fuselage_length_m, fuselage_diameter_m=s.fuselage_diameter_m,
+                  fuselage_reynolds=reynolds_number(rho, req.cruise_speed_ms, s.fuselage_length_m, mu))
+    with_rotors = parasite_drag_coefficient(**common, booms=booms, rotor_count=mission_solver.VTOL_ROTOR_COUNT,
+                                            rotor_diameter_m=s.rotor_diameter_m)
+    clean = parasite_drag_coefficient(**common, booms=tail_only, rotor_count=0, rotor_diameter_m=0.0)
+    return with_rotors - clean
+
+
+def test_tail_boom_is_an_explicit_tube(g1: SizingOutput) -> None:
+    boom = layout_from_sizing(g1).tail_boom
+    assert boom is not None
+    assert g1.empty_mass_breakdown["tail_boom"] == pytest.approx(
+        _tube_mass_kg(1, boom.length_m, boom.diameter_m), rel=1e-6)
+    assert "lift_booms" not in g1.empty_mass_breakdown
+
+
+def test_breakdown_sums_to_empty_mass(g1: SizingOutput, g2: SizingOutput) -> None:
+    for s in (g1, g2):
+        assert sum(s.empty_mass_breakdown.values()) == pytest.approx(s.empty_mass_kg, rel=1e-9)
+
+
+def test_lift_booms_replace_boom_fraction(g2: SizingOutput) -> None:
+    lift = layout_from_sizing(g2).vtol_booms
+    assert g2.empty_mass_breakdown["lift_booms"] == pytest.approx(
+        _tube_mass_kg(len(lift), lift[0].length_m, lift[0].diameter_m), rel=1e-6)
+    assert not hasattr(mass_model, "BOOM_FRACTION")
+
+
+def test_stopped_rotor_term_calibrated_on_g2(g2: SizingOutput) -> None:
+    assert quadplane_drag_increment(g2) == pytest.approx(QUADPLANE_INCREMENT_CD0, abs=1e-4)
+    assert not hasattr(aero_model, "QUADPLANE_DRAG_PENALTY")
+
+
+def test_boom_drag_raises_cd0_by_the_tube_wetted_area() -> None:
+    boom = mass_model.BoomSet(count=2, length_m=1.0, diameter_m=0.03, name="lift_booms")
+    common = dict(wing_area_m2=1.0, tail_area_m2=0.2, profile_cd=0.01, fuselage_length_m=1.5,
+                  fuselage_diameter_m=0.2, fuselage_reynolds=2e6)
+    bare = parasite_drag_coefficient(**common, booms=(), rotor_count=0, rotor_diameter_m=0.0)
+    with_boom = parasite_drag_coefficient(**common, booms=(boom,), rotor_count=0, rotor_diameter_m=0.0)
+    fineness = boom.length_m / boom.diameter_m
+    form = 1.0 + 60.0 / fineness**3 + fineness / 400.0
+    reynolds = 2e6 * boom.length_m / 1.5  # same Re per metre as the fuselage, on the boom length
+    expected = aero_model.MISC_DRAG_FACTOR * 2 * aero_model.turbulent_skin_friction(reynolds) * form * (
+        math.pi * boom.diameter_m * boom.length_m)
+    assert with_boom - bare == pytest.approx(expected, rel=1e-12)
+
+
+def test_fixed_wing_has_no_lift_booms(g1: SizingOutput) -> None:
+    booms = mass_model.sizing_booms(_geometry_of(g1), layout_spec(g1.airframe_layout), 0.0)
+    assert [b.name for b in booms] == ["tail_boom"]
+
+
+def test_no_tail_boom_when_the_tail_sits_on_the_pod(g1: SizingOutput) -> None:
+    geom = _geometry_of(g1)
+    short_arm = tuple(s.model_copy(update={"arm_m": 0.2 * g1.fuselage_length_m}) for s in geom.tail_surfaces)
+    booms = mass_model.sizing_booms(dataclasses.replace(geom, tail_surfaces=short_arm),
+                                    layout_spec(g1.airframe_layout), 0.0)
+    assert booms == ()

@@ -1,0 +1,79 @@
+{
+ "airfoil": "mh32",
+ "fuselage_diameter_m": 0.40047775,
+ "fuselage_length_m": 2.80334425,
+ "htail": {
+  "dihedral_deg": 0.0,
+  "is_symmetric": true,
+  "root_chord_m": 0.402456468,
+  "semi_span_m": 0.643930348,
+  "tip_chord_m": 0.241473881,
+  "x_le_root_m": 2.56736935,
+  "z_root_m": 0.0
+ },
+ "rotor_diameter_m": 1.11619655,
+ "rotor_positions": [
+  [
+   -0.226373203,
+   0.869956804,
+   0.145711942
+  ],
+  [
+   2.16143519,
+   0.869956804,
+   0.145711942
+  ],
+  [
+   -0.226373203,
+   -0.869956804,
+   0.145711942
+  ],
+  [
+   2.16143519,
+   -0.869956804,
+   0.145711942
+  ]
+ ],
+ "tail_boom": {
+  "diameter_m": 0.100119438,
+  "length_m": 0.638988956,
+  "x_start_m": 2.52300983,
+  "y_m": 0.0,
+  "z_m": 0.0
+ },
+ "vtail": {
+  "dihedral_deg": 0.0,
+  "is_symmetric": false,
+  "root_chord_m": 0.643930348,
+  "semi_span_m": 0.772716418,
+  "tip_chord_m": 0.386358209,
+  "x_le_root_m": 2.51806843,
+  "z_root_m": 0.0
+ },
+ "vtol_booms": [
+  {
+   "diameter_m": 0.0892957239,
+   "length_m": 2.72266736,
+   "x_start_m": -0.393802686,
+   "y_m": 0.869956804,
+   "z_m": 0.10106408
+  },
+  {
+   "diameter_m": 0.0892957239,
+   "length_m": 2.72266736,
+   "x_start_m": -0.393802686,
+   "y_m": -0.869956804,
+   "z_m": 0.10106408
+  }
+ ],
+ "wing": {
+  "dihedral_deg": 3.0,
+  "is_symmetric": true,
+  "root_chord_m": 0.650713989,
+  "semi_span_m": 2.92821295,
+  "tip_chord_m": 0.325356995,
+  "x_le_root_m": 0.841003275,
+  "z_root_m": 0.100119438
+ },
+ "wing_station": 0.3
+}

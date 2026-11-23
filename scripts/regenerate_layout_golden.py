@@ -1,5 +1,6 @@
-"""Write the golden snapshots under tests/data/golden/layouts_phase1/ (run on the host and again in Docker, which
-adds `vsp_geometry`). Only for the pre-refactor baseline: afterwards a changed snapshot means the code is wrong.
+"""Write the golden snapshots under tests/data/golden/layouts_phase2/ (run on the host and again in Docker, which
+adds `vsp_geometry`). Only for a deliberate re-baseline (the last: phase 2, 2026-11-23, explicit boom tubes and boom
+drag); otherwise a changed snapshot means the code is wrong.
 
     .venv/bin/python scripts/regenerate_layout_golden.py
 """

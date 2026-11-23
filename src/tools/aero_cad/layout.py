@@ -13,30 +13,35 @@ from typing import Final, Optional
 import numpy as np
 
 from src.schemas.state import SizingOutput, TailSurface
-from src.tools.sizing.layouts import (
+from src.tools.sizing.layouts import (  # noqa: F401  (MIN_BOOM_DIAMETER_M re-exported for the kit's tubes)
+    DEFAULT_WING_STATION,
     HTAIL_ASPECT_RATIO,
     HTAIL_TAPER_RATIO,
+    MIN_BOOM_DIAMETER_M,
+    QUARTER_CHORD,
+    ROTOR_CLEARANCE_FRACTION,
+    TAIL_BOOM_START_FRACTION,
     VTAIL_ASPECT_RATIO,
     VTAIL_TAPER_RATIO,
+    WING_TAPER_RATIO,
     layout_spec,
+    lift_boom_geometry,
+    lift_rotor_half_spacing_m,
+    tail_boom_diameter_m,
+    trapezoid_mac_m,
+    trapezoid_root_chord_m,
 )
 
-WING_TAPER_RATIO: Final[float] = 0.5
 WING_DIHEDRAL_DEG: Final[float] = 3.0
 WING_Z_FRACTION: Final[float] = 0.25  # wing root height above fuselage axis, fraction of diameter
-DEFAULT_WING_STATION: Final[float] = 0.30  # wing-root LE position, fraction of fuselage length
 WING_STATION_BOUNDS: Final[tuple[float, float]] = (0.10, 0.70)
 WING_STATION_SCAN: Final[tuple[float, ...]] = (0.15, 0.20, 0.25, 0.35, 0.40, 0.45, 0.50, 0.55)  # balance search
-QUARTER_CHORD: Final[float] = 0.25
 VERTICAL_DIHEDRAL_DEG: Final[float] = 90.0  # a tail surface at this dihedral is a fin
 
 
 # Pod profile (x/L, d/D) between the nose and tail points: long constant section for internal bays.
 FUSELAGE_PROFILE: Final[tuple[tuple[float, float], ...]] = ((0.15, 0.90), (0.25, 1.00), (0.80, 1.00), (0.95, 0.50))
 CONSTANT_SECTION_FRACTION: Final[float] = 0.55  # full-diameter part of the pod (0.25 L - 0.80 L)
-TAIL_BOOM_START_FRACTION: Final[float] = 0.9  # boom root buried in the tail cone
-TAIL_BOOM_DIAMETER_FRACTION: Final[float] = 0.25  # of fuselage diameter
-MIN_BOOM_DIAMETER_M: Final[float] = 0.02
 
 # Control surfaces (shared by OpenVSP and the laser-cut kit): span fractions and chord fractions aft of the hinge.
 AILERON_ETA: Final[tuple[float, float]] = (0.55, 0.95)
@@ -44,10 +49,6 @@ AILERON_CHORD_FRACTION: Final[float] = 0.25
 TAIL_CONTROL_ETA: Final[tuple[float, float]] = (0.05, 0.95)
 TAIL_CONTROL_CHORD_FRACTION: Final[float] = 0.35
 TAIL_AIRFOIL_NAME: Final[str] = "naca0010"  # OpenVSP's default WING section, used by the tail surfaces
-
-ROTOR_CLEARANCE_FRACTION: Final[float] = 0.10  # gap to wing/fuselage, fraction of rotor diameter
-VTOL_BOOM_DIAMETER_FRACTION: Final[float] = 0.08  # of rotor diameter
-VTOL_BOOM_OVERHANG_FRACTION: Final[float] = 0.15  # boom extension past each rotor hub
 
 
 @dataclass(frozen=True)
@@ -75,8 +76,7 @@ class SurfacePlanform:
 
     @property
     def mac_m(self) -> float:
-        lam: float = self.taper_ratio
-        return 2.0 / 3.0 * self.root_chord_m * (1 + lam + lam**2) / (1 + lam)
+        return trapezoid_mac_m(self.root_chord_m, self.taper_ratio)
 
     @property
     def y_mac_m(self) -> float:
@@ -181,7 +181,7 @@ def fuselage_radius_at(layout: AircraftLayout, x_m: float) -> float:
 
 def _main_wing(sizing: SizingOutput, wing_station: float, length: float, diameter: float) -> SurfacePlanform:
     semi: float = sizing.wingspan_m / 2
-    root: float = 2 * sizing.wing_area_m2 / (sizing.wingspan_m * (1 + WING_TAPER_RATIO))
+    root: float = trapezoid_root_chord_m(sizing.wing_area_m2, sizing.wingspan_m, WING_TAPER_RATIO)
     return SurfacePlanform(
         x_le_root_m=wing_station * length, z_root_m=WING_Z_FRACTION * diameter,
         semi_span_m=semi, root_chord_m=root, tip_chord_m=WING_TAPER_RATIO * root,
@@ -191,8 +191,8 @@ def _main_wing(sizing: SizingOutput, wing_station: float, length: float, diamete
 
 def _tail_planform(area: float, full_span: float, taper: float, x_ac: float, symmetric: bool) -> SurfacePlanform:
     """Trapezoid of `area` and tip-to-tip `full_span` whose MAC quarter-chord lands on `x_ac`."""
-    root: float = 2 * area / (full_span * (1 + taper))
-    mac: float = 2.0 / 3.0 * root * (1 + taper + taper**2) / (1 + taper)
+    root: float = trapezoid_root_chord_m(area, full_span, taper)
+    mac: float = trapezoid_mac_m(root, taper)
     return SurfacePlanform(
         x_le_root_m=x_ac - QUARTER_CHORD * mac, z_root_m=0.0,
         semi_span_m=full_span / 2 if symmetric else full_span, root_chord_m=root, tip_chord_m=taper * root,
@@ -231,7 +231,7 @@ def _tail_booms(length: float, diameter_fus: float, tail: tuple[PlacedTailSurfac
     end: float = max(t.planform.x_le_root_m + t.planform.root_chord_m for t in tail)
     if end <= length:
         return ()  # empennage fits on the fuselage itself
-    diameter: float = max(MIN_BOOM_DIAMETER_M, TAIL_BOOM_DIAMETER_FRACTION * diameter_fus)
+    diameter: float = tail_boom_diameter_m(diameter_fus)
     return (Boom(x_start_m=start, length_m=end - start, diameter_m=diameter, y_m=0.0, z_m=0.0),)
 
 
@@ -242,19 +242,18 @@ def _propeller_station(sizing: SizingOutput) -> PropellerStation:
     return PropellerStation(x_m=0.0, y_m=0.0, z_m=0.0, is_pusher=False)
 
 
-def _vtol_arrangement(sizing: SizingOutput, wing: SurfacePlanform, diameter_fus: float) -> tuple[tuple[Boom, ...], tuple]:
+def _vtol_arrangement(sizing: SizingOutput, wing: SurfacePlanform,
+                      diameter_fus: float) -> tuple[tuple[Boom, ...], tuple]:
     """Two longitudinal booms carrying four lift rotors, centred on the wing AC so the hover thrust
     centroid sits near the CG, with every disc clear of the wing and fuselage."""
-    radius: float = sizing.rotor_diameter_m / 2
-    gap: float = ROTOR_CLEARANCE_FRACTION * sizing.rotor_diameter_m
-    y_boom: float = diameter_fus / 2 + radius + gap
+    rotor_d: float = sizing.rotor_diameter_m
+    y_boom: float = diameter_fus / 2 + rotor_d / 2 + ROTOR_CLEARANCE_FRACTION * rotor_d
     x_mid: float = wing.x_ac_m
-    half: float = max(x_mid - (wing.x_le_root_m - radius - gap), wing.x_le_root_m + wing.root_chord_m + radius + gap - x_mid)
-    boom_d: float = max(MIN_BOOM_DIAMETER_M, VTOL_BOOM_DIAMETER_FRACTION * sizing.rotor_diameter_m)
-    overhang: float = VTOL_BOOM_OVERHANG_FRACTION * sizing.rotor_diameter_m
+    half: float = lift_rotor_half_spacing_m(rotor_d, wing.root_chord_m, wing.x_le_root_m, x_mid)
+    boom_length, boom_d = lift_boom_geometry(rotor_d, wing.root_chord_m, wing.x_le_root_m, x_mid)
     z_hub: float = wing.z_at(y_boom)
     booms = tuple(
-        Boom(x_start_m=x_mid - half - overhang, length_m=2 * (half + overhang), diameter_m=boom_d,
+        Boom(x_start_m=x_mid - boom_length / 2, length_m=boom_length, diameter_m=boom_d,
              y_m=side * y_boom, z_m=z_hub - boom_d / 2)
         for side in (1.0, -1.0)
     )

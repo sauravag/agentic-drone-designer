@@ -16,7 +16,8 @@ BASELINE_FIELDS: Final[tuple[str, ...]] = (
 EXACT: Final[float] = 1e-9
 
 
-# Recorded from the code before the avionics change: Cube Orange+ without a Jetson at default assumptions
+# Recorded from the code before the avionics change (re-recorded once at the 2026-11-23 boom re-baseline): Cube
+# Orange+ without a Jetson at default assumptions
 # must size every reference design exactly as before.
 @pytest.mark.parametrize("req", list(EXAMPLE_MISSIONS.values()), ids=lambda r: r.mission_name)
 def test_reference_designs_unchanged_without_jetson(req) -> None:
@@ -114,7 +115,8 @@ def test_hotel_power_adds_jetson_watts() -> None:
 
 def test_breakdown_avionics_entry_is_the_argument() -> None:
     geom = size_geometry(MTOW_KG, 1.0, 10.0, 0.5, 0.04, 1.0, layout_spec("pod_boom_tractor"))
-    parts = empty_mass_breakdown(MTOW_KG, geom, "fixed_wing", PropulsionLoads(500.0), avionics_mass_kg=0.5)
+    parts = empty_mass_breakdown(MTOW_KG, geom, "fixed_wing", PropulsionLoads(500.0), avionics_mass_kg=0.5,
+                                 booms=())
     assert parts["avionics"] == 0.5
 
 
