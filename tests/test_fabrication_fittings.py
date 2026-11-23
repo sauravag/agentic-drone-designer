@@ -2,7 +2,9 @@
 longer than the bed (dovetail pieces and doublers)."""
 
 import dataclasses
+import logging
 import math
+import re
 
 import build123d as bd
 import numpy as np
@@ -29,7 +31,8 @@ from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.rib_outline import Hole, circle_face, rect_face
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, NO_PLATE_LOADS, boom_tube
 from src.tools.fabrication.build_kit import stiffened_spar_plan
-from src.tools.fabrication.wing_parts import (RibKeepOut, clear_rib_stations, panel_rib_stations, socket_axis_m,
+from src.tools.fabrication.wing_parts import (MIN_RIB_SPACING_M, RIB_CLAMP_MARGIN_M, RibKeepOut, _servo_bay_y,
+                                              clear_rib_stations, panel_rib_stations, socket_axis_m,
                                               wing_rib_stations, wing_ribs)
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
 from tests.test_fabrication_fuselage import (
@@ -472,18 +475,45 @@ def test_narrow_neck_far_from_the_joint_still_splits():
 # ------------------------------------------------------------------- wing ribs clear the lift-boom clamps ---
 def test_rib_inside_a_clamp_zone_moves_to_the_outboard_edge():
     moved = clear_rib_stations((0.1, 0.3, 0.5, 0.7), (RibKeepOut(0.49, 0.03),), semi_span_m=0.8)
-    assert moved == pytest.approx((0.1, 0.3, 0.52, 0.7))
+    assert moved == pytest.approx((0.1, 0.3, 0.52 + RIB_CLAMP_MARGIN_M, 0.7))
 
 
 def test_tip_rib_inside_a_clamp_zone_moves_inboard():
     moved = clear_rib_stations((0.2, 0.4, 0.6, 0.8), (RibKeepOut(0.79, 0.03),), semi_span_m=0.8)
-    assert moved == pytest.approx((0.2, 0.4, 0.6, 0.76))
+    assert moved == pytest.approx((0.2, 0.4, 0.6, 0.76 - RIB_CLAMP_MARGIN_M))
 
 
 def test_rib_moves_inboard_when_the_outboard_edge_is_in_another_zone():
     zones = (RibKeepOut(0.49, 0.03), RibKeepOut(0.56, 0.05))
     moved = clear_rib_stations((0.1, 0.3, 0.5, 0.7), zones, semi_span_m=0.8)
-    assert moved == pytest.approx((0.1, 0.3, 0.46, 0.7))
+    assert moved == pytest.approx((0.1, 0.3, 0.46 - RIB_CLAMP_MARGIN_M, 0.7))
+
+
+def test_rib_moves_inboard_when_outboard_would_crowd_the_next_rib():
+    moved = clear_rib_stations((0.1, 0.3, 0.5, 0.7), (RibKeepOut(0.56, 0.065),), semi_span_m=0.8)
+    assert moved == pytest.approx((0.1, 0.3, 0.4945, 0.7))
+    assert min(b - a for a, b in zip(moved, moved[1:])) >= MIN_RIB_SPACING_M
+
+
+def test_rib_with_no_clear_spaced_station_is_dropped_with_a_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        moved = clear_rib_stations((0.1, 0.3, 0.5, 0.7), (RibKeepOut(0.5, 0.15),), semi_span_m=0.8)
+    assert moved == (0.1, 0.3, 0.7)
+    assert "rib dropped" in caplog.text
+
+
+def test_a_dropped_rib_renumbers_the_ribs_and_places_the_servo_bay_from_the_rest(g1_kit_inputs):
+    """Documented behaviour: labels stay contiguous (WR-01..WR-n-1) and the servo bay follows the remaining ribs."""
+    layout, airfoil, spar, settings = g1_kit_inputs
+    nominal = wing_rib_stations(spar, layout.wing.semi_span_m)
+    reduced = (*nominal[:3], *nominal[4:])
+    ribs = wing_ribs(layout, airfoil, dataclasses.replace(spar, rib_stations_m=reduced), settings)
+    by = ribs_by_label(ribs)
+    labels = sorted(label for label in by if re.fullmatch(r"WR-\d\d", label))
+    assert labels == [f"WR-{i:02d}" for i in range(1, len(reduced) + 1)]
+    offset = by["WR-02"].location.position.Y - reduced[1]
+    assert by["WR-04"].location.position.Y - offset == pytest.approx(reduced[3], abs=1e-9)
+    assert by["WR-SV"].location.position.Y == pytest.approx(_servo_bay_y(reduced, layout.wing), abs=1e-9)
 
 
 def test_root_rib_never_moves():

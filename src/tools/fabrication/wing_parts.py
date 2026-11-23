@@ -120,40 +120,54 @@ def panel_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
     return tuple(start_m + k * RIB_PITCH_M for k in range(count))
 
 
+# A rib moved out of a lift-boom clamp zone sits this far clear of the zone edge (not on it, where the BC-R1 web
+# would be exactly MIN_WEB_M), and keeps at least half the nominal rib pitch to its neighbours.
+RIB_CLAMP_MARGIN_M: Final[float] = 0.0005
+MIN_RIB_SPACING_M: Final[float] = RIB_PITCH_M / 2.0
+
+
 @dataclass(frozen=True)
 class RibKeepOut:
-    """Span band |y - centre_m| < half_width_m that no wing rib centre may fall in (a lift-boom clamp)."""
+    """Span band |y - centre_m| < half_width_m that no wing rib centre may fall in (a lift-boom clamp). The test is
+    strict with no tolerance, matching the BC-R1 web check: a rib on the edge leaves exactly MIN_WEB_M, which it
+    accepts."""
 
     centre_m: float
     half_width_m: float
 
     def contains(self, y_m: float) -> bool:
-        return abs(y_m - self.centre_m) < self.half_width_m - STATION_EPS
+        return abs(y_m - self.centre_m) < self.half_width_m
 
 
-def _clear_station(y_m: float, lo_m: float, hi_m: float, keep_out: Sequence[RibKeepOut]) -> Optional[float]:
-    """`y_m` moved to the nearest edge of the zone it falls in, outboard first, staying strictly between its
-    neighbours `lo_m` and `hi_m` and outside every zone; None when neither edge is clear."""
+def _clear_station(y_m: float, lo_m: float, hi_m: Optional[float], semi_span_m: float,
+                   keep_out: Sequence[RibKeepOut]) -> Optional[float]:
+    """`y_m` moved RIB_CLAMP_MARGIN_M beyond the nearest edge of the zone it falls in, outboard first. The new
+    station keeps MIN_RIB_SPACING_M to the previous rib `lo_m` and the next one `hi_m` (None for the last rib, which
+    must stay within the semi-span) and lies outside every zone; None when neither side qualifies."""
     zone = next((z for z in keep_out if z.contains(y_m)), None)
     if zone is None:
         return y_m
-    for edge in (zone.centre_m + zone.half_width_m, zone.centre_m - zone.half_width_m):
-        if lo_m < edge < hi_m and not any(z.contains(edge) for z in keep_out):
-            return edge
+    reach: float = zone.half_width_m + RIB_CLAMP_MARGIN_M
+    for candidate in (zone.centre_m + reach, zone.centre_m - reach):
+        spaced = candidate - lo_m >= MIN_RIB_SPACING_M and (
+            candidate <= semi_span_m if hi_m is None else hi_m - candidate >= MIN_RIB_SPACING_M)
+        if spaced and not any(z.contains(candidate) for z in keep_out):
+            return candidate
     return None
 
 
 def clear_rib_stations(stations: Sequence[float], keep_out: Sequence[RibKeepOut],
                        semi_span_m: float) -> tuple[float, ...]:
-    """`stations` with every rib that falls in a keep-out zone moved to the zone's nearest clear edge (outboard
-    preferred; the tip rib can only move inboard). The root rib (first station, on the fuselage joint) stays. A rib
-    with no clear edge between its neighbours is dropped, with a warning."""
+    """`stations` with every rib that falls in a keep-out zone moved just clear of the zone (outboard preferred; the
+    last rib can only move inboard, the root rib on the fuselage joint never moves). A rib with no clear, spaced
+    station is dropped with a warning; the ribs outboard of it are then renumbered (labels stay contiguous) and the
+    servo bay is placed from the remaining stations."""
     if not stations:
         return ()
     moved: tuple[float, ...] = (stations[0],)
     for i, y in enumerate(stations[1:], start=1):
-        hi = stations[i + 1] if i + 1 < len(stations) else semi_span_m + STATION_EPS
-        clear = _clear_station(y, moved[-1], hi, keep_out)
+        hi = stations[i + 1] if i + 1 < len(stations) else None
+        clear = _clear_station(y, moved[-1], hi, semi_span_m, keep_out)
         if clear is None:
             logger.warning("wing rib at y = %.3f m has no station clear of the lift-boom clamps; rib dropped", y)
             continue
