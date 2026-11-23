@@ -56,7 +56,8 @@ from src.tools.sizing.mission_profile import (
     simulate,
 )
 from src.tools.sizing.topology import (HAND_LAUNCH_MAX_MTOW_KG, Airframe, LaunchMethod, Propulsion, classify_group,
-                                        resolved_launch_method, select_airframe, select_propulsion)
+                                       effective_max_stall_speed_ms, resolved_launch_method, select_airframe,
+                                       select_propulsion)
 from src.units import G0, KWH_TO_J
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ def _wing_area_m2(mtow: float, design: _Design, rho_to: float, rho_c: float) -> 
     """Binding of two constraints: stall at max_stall_speed at the take-off site, and cruise at altitude flown
     no slower than SPEED_MARGIN_OVER_STALL x local stall (CL <= CLmax / margin^2)."""
     req = design.req
-    by_stall: float = required_wing_area_m2(mtow, rho_to, req.max_stall_speed_ms, design.stall_polar.cl_max_3d)
+    by_stall: float = required_wing_area_m2(mtow, rho_to, effective_max_stall_speed_ms(req), design.stall_polar.cl_max_3d)
     cruise_cl_limit: float = design.cruise_polar.cl_max_3d / SPEED_MARGIN_OVER_STALL**2
     by_cruise: float = required_wing_area_m2(mtow, rho_c, req.cruise_speed_ms, cruise_cl_limit)
     return max(by_stall, by_cruise)
@@ -192,7 +193,7 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
         design=design, aero=aero, trace=trace, storage=storage, generator_power_w=gen_w,
         cruise_total_w=cruise_total,
         wing_reynolds=reynolds_number(aero.rho_cruise, req.cruise_speed_ms, aero.geom.mean_chord_m, mu_c),
-        stall_reynolds=reynolds_number(aero.rho_takeoff, req.max_stall_speed_ms, aero.geom.mean_chord_m, mu_to),
+        stall_reynolds=reynolds_number(aero.rho_takeoff, effective_max_stall_speed_ms(req), aero.geom.mean_chord_m, mu_to),
         empty_breakdown=breakdown, gear=gear,
     )
 

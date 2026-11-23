@@ -12,11 +12,13 @@ from typing import Any
 
 import pytest
 
+from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import FCSArtifacts
 from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import FlightModelError, build_flight_model
 from src.tools.flight_control.perturbation import HOT, SLUGGISH, PlantCase, perturbed_model
 from src.tools.sizing.layouts import TAILED_BAND, StaticMarginBand
+from src.ui.examples import G1_ELECTRIC_FW
 from tests.test_flight_control import KNOWN_PARAMS, design, load_design  # noqa: F401 (design is a fixture)
 
 # ------------------------------------------------- pilot helpers and the validator ---
@@ -517,20 +519,24 @@ def test_plant_case_rejects_invalid_values(kwargs: dict[str, float]) -> None:
 
 
 @pytest.mark.docker
-@pytest.mark.xfail(strict=True, reason=(
-    "G1 stalls at 13 m/s with T/W 0.43 at 10 m/s: from a 10 m/s, 2 m throw it sinks (alpha > 16 deg, post-stall) "
-    "and reaches the ground in ~1.2 s, even with an ideal pitch controller in plain JSBSim. The same flight passes "
-    "SITL (take-off climb and both doublets) with a 15 m/s throw; 13 m/s still fails. Throw conditions need a "
-    "decision (see the Task 5 report)."))
 def test_hand_launched_g1_passes_sitl(tmp_path: Path) -> None:
-    """A hand-launched G1 (no gear, belly contacts) starts in the air at throw speed, climbs to the take-off
-    altitude without touching the ground, then passes the same doublet criteria as every other design."""
+    """A hand-launched G1, sized for the throw (stall <= throw speed / 1.2) and built through OpenVSP and CAD, has no
+    gear: it starts in the air at throw speed, climbs to the take-off altitude without touching the ground, then
+    passes the same doublet criteria as every other design."""
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     if not sv.sitl_available():
         pytest.skip("arduplane not installed (run in the Docker image)")
-    req, sizing, bom, aero, cad = load_design("g1")
-    hand_sizing = sizing.model_copy(update={"launch_method": "hand", "gear_kind": "none"})
-    fcs = sv.generate_and_verify_fcs(req, hand_sizing, bom, aero, cad, tmp_path)
+    pytest.importorskip("openvsp")
+    from src.tools.aero_cad.build import build_aero_cad
+    from src.tools.database.matcher import select_bom
+    from src.tools.database.seed_data import seed_database
+    from src.tools.sizing.mission_solver import component_needs, size_aircraft
+    req = OperationalRequirements.model_validate({**G1_ELECTRIC_FW.model_dump(), "runway_available": False,
+                                                  "launch_method": "hand"})
+    sizing = size_aircraft(req)
+    bom = select_bom(seed_database(tmp_path / "cots_catalog.db"), component_needs(sizing, req))
+    aero, cad = build_aero_cad(sizing, bom, req.service_ceiling_m, tmp_path / "aero_cad")
+    fcs = sv.generate_and_verify_fcs(req, sizing, bom, aero, cad, tmp_path)
     assert fcs.passed, json.loads(Path(fcs.sitl_report_path).read_text())["attempts"]
     params = pg.read_param_file(Path(fcs.param_path))
     assert not {name for name in params if name.startswith("TKOFF_")}

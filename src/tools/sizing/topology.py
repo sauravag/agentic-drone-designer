@@ -14,6 +14,10 @@ GROUP2_UPPER_KG: Final[float] = 24.95  # 55 lb
 GROUP3_UPPER_KG: Final[float] = 599.0  # 1,320 lb
 
 HAND_LAUNCH_MAX_MTOW_KG: Final[float] = GROUP1_UPPER_KG  # a thrown aircraft is Group 1
+HAND_LAUNCH_SPEED_MS: Final[float] = 10.0  # throw speed along the body x axis
+HAND_LAUNCH_HEIGHT_M: Final[float] = 2.0  # release height above the ground
+HAND_LAUNCH_PITCH_DEG: Final[float] = 10.0  # nose-up attitude at release
+HAND_LAUNCH_STALL_MARGIN: Final[float] = 1.2  # take-off safety convention: throw speed >= 1.2 x stall speed
 ELECTRIC_MAX_MTOW_KG: Final[float] = 15.0
 ELECTRIC_MAX_ENDURANCE_H: Final[float] = 3.0
 
@@ -56,3 +60,11 @@ def select_propulsion(req: OperationalRequirements, estimated_mtow_kg: float) ->
     is_small: bool = estimated_mtow_kg < ELECTRIC_MAX_MTOW_KG
     is_short: bool = req.endurance_hours <= ELECTRIC_MAX_ENDURANCE_H
     return "electric" if is_small and is_short else "series_hybrid"
+
+
+def effective_max_stall_speed_ms(req: OperationalRequirements) -> float:
+    """The stall-speed limit sizing designs to at the take-off site: the requirement, or for a hand launch no more
+    than the throw speed over HAND_LAUNCH_STALL_MARGIN (a thrown aircraft must fly away from its release speed)."""
+    if resolved_launch_method(req) == "hand":
+        return min(req.max_stall_speed_ms, HAND_LAUNCH_SPEED_MS / HAND_LAUNCH_STALL_MARGIN)
+    return req.max_stall_speed_ms

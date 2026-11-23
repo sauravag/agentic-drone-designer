@@ -26,10 +26,9 @@ from typing import Final, MutableMapping, Optional, Sequence
 
 import jsbsim
 
-from src.tools.flight_control.hand_launch import (HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG,
-                                                  HAND_LAUNCH_SPEED_MS)
 from src.tools.flight_control.control_channels import THROTTLE_SERVO, ControlChannel, jsbsim_stem
 from src.tools.flight_control.jsbsim_exporter import JSBSimModel
+from src.tools.sizing.topology import HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG, HAND_LAUNCH_SPEED_MS
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +222,8 @@ class JsonPhysicsBridge:
         if rate != self.stats.frame_rate:
             fdm.set_dt(1.0 / rate)
             self.stats.frame_rate = rate
+        # A hand launch rests in the hand (still, so ArduPilot zeroes its pitot at rest and aligns its EKF) until the
+        # pilot opens the throttle; carrying it at throw speed during boot made ArduPilot zero the pitot at 10 m/s.
         if self._held and pwm[THROTTLE_SERVO - 1] > THROW_THROTTLE_PWM:
             self._held = False  # the throw: JSBSim takes over, at throw speed from the launch pose
         if self._held:  # ArduPilot boots and arms while the aircraft is still in the hand

@@ -124,6 +124,7 @@ class FlightModel:
     lift_motor_lag_s: float
     gear: GearGeometry  # the one landing-gear rule; kind "none" for a hand launch
     launch: Literal["runway", "hand", "vertical"]
+    wing_tip_z_m: float  # height of the wing tips above the fuselage axis (dihedral), where a gearless aircraft rests
     # Per-surface derivatives for layouts whose surfaces are not the tractor triple; empty means the tractor
     # aileron/elevator/rudder, derived from the aggregated `aero` so a perturbed plant keeps them consistent.
     surfaces: tuple[ControlSurfaceDerivatives, ...] = ()
@@ -246,6 +247,11 @@ def _model_surfaces(aero: AeroStabilityOutput) -> tuple[ControlSurfaceDerivative
     return aero.control_surfaces
 
 
+def _wing_tip_z_m(sizing: SizingOutput) -> float:
+    wing = layout_from_sizing(sizing, DEFAULT_WING_STATION).wing
+    return wing.z_at(wing.semi_span_m)
+
+
 def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                        aero: AeroStabilityOutput, cad: CADArtifacts) -> FlightModel:
     """Assemble the flight model; raises FlightModelError if the design cannot hover/accelerate."""
@@ -268,7 +274,7 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
         cruise_motor_lag_s=motor_lag_s(bom.cruise_propeller.diameter_m),
         lift_rotors=_lift_rotors(sizing, bom, aero, cad),
         lift_motor_lag_s=motor_lag_s(bom.vtol_propeller.diameter_m) if bom.vtol_propeller else 0.0,
-        gear=gear, launch=sizing.launch_method, surfaces=_model_surfaces(aero),
+        gear=gear, launch=sizing.launch_method, wing_tip_z_m=_wing_tip_z_m(sizing), surfaces=_model_surfaces(aero),
     )
     _check_flyable(model)
     return model

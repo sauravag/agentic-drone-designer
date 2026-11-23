@@ -23,13 +23,12 @@ from src.tools.flight_control.control_channels import (ControlChannel, SurfaceDe
                                                        control_channels, jsbsim_stem, steering_channel)
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
-from src.tools.flight_control.hand_launch import (HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG,
-                                                  HAND_LAUNCH_SPEED_MS)
 from src.tools.flight_control.jsbsim_exporter import (export_jsbsim, lift_table, lift_thrust_curve)
 from src.tools.flight_control.perturbation import SLUGGISH, perturbed_model
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
 from src.tools.gear import TIP_BACK_ANGLE_DEG, GearInputs, PropellerDisc, landing_gear
 from src.tools.sizing.layouts import TAILED_BAND
+from src.tools.sizing.topology import HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG, HAND_LAUNCH_SPEED_MS
 
 DATA = Path(__file__).parent / "data"
 KNOWN_PARAMS: frozenset[str] = frozenset((DATA / "arduplane_4.7.2_param_names.txt").read_text().split())
@@ -547,13 +546,19 @@ def test_flight_model_gear_comes_from_the_launch_method_and_the_real_propeller()
 def test_export_without_gear_writes_belly_contacts(tmp_path: Path) -> None:
     model = build_flight_model(*_hand_design())
     xml = export_jsbsim(model, tmp_path).xml_path.read_text()
-    assert xml.count('type="STRUCTURE"') == 2 and 'type="BOGEY"' not in xml
-    contacts = ET.fromstring(xml).findall("ground_reactions/contact")
-    xs = sorted(float(c.find("location/x").text) for c in contacts)  # type: ignore[union-attr]
-    assert xs == pytest.approx(sorted([model.x_cg_m, 0.8 * model.fuselage_length_m]))
-    for c in contacts:
-        assert float(c.find("location/z").text) == pytest.approx(-model.fuselage_diameter_m / 2)  # type: ignore[union-attr]
-        assert float(c.find("max_steer").text) == 0.0  # type: ignore[union-attr]
+    assert xml.count('type="STRUCTURE"') == 4 and 'type="BOGEY"' not in xml
+    contacts = {c.get("name"): c for c in ET.fromstring(xml).findall("ground_reactions/contact")}
+
+    def at(name: str) -> tuple[float, float, float]:
+        loc = contacts[name].find("location")
+        return tuple(float(loc.find(axis).text) for axis in "xyz")  # type: ignore[union-attr,return-value]
+
+    belly_z = -model.fuselage_diameter_m / 2
+    assert at("BELLY_CG") == pytest.approx((model.x_cg_m, 0.0, belly_z))
+    assert at("BELLY_AFT") == pytest.approx((0.8 * model.fuselage_length_m, 0.0, belly_z))
+    for name, side in (("LEFT_WINGTIP", -1), ("RIGHT_WINGTIP", 1)):  # the tips keep it from rolling inverted
+        assert at(name) == pytest.approx((model.x_cg_m, side * model.wingspan_m / 2, model.wing_tip_z_m))
+    assert all(float(c.find("max_steer").text) == 0.0 for c in contacts.values())  # type: ignore[union-attr]
 
 
 def test_runway_export_is_unchanged_bogeys(tmp_path: Path) -> None:
@@ -589,8 +594,7 @@ def test_gearless_aircraft_is_caught_by_the_ground_model_in_jsbsim(tmp_path: Pat
     fdm.run_ic()
     for _ in range(1200):
         fdm.run()
-    # two centreline contacts give no roll support, so it may lie over; the ground model still catches it
-    assert abs(fdm["position/h-agl-ft"] * 0.3048) < model.fuselage_diameter_m * 2
+    assert abs(fdm["attitude/phi-deg"]) < 5 and model.wing_tip_z_m > 0  # the wingtip contacts keep it upright
     assert fdm["velocities/vt-fps"] * 0.3048 < 0.5
 
 

@@ -21,8 +21,7 @@ from typing import Any, Callable, Final, Literal, Mapping, Optional
 
 from pymavlink import mavutil
 
-from src.tools.flight_control.hand_launch import (HAND_LAUNCH_HEIGHT_M,  # noqa: F401 (re-exported)
-                                                  HAND_LAUNCH_PITCH_DEG, HAND_LAUNCH_SPEED_MS)
+from src.tools.sizing.topology import HAND_LAUNCH_HEIGHT_M
 
 logger = logging.getLogger(__name__)
 

@@ -86,10 +86,14 @@ def _table_2d(parent: ET.Element, row_prop: str, rows: Sequence[float], col_prop
 
 
 def _belly_contacts(model: FlightModel) -> tuple[GearContact, ...]:
-    """A gearless aircraft rests on its pod: contacts under the CG and at BELLY_AFT_STATION of the pod length."""
+    """A gearless aircraft rests on its pod (under the CG and at BELLY_AFT_STATION of the pod length) and on its
+    wingtips (at +-semi-span, at the tip height the dihedral gives, abreast of the CG), so it cannot roll over."""
     z: float = -model.fuselage_diameter_m / 2
+    half_span: float = model.wingspan_m / 2
     return (GearContact("BELLY_CG", model.x_cg_m, 0.0, z, False),
-            GearContact("BELLY_AFT", BELLY_AFT_STATION * model.fuselage_length_m, 0.0, z, False))
+            GearContact("BELLY_AFT", BELLY_AFT_STATION * model.fuselage_length_m, 0.0, z, False),
+            GearContact("LEFT_WINGTIP", model.x_cg_m, -half_span, model.wing_tip_z_m, False),
+            GearContact("RIGHT_WINGTIP", model.x_cg_m, half_span, model.wing_tip_z_m, False))
 
 
 def _ground_reactions(root: ET.Element, model: FlightModel, contacts: Sequence[GearContact]) -> None:

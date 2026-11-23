@@ -528,3 +528,15 @@ def test_no_tail_boom_when_the_tail_sits_on_the_pod(g1: SizingOutput) -> None:
     booms = mass_model.sizing_booms(dataclasses.replace(geom, tail_surfaces=short_arm),
                                     layout_spec(g1.airframe_layout), 0.0)
     assert booms == ()
+
+
+def test_hand_launched_g1_stalls_below_the_throw_speed_with_margin() -> None:
+    """A thrown aircraft must stall at or below HAND_LAUNCH_SPEED / HAND_LAUNCH_STALL_MARGIN at the take-off site."""
+    from src.tools.sizing.topology import HAND_LAUNCH_SPEED_MS, HAND_LAUNCH_STALL_MARGIN
+    hand = OperationalRequirements.model_validate({**G1_ELECTRIC_FW.model_dump(), "runway_available": False,
+                                                   "launch_method": "hand"})
+    limit = HAND_LAUNCH_SPEED_MS / HAND_LAUNCH_STALL_MARGIN
+    sized, runway = size_aircraft(hand), size_aircraft(G1_ELECTRIC_FW)
+    assert sized.v_stall_takeoff_ms <= limit + 1e-6 and sized.v_stall_ms <= limit * 1.05
+    assert runway.v_stall_ms > limit  # the runway G1 is unchanged (it stalls at max_stall_speed_ms)
+    assert sized.wing_area_m2 > runway.wing_area_m2
