@@ -60,6 +60,11 @@ FUEL_SYSTEM_FRACTION: Final[float] = 0.15  # tank + lines + pump, of fuel mass
 # Boom tube wall mass per area: 1 mm carbon at 1600 kg/m^3 (= aero_cad.structure.COMPOSITE_DENSITY_KG_M3).
 CF_TUBE_WALL_KG_M2: Final[float] = 1.6
 LIFT_BOOM_COUNT: Final[int] = 2  # two longitudinal booms, two lift rotors each
+# Sizing's cruise-propeller diameter estimate (the propeller is not chosen until the BOM), as a multiple of the sized
+# fuselage diameter. Calibrated 2026-11-23 as the mean of real BOM propeller / sized fuselage diameter over the
+# reference designs (fresh size_aircraft + select_bom on the seed catalog): G1 0.2794/0.1263 = 2.211,
+# G2 0.4064/0.2128 = 1.909, G3 0.8128/0.4046 = 2.009; mean 2.043, rounded to 2.04.
+PROP_TO_FUSELAGE_DIAMETER_RATIO: Final[float] = 2.04
 
 
 @dataclass(frozen=True)
@@ -166,9 +171,9 @@ def boom_mass_kg(boom: BoomSet) -> float:
 
 
 def _sizing_propeller_diameter_m(geom: Geometry) -> float:
-    """The propeller is not chosen until the BOM: sizing assumes one no larger than the fuselage (the CAD stage
-    recomputes the gear and clearances from the real one)."""
-    return geom.fuselage_diameter_m
+    """The propeller is not chosen until the BOM: sizing estimates it as PROP_TO_FUSELAGE_DIAMETER_RATIO x the
+    fuselage diameter (the CAD stage recomputes the gear and clearances from the real one)."""
+    return PROP_TO_FUSELAGE_DIAMETER_RATIO * geom.fuselage_diameter_m
 
 
 def _tail_boom_end_m(geom: Geometry, spec: LayoutSpec) -> float:

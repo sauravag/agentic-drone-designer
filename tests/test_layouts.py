@@ -425,7 +425,7 @@ def test_pusher_tail_boom_reaches_past_the_tail_by_the_gap() -> None:
     as_tractor = dataclasses.replace(spec, propeller="tractor_nose")
     (pusher_boom,) = mm.sizing_booms(g, spec, 0.0)
     (plain_boom,) = mm.sizing_booms(g, as_tractor, 0.0)
-    gap = PUSHER_TAIL_GAP_FRACTION * g.fuselage_diameter_m  # sizing's propeller estimate: the fuselage diameter
+    gap = PUSHER_TAIL_GAP_FRACTION * mm.PROP_TO_FUSELAGE_DIAMETER_RATIO * g.fuselage_diameter_m  # sizing's estimate
     assert pusher_boom.length_m == pytest.approx(plain_boom.length_m + gap)
     assert mm.boom_mass_kg(pusher_boom) > mm.boom_mass_kg(plain_boom)
 
@@ -436,7 +436,7 @@ def test_sizing_gear_puts_the_pusher_disc_at_the_boom_end() -> None:
     g, spec = _vtail_geometry(), layout_spec(VTAIL)
     (boom,) = mm.sizing_booms(g, spec, 0.0)
     boom_end = mm.TAIL_BOOM_START_FRACTION * g.fuselage_length_m + boom.length_m
-    diameter = g.fuselage_diameter_m
+    diameter = mm.PROP_TO_FUSELAGE_DIAMETER_RATIO * g.fuselage_diameter_m
     _, _, x_ac = mm._default_station_wing_m(g)
     x_cg = x_ac - spec.static_margin.target * g.mean_chord_m
     expected = landing_gear(GearInputs("runway", g.fuselage_length_m, diameter, g.mean_chord_m, g.wingspan_m, x_cg,
@@ -512,3 +512,25 @@ def test_pusher_flight_model_needs_the_cad_propeller_station() -> None:
     req, sizing, bom, aero, cad = load_design("g1")
     with pytest.raises(ValueError, match="propeller station"):
         build_flight_model(req, sizing.model_copy(update={"airframe_layout": VTAIL}), bom, aero, cad)
+
+
+# The catalog snaps the cruise propeller to discrete sizes (11 -> 13 in near G1 is an 18 % step), so a single ratio
+# cannot beat about half a step (9 %) on any one design; 10 % allows that plus the spread across the references.
+PROP_ESTIMATE_REL_TOL = 0.10
+
+
+def test_sizing_propeller_estimate_tracks_the_real_bom_propeller(designs: dict) -> None:
+    sizing, bom = designs["g1"]
+    estimate = mm.PROP_TO_FUSELAGE_DIAMETER_RATIO * sizing.fuselage_diameter_m
+    assert estimate == pytest.approx(bom.cruise_propeller.diameter_m, rel=PROP_ESTIMATE_REL_TOL)
+
+
+def test_sizing_gear_and_boom_use_the_propeller_estimate() -> None:
+    g, spec = _vtail_geometry(), layout_spec(VTAIL)
+    diameter = mm.PROP_TO_FUSELAGE_DIAMETER_RATIO * g.fuselage_diameter_m
+    (boom,) = mm.sizing_booms(g, spec, 0.0)
+    (plain,) = mm.sizing_booms(g, dataclasses.replace(spec, propeller="tractor_nose"), 0.0)
+    assert boom.length_m == pytest.approx(plain.length_m + PUSHER_TAIL_GAP_FRACTION * diameter)
+    tractor = mm.sizing_gear(g, layout_spec("pod_boom_tractor"), "runway")
+    assert tractor.base_leg_height_m == pytest.approx(diameter / 2 * 1.25)
+    assert tractor.leg_height_m == tractor.base_leg_height_m  # a nose disc never needs a taller leg: mass ratio 1
