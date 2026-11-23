@@ -16,8 +16,12 @@ Frame convention (Tasks 3-9 rely on it):
   Fin ribs (`V-…`) and flat plates are unrotated: they extrude upward (+z) from their origin.
 - Pieces of one split rib (e.g. `WR-07` and its aileron part `WR-07A`) share the same location, so the
   pieces sit side by side exactly as cut from the full rib.
+- A V-tail panel's ribs (`VR-…`, `VL-…`) stand square to the panel's span direction (0, +-cos G, sin G): the right
+  panel's are turned 90 + G deg about x (local +Z points inboard along the panel), the left panel's 90 - G deg (local
+  +Z points outboard), so the left solids are exact y-mirrors of the right ones.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -27,8 +31,8 @@ from src.schemas.fabrication import PartFamily, TubeStock
 from src.tools.fabrication.tubes import KitUnavailable, Overwrap, SparPlan
 from src.tools.fabrication.wing_retention import WingBolt
 
-__all__ = ["Box2", "CoverSurface", "Kit", "KitPart", "KitUnavailable", "LinearStock", "OVERWRAP_LABEL", "Overwrap",
-           "TubePart", "Vec3", "WingBolt"]
+__all__ = ["BOOM_MOTOR_WIRING_NOTE", "Box2", "CoverSurface", "FOLDING_PROP_NOTE", "Kit", "KitPart", "KitUnavailable",
+           "LinearStock", "OVERWRAP_LABEL", "Overwrap", "TubePart", "Vec3", "WingBolt", "with_clearance_notes"]
 
 Vec3 = tuple[float, float, float]
 Box2 = tuple[float, float, float, float]  # (x0, y0, x1, y1) in a part's local XY
@@ -36,6 +40,8 @@ TubeRole = Literal["spar", "socket", "tail_boom", "tail_spar", "lift_boom", "pin
 OVERWRAP_LABEL: Final[str] = "OW-1"
 LinearKind = Literal["stringer", "le", "te"]
 CoverKind = Literal["film", "fuselage", "dbox"]
+BOOM_MOTOR_WIRING_NOTE: Final[str] = "Motor wiring runs along the tail boom to the boom-end motor"
+FOLDING_PROP_NOTE: Final[str] = "Folding propeller required (belly landing)"
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,7 @@ class Kit:
     joins: tuple[str, ...]  # human-readable, e.g. "C-1a + C-1b at x = 0.512 m"
     overwrap: Overwrap  # carbon cloth over the centreline socket mitre (R24)
     wing_bolt: WingBolt  # R36 wing retention: each side's bolt, for the build sheet
+    notes: tuple[str, ...] = ()  # build-sheet notes (boom-end motor wiring, folding propeller)
 
     def overwrap_halves(self) -> tuple[TubePart, ...]:
         """The overwrap as one tube per socket (wrapped OD over the socket OD), each lapping its socket from the
@@ -121,3 +128,11 @@ class Kit:
     def fuselage_cover_area_m2(self) -> float:
         """Fuselage cover area: the pod's lateral area."""
         return self._covered_m2("fuselage")
+
+
+def with_clearance_notes(kit: Kit, needs_folding_prop: bool) -> Kit:
+    """The kit with the folding-propeller note added when the packed propeller clearance calls for one (any aircraft
+    landing on its belly with the prop tip below the belly line); the same kit otherwise."""
+    if not needs_folding_prop or FOLDING_PROP_NOTE in kit.notes:
+        return kit
+    return dataclasses.replace(kit, notes=(*kit.notes, FOLDING_PROP_NOTE))

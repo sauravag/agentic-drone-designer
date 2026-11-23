@@ -64,7 +64,9 @@ def test_each_tail_spar_passes_its_surface_load(case, designs, request):
     sizing, layout = designs[case][0], request.getfixturevalue(f"{case}_kit_inputs")[0]
     spars = tail_spar_tubes(sizing, layout, TAIL, SETTINGS)
     loads = tail_spar_loads(sizing, layout, SETTINGS)
-    for tube, moment in ((spars.htail, loads.htail_nm), (spars.fin, loads.fin_nm)):
+    assert set(spars) == set(loads) == {"htail", "vtail"}
+    for name, tube in spars.items():
+        moment = loads[name]
         assert 0.0 < tube_ratio(tube, ((moment, 0.0),), SETTINGS) <= 1.0
 
 
@@ -73,8 +75,8 @@ def test_each_tail_spar_is_the_smallest_stock_that_passes_and_fits(case, designs
     sizing, layout = designs[case][0], request.getfixturevalue(f"{case}_kit_inputs")[0]
     spars = tail_spar_tubes(sizing, layout, TAIL, SETTINGS)
     loads = tail_spar_loads(sizing, layout, SETTINGS)
-    roots = ((layout.htail, tail_root_radius_m(layout), spars.htail, loads.htail_nm),
-             (layout.vtail, fin_start_m(layout, SETTINGS), spars.fin, loads.fin_nm))
+    roots = ((layout.htail, tail_root_radius_m(layout), spars["htail"], loads["htail"]),
+             (layout.vtail, fin_start_m(layout, SETTINGS), spars["vtail"], loads["vtail"]))
     for surface, root, tube, moment in roots:
         depth = spar_depth_at(surface, TAIL, SETTINGS, root_doubler_m=None)(root)
         assert tube.od_m <= depth + 1e-9
@@ -87,9 +89,9 @@ def test_tail_spar_moment_is_the_elliptic_root_moment(designs, g2_kit_inputs):
     loads = tail_spar_loads(sizing, layout, SETTINGS)
     half_h = tail_surface_load_n(sizing, sizing.horizontal_tail_area_m2, SETTINGS) / 2.0
     fin = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, SETTINGS)
-    assert loads.htail_nm == pytest.approx(
+    assert loads["htail"] == pytest.approx(
         elliptic_root_moment_nm(half_h, layout.htail.semi_span_m, tail_root_radius_m(layout)), rel=REL)
-    assert loads.fin_nm == pytest.approx(
+    assert loads["vtail"] == pytest.approx(
         elliptic_root_moment_nm(fin, layout.vtail.semi_span_m, fin_start_m(layout, SETTINGS)), rel=REL)
 
 
@@ -105,3 +107,39 @@ def test_a_tail_too_thin_for_any_stock_is_unavailable(designs, g1_kit_inputs):
     thick_only = SETTINGS.model_copy(update={"tubes": (SETTINGS.tubes[-1],), "rods_m": (0.030,)})
     with pytest.raises(KitUnavailable, match="tail spar"):
         tail_spar_tubes(sizing, layout, TAIL, thick_only)
+
+
+# --------------------------------------------------------------------------------------- V-tail (Task 8) ---
+@pytest.fixture(scope="module")
+def vtail_layout(vtail_g1):
+    from tests.cad_helpers import _fitted_layout
+
+    return _fitted_layout(*vtail_g1, station=0.45, with_propeller=True)
+
+
+def test_vtail_panel_spar_moment_is_its_own_elliptic_root_moment(vtail_g1, vtail_layout):
+    """R35 per panel: each V-tail panel lifts q S_panel CL_max normal to its plane, elliptically along the panel from
+    its root (the root block's face)."""
+    from src.tools.fabrication.wing_parts import panel_start_m
+
+    sizing, surface = vtail_g1[0], vtail_layout.tail_surfaces[0]
+    loads = tail_spar_loads(sizing, vtail_layout, SETTINGS)
+    panel = tail_surface_load_n(sizing, surface.planform.area_m2 / 2.0, SETTINGS)
+    start = panel_start_m(vtail_layout, surface, SETTINGS)
+    assert set(loads) == {"vtail_pair"}
+    assert loads["vtail_pair"] == pytest.approx(
+        elliptic_root_moment_nm(panel, surface.planform.semi_span_m, start), rel=REL)
+    spars = tail_spar_tubes(sizing, vtail_layout, TAIL, SETTINGS)
+    assert 0.0 < tube_ratio(spars["vtail_pair"], ((loads["vtail_pair"], 0.0),), SETTINGS) <= 1.0
+
+
+def test_vtail_boom_loads_project_each_panel(vtail_g1, vtail_layout):
+    """R26 per surface: each panel's load L (normal to it) bends the boom through its components, L cos G (pitch) and
+    L sin G (side); the side components twist it at the panel's MAC station off the boom axis."""
+    sizing, surface = vtail_g1[0], vtail_layout.tail_surfaces[0]
+    g = math.radians(surface.dihedral_deg)
+    panel = tail_surface_load_n(sizing, surface.planform.area_m2 / 2.0, SETTINGS)
+    arm = surface.planform.x_ac_m - vtail_layout.tail_boom.x_start_m
+    moment, torque = tail_boom_loads(sizing, vtail_layout, SETTINGS)
+    assert moment == pytest.approx(math.hypot(2.0 * panel * math.cos(g), 2.0 * panel * math.sin(g)) * arm, rel=REL)
+    assert torque == pytest.approx(2.0 * panel * math.sin(g) * surface.planform.y_mac_m, rel=REL)

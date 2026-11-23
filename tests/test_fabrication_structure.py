@@ -44,7 +44,9 @@ from src.tools.fabrication.tubes import (
     plate_loads,
     size_overwrap,
     size_pin,
+    BoomTipMass,
     tail_boom_check,
+    tail_boom_loads,
     tail_boom_ratio,
     torsion_stress_pa,
     tube_ratio,
@@ -204,10 +206,14 @@ def test_hover_pitch_torque_checked_at_boom_station(designs, g2_kit_inputs):
 # ------------------------------------------------------------------------------------ tail boom ---
 def test_tail_boom_too_weak_falls_back(designs, g1_kit_inputs):
     sizing, layout = designs["g1"][0], g1_kit_inputs[0]
-    big_tail = sizing.model_copy(update={"horizontal_tail_area_m2": 2.0, "vertical_tail_area_m2": 2.0})
+    scale = 10.0  # each tail surface's chords: ten times the area, and the load
+    big = tuple(dataclasses.replace(t, planform=dataclasses.replace(
+        t.planform, root_chord_m=scale * t.planform.root_chord_m, tip_chord_m=scale * t.planform.tip_chord_m))
+        for t in layout.tail_surfaces)
+    big_tail = dataclasses.replace(layout, tail_surfaces=big)
     tiny = boom_tube(0.0, SETTINGS)
     with pytest.raises(KitUnavailable, match="tail boom"):
-        tail_boom_check(tiny, big_tail, layout, SETTINGS)
+        tail_boom_check(tiny, sizing, big_tail, SETTINGS)
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
@@ -492,3 +498,23 @@ def test_reference_kits_pass_both_stiffness_checks(case, designs):
 
 def test_g2_needs_the_dbox(designs):
     assert _stiffened(designs, "g2").dbox is True
+
+
+# ------------------------------------------------------------------- V-tail boom-end motor (Task 8) ---
+def test_vtail_boom_check_includes_motor_mass(vtail_g1):
+    """The boom-end motor (with its propeller) at n_limit g adds its moment about the boom root to the tail loads'
+    bending; the torque is unchanged; the reference V-tail boom still passes with it."""
+    from src.tools.aero_cad import components
+    from src.units import G0
+
+    sizing, bom = vtail_g1
+    layout = _fitted_layout(sizing, bom, 0.45, with_propeller=True)
+    motor = components.cruise_motor(bom, layout)
+    tip = BoomTipMass(mass_kg=motor.mass_kg, x_m=motor.center_m[0])
+    bare, loaded = tail_boom_loads(sizing, layout, SETTINGS), tail_boom_loads(sizing, layout, SETTINGS, tip)
+    arm = motor.center_m[0] - layout.tail_boom.x_start_m
+    assert loaded[0] - bare[0] == pytest.approx(motor.mass_kg * G0 * SETTINGS.n_limit * arm, rel=1e-9)
+    assert loaded[1] == bare[1]
+    tube = boom_tube(layout.tail_boom.diameter_m, SETTINGS)
+    tail_boom_check(tube, sizing, layout, SETTINGS, tip)
+    assert tail_boom_ratio(tube, sizing, layout, SETTINGS) < tail_boom_ratio(tube, sizing, layout, SETTINGS, tip) <= 1.0

@@ -13,11 +13,12 @@ sheet `nesting.nest` filled. Each placement's kerf-compensated outline is drawn 
   label raise KitUnavailable, as does a failed offset (naming the part, as `nesting.nest` does).
 
 `export_kit` nests the kit, writes those sheets and, beside them, `kit/build_sheet.md` (sections in
-BUILD_SHEET_SECTIONS order; its Summary kit mass is `kit_mass_kg`, tubes and overwrap included) and `kit/parts.csv`
-(one row per sheet part, PARTS_CSV_COLUMNS; its masses sum to the parts' `part_item` masses). `kit_solids` gives the
-kit as 3D solids in the aircraft frame: every sheet part (`ply_solids`, outline extruded by its sheet thickness, moved
-by its location; one solid per part), then every tube and the two overwrap halves (`carbon_solids`, hollow cylinders;
-a rod is solid); `kit_solid_sets` keeps the two apart so one export builds them once for STEP and the viewer.
+BUILD_SHEET_SECTIONS order; its Summary kit mass is `kit_mass_kg`, tubes and overwrap included, then any build notes)
+and `kit/parts.csv` (one row per sheet part, PARTS_CSV_COLUMNS; its masses sum to the parts' `part_item` masses).
+`kit_solids` gives the kit as 3D solids in the aircraft frame: every sheet part (`ply_solids`, outline extruded by its
+sheet thickness, moved by its location; one solid per part), then every tube and the two overwrap halves
+(`carbon_solids`, hollow cylinders; a rod is solid); `kit_solid_sets` keeps the two apart so one export builds them
+once for STEP and the viewer.
 """
 
 import csv
@@ -308,7 +309,12 @@ def _summary(kit: Kit, items: Mapping[str, mp.MassItem], placements: Mapping[str
     return [f"Kit mass: **{total:.4f} kg** (sheet parts, tubes and rods, linear stock, the centreline overwrap, "
             "covering, and the glue and hardware allowance).", "",
             *_table(("Item", "Mass (g)"), [(name, f"{_g(kg):.2f}") for name, kg in breakdown]), "",
-            *_table(("Stock", "Sheets"), sheets)]
+            *_table(("Stock", "Sheets"), sheets), *_notes(kit)]
+
+
+def _notes(kit: Kit) -> list[str]:
+    """The kit's build notes (boom-end motor wiring, folding propeller) under the summary; none for most kits."""
+    return ["", *(f"**Note:** {note}." for note in kit.notes)] if kit.notes else []
 
 
 def _parts(kit: Kit, settings: FabricationSettings, items: Mapping[str, mp.MassItem]) -> list[str]:

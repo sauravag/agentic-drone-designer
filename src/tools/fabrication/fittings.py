@@ -8,6 +8,9 @@
   unavailable.
 - Cruise-motor plate `MP-C` (R17): a disc glued to the firewall's front face, motor diameter + 2 MIN_WEB_M, centre
   hole and slotted bolt cross as the lift-motor plates. It may overhang a small firewall on a pointed nose.
+- Boom-end pusher (`layout.propeller.is_pusher`): no `MP-C`; the motor plate `MP-B` (the same disc) covers the tail
+  boom's end face, and the boom clamp `MC-B`, a ring of the same diameter threaded on the boom (hole = boom OD + fit
+  clearance), is glued to its front face. Both are at least the boom hole + 2 CLAMP_CHEEK_M across.
 - Boom clamps, lift-motor plates and boom tubes live in `boom_parts.py` (re-exported here).
 - `split_to_bed`: a part too long for the usable bed (bed - 2 margin each way, less one kerf) is cut across its long
   axis into the fewest equal pieces that fit, each cut moved up to SPLIT_SEARCH_M so the joint keeps
@@ -35,12 +38,12 @@ import build123d as bd
 from src.schemas.fabrication import FabricationSettings
 from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent, boom_obstacles, overlap_volume_m3
 from src.tools.aero_cad.layout import AircraftLayout, fuselage_radius_at
-from src.tools.fabrication.boom_parts import boom_parts, motor_plate_diameter_m, motor_plate_outline
+from src.tools.fabrication.boom_parts import CLAMP_CHEEK_M, boom_parts, motor_plate_diameter_m, motor_plate_outline
 from src.tools.fabrication.fuselage_parts import firewall_station, material_spans, station_location
 from src.tools.fabrication.kit import Box2, KitPart
-from src.tools.fabrication.rib_outline import rect_face
+from src.tools.fabrication.rib_outline import Hole, circle_face, drill, rect_face
 from src.tools.fabrication.skin import profile_corners
-from src.tools.fabrication.tubes import MIN_WEB_M, KitUnavailable, SparPlan
+from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, socket_axis_m
 
 __all__ = ["boom_parts", "component_plates", "cruise_motor_plate", "join_notes", "split_to_bed"]
@@ -58,6 +61,8 @@ DOUBLER_LABEL: Final[re.Pattern[str]] = re.compile(r"^(?P<base>.+)-D(?P<k>\d+)(?
 MAX_SPLIT_PIECES: Final[int] = 8
 SPAN_EPS_M: Final[float] = 1e-6  # a hole edge on a rail edge does not count as beside the rail
 CRUISE_MOTOR_NAME: Final[str] = "cruise_motor"
+BOOM_MOTOR_PLATE_LABEL: Final[str] = "MP-B"
+BOOM_MOTOR_CLAMP_LABEL: Final[str] = "MC-B"
 AREA_EPS_M2: Final[float] = 1e-10
 VOLUME_EPS_M3: Final[float] = 1e-12
 REACH_M: Final[float] = 10.0  # cutter half-planes extend this far past any part
@@ -158,13 +163,34 @@ def component_plates(
     return tuple(_tray(c, components, obstacles, layout, settings) for c in components if c.is_internal)
 
 
+def _boom_end_mount(motor: PlacedComponent, layout: AircraftLayout,
+                    settings: FabricationSettings) -> tuple[KitPart, ...]:
+    """`MP-B` on the tail boom's end face and the `MC-B` ring clamping it to the boom (module docstring)."""
+    boom = layout.tail_boom
+    if boom is None:
+        raise KitUnavailable(f"{BOOM_MOTOR_PLATE_LABEL}: a pusher motor needs a tail boom to mount on")
+    if motor.x_min < boom.x_end_m + settings.sheet_for("plate").thickness_m - FIT_EPS_M:
+        raise KitUnavailable(f"{BOOM_MOTOR_PLATE_LABEL}: the cruise motor reaches back into its mount plate")
+    hole_d = boom_tube(boom.diameter_m, settings).od_m + settings.fit_clearance_m
+    diameter = max(motor_plate_diameter_m(motor.size_m[1]), hole_d + 2.0 * CLAMP_CHEEK_M)
+    plate = motor_plate_outline(diameter).moved(bd.Location((motor.center_m[1], motor.center_m[2], 0.0)))
+    ring = drill(circle_face(Hole(boom.y_m, boom.z_m, diameter)), (Hole(boom.y_m, boom.z_m, hole_d),),
+                 BOOM_MOTOR_CLAMP_LABEL)
+    clamp_x = boom.x_end_m - settings.sheet_for("clamp").thickness_m
+    return (KitPart(BOOM_MOTOR_PLATE_LABEL, "plate", plate, station_location(boom.x_end_m)),
+            KitPart(BOOM_MOTOR_CLAMP_LABEL, "clamp", ring, station_location(clamp_x)))
+
+
 def cruise_motor_plate(
     components: Sequence[PlacedComponent], layout: AircraftLayout, settings: FabricationSettings
 ) -> tuple[KitPart, ...]:
-    """`MP-C` on the firewall's front face, centred on the cruise motor's axis (none without a cruise motor)."""
+    """`MP-C` on the firewall's front face, centred on the cruise motor's axis, or for a pusher the boom-end
+    `MP-B` + `MC-B` (none without a cruise motor)."""
     motor = next((c for c in components if c.name == CRUISE_MOTOR_NAME), None)
     if motor is None:
         return ()
+    if layout.propeller.is_pusher:
+        return _boom_end_mount(motor, layout, settings)
     front = firewall_station(layout, settings, components) - settings.sheet_for("plate").thickness_m
     if front < motor.x_max:
         raise KitUnavailable("MP-C: the cruise motor reaches back into its mount plate")

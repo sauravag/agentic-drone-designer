@@ -19,7 +19,7 @@ from src.tools.aero_cad import build, cad_packer, components, mass_properties, s
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_selig_dat  # noqa: E402
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
 from src.tools.fabrication import kit_export  # noqa: E402
-from src.tools.fabrication.kit import KitUnavailable  # noqa: E402
+from src.tools.fabrication.kit import BOOM_MOTOR_WIRING_NOTE, FOLDING_PROP_NOTE, KitUnavailable  # noqa: E402
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
 from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
@@ -986,8 +986,34 @@ def test_vtail_pusher_g1_balances_on_host(vtail_g1, tmp_path: Path) -> None:
     assert design.layout.propeller.diameter_m == bom.cruise_propeller.diameter_m
     assert packing.gear == _layout_gear(sizing, design.layout, "runway", packing.mass.cg_m[0])
     assert packing.clearance.tail_gap_m > 0 and packing.clearance.ground_m > 0
-    # the V-tail kit lands in Task 8: until then the packer falls back cleanly, not through the unexpected-error path
-    assert packing.kit is None and "V-tail" in packing.kit_warning and "unexpected" not in packing.kit_warning
+    # a kit failure falls back cleanly to the shell model, never through the unexpected-error path
+    assert packing.kit is not None or "unexpected" not in packing.kit_warning
+
+
+@pytest.mark.xfail(strict=True, reason="Task 8 open item: at the balanced station the packed crutch C-1 finds no clear "
+                   "bed-split joint within SPLIT_SEARCH_M (30 mm, a brief value); the V-tail parts themselves build")
+def test_balanced_vtail_pusher_gets_its_kit(vtail_g1, tmp_path: Path) -> None:
+    design = build.balance_design(*vtail_g1, _synthetic_analyser(tmp_path))
+    assert design.packing.kit is not None, design.packing.kit_warning
+    assert BOOM_MOTOR_WIRING_NOTE in design.packing.kit.notes and FOLDING_PROP_NOTE not in design.packing.kit.notes
+
+
+KIT_BUILDING_VTAIL_STATION: float = 0.40  # a station whose packed crutch splits within today's 30 mm window
+
+
+def test_packed_kit_notes_the_folding_prop_when_the_clearance_needs_one(vtail_g1, tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    real = cad_packer.prop_clearance
+
+    def folding(layout, gear, launch):
+        return _replace(real(layout, gear, launch), needs_folding_prop=True)
+
+    monkeypatch.setattr(cad_packer, "prop_clearance", folding)
+    sizing, bom = vtail_g1
+    lay = _pusher_layout(sizing, bom, KIT_BUILDING_VTAIL_STATION)
+    result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
+    assert result.kit is not None, result.kit_warning
+    assert result.kit.notes == (BOOM_MOTOR_WIRING_NOTE, FOLDING_PROP_NOTE)
 
 
 def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> None:

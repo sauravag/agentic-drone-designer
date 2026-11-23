@@ -8,14 +8,15 @@ an anti-rotation pin hole (the R31 rod); when the pin needs one, a pin boss doub
 root rib also carries the R36 wing bolt hole, and the captive-nut plate `NP-R` / `NP-L` is glued to its outboard face
 (`wing_retention`).
 Each tail surface's ribs carry its own stock spar, strength-sized at the root for the R35 tail load
-(`tail_spar_tubes`), wherever it fits the local depth.
+(`tail_spar_tubes`), wherever it fits the local depth. Tail ribs are placed in each panel's own frame
+(`panel_planform`, `panel_point`): a V-tail panel runs from the boom axis along its dihedral, its ribs square to it.
 """
 
 import dataclasses
 import logging
 import math
 from dataclasses import dataclass
-from typing import Callable, Final, Optional, Sequence
+from typing import Callable, Final, Mapping, Optional, Sequence
 
 import build123d as bd
 
@@ -28,10 +29,11 @@ from src.tools.aero_cad.layout import (
     TAIL_CONTROL_CHORD_FRACTION,
     TAIL_CONTROL_ETA,
     AircraftLayout,
+    PlacedTailSurface,
     SurfacePlanform,
 )
 from src.tools.aero_cad.structure import RIB_PITCH_M, SPAR_CHORD_STATION, STATION_EPS
-from src.tools.fabrication.kit import KitPart
+from src.tools.fabrication.kit import KitPart, Vec3
 from src.tools.fabrication.rib_outline import (
     Hole,
     airfoil_face,
@@ -52,10 +54,11 @@ from src.tools.fabrication.tubes import (
     MIN_WEB_M,
     KitUnavailable,
     SparPlan,
+    boom_tube,
     elliptic_root_moment_nm,
     smallest_passing,
     spar_member_at,
-    tail_surface_load_n,
+    tail_panel_load_n,
     usable_depth_m,
 )
 from src.tools.fabrication.wing_retention import (
@@ -89,6 +92,7 @@ SERVO_CHORD_FRACTION: Final[float] = 0.45  # plate centre, ahead of the hinge
 TAIL_MOUNT_MIN_WIDTH_M: Final[float] = 0.020
 RIB_ROTATION_DEG: Final[tuple[float, float, float]] = (90.0, 0.0, 0.0)  # local y -> up, local z -> -y
 FLAT_ROTATION_DEG: Final[tuple[float, float, float]] = (0.0, 0.0, 0.0)
+ANGLE_EPS_DEG: Final[float] = 1e-9  # a dihedral this close to 0 is a flat horizontal tail
 
 
 def spar_depth_at(surface: SurfacePlanform, airfoil: AirfoilShape, settings: FabricationSettings, *,
@@ -417,11 +421,59 @@ def _over_root_chord(layout: AircraftLayout, surface: SurfacePlanform) -> float:
     return max_skin_radius_m(layout, surface.x_le_root_m, surface.x_le_root_m + surface.root_chord_m)
 
 
+# ---------------------------------------------------------------------------------------- tail panels ---
+def has_root_block(surface: PlacedTailSurface) -> bool:
+    """A mirrored surface with dihedral (the V-tail) meets on the ply root block `VR-1` clamped on the boom; a flat
+    horizontal tail and a fin start from the boom or the fuselage skin (R20)."""
+    return surface.planform.is_symmetric and not math.isclose(surface.planform.dihedral_deg, 0.0, abs_tol=ANGLE_EPS_DEG)
+
+
+def panel_planform(surface: PlacedTailSurface) -> SurfacePlanform:
+    """The surface in its own panel frame, the parameter s running along the panel: a V-tail panel's dihedral is
+    taken out (its frame turns with it); a horizontal tail and a fin are their own frames."""
+    return dataclasses.replace(surface.planform, dihedral_deg=0.0) if has_root_block(surface) else surface.planform
+
+
+def tail_panels(surface: PlacedTailSurface) -> tuple[tuple[float, str], ...]:
+    """(side, name) of each panel: the fin `V`; a horizontal tail `HR`, `HL`; a V-tail `VR`, `VL` (rib prefixes
+    `<name>-`, spars `TS-<name>`, edge strips `LE-<name>` / `TE-<name>`)."""
+    if not surface.planform.is_symmetric:
+        return ((1.0, "V"),)
+    letter = "V" if has_root_block(surface) else "H"
+    return ((1.0, f"{letter}R"), (-1.0, f"{letter}L"))
+
+
+def panel_point(surface: PlacedTailSurface, side: float, s_m: float, x_m: float, w_m: float) -> Vec3:
+    """Aircraft point at chordwise x, panel station s and thickness offset w (up from the chord plane) of one panel.
+    A fin's s is its height; a horizontal tail's s is y (the planform's dihedral height, `z_at`); a V-tail panel
+    runs from the boom axis along (0, side cos G, sin G), its thickness direction (0, -side sin G, cos G)."""
+    plan = surface.planform
+    if not plan.is_symmetric:
+        return x_m, w_m, plan.z_root_m + s_m
+    if not has_root_block(surface):
+        return x_m, side * s_m, plan.z_at(s_m) + w_m
+    g = math.radians(plan.dihedral_deg)
+    return x_m, side * (s_m * math.cos(g) - w_m * math.sin(g)), plan.z_root_m + s_m * math.sin(g) + w_m * math.cos(g)
+
+
+def root_block_face_m(layout: AircraftLayout, settings: FabricationSettings) -> float:
+    """Distance from the boom axis to each face of the V-tail root block: the boom hole's radius plus a MIN_WEB_M
+    web (the block rings the boom)."""
+    boom = layout.tail_boom
+    if boom is None:
+        raise KitUnavailable("the V-tail root block needs a tail boom to clamp on")
+    return (boom_tube(boom.diameter_m, settings).od_m + settings.fit_clearance_m) / 2.0 + MIN_WEB_M
+
+
+def _root_radius_m(layout: AircraftLayout, surface: SurfacePlanform) -> float:
+    boom = layout.tail_boom.diameter_m / 2.0 if layout.tail_boom is not None else 0.0
+    return max(boom, _over_root_chord(layout, surface))
+
+
 def tail_root_radius_m(layout: AircraftLayout) -> float:
     """R20: the horizontal-tail root ribs start outside both the boom and the fuselage skin over the whole root
     chord (as the wing starts at the skin joint)."""
-    boom = layout.tail_boom.diameter_m / 2.0 if layout.tail_boom is not None else 0.0
-    return max(boom, _over_root_chord(layout, layout.htail))
+    return _root_radius_m(layout, layout.htail)
 
 
 def _boom_top_m(layout: AircraftLayout) -> Optional[float]:
@@ -429,56 +481,68 @@ def _boom_top_m(layout: AircraftLayout) -> Optional[float]:
     return None if boom is None else boom.z_m + boom.diameter_m / 2.0
 
 
+def _fin_has_mount(layout: AircraftLayout, fin: SurfacePlanform) -> bool:
+    top = _boom_top_m(layout)
+    return top is not None and top >= _over_root_chord(layout, fin)
+
+
 def has_fin_mount(layout: AircraftLayout) -> bool:
     """R20: `TM-1` exists only where the boom, not the fuselage skin, limits the fin root."""
-    top = _boom_top_m(layout)
-    return top is not None and top >= _over_root_chord(layout, layout.vtail)
+    return _fin_has_mount(layout, layout.vtail)
+
+
+def _fin_start_m(layout: AircraftLayout, fin: SurfacePlanform, settings: FabricationSettings) -> float:
+    skin, boom = _over_root_chord(layout, fin), _boom_top_m(layout)
+    if boom is None:
+        return skin - fin.z_root_m
+    if boom >= skin:  # the boom limits the fin root, which sits on TM-1
+        return boom + settings.sheet_for("plate").thickness_m - fin.z_root_m
+    return skin - fin.z_root_m
 
 
 def fin_start_m(layout: AircraftLayout, settings: FabricationSettings) -> float:
     """Height of the first fin rib above the fin root: on the fin mount `TM-1` on the boom (R9) where the boom is
     the limit, else on the fuselage skin over the root chord, bonded to the covering (R20)."""
-    skin, boom = _over_root_chord(layout, layout.vtail), _boom_top_m(layout)
-    if boom is None:
-        return skin - layout.vtail.z_root_m
-    if boom >= skin:  # `has_fin_mount`: the boom limits the fin root, which sits on TM-1
-        return boom + settings.sheet_for("plate").thickness_m - layout.vtail.z_root_m
-    return skin - layout.vtail.z_root_m
+    return _fin_start_m(layout, layout.vtail, settings)
 
 
-@dataclass(frozen=True)
-class TailSpars:
-    """Stock spar of each tail surface (R35): both horizontal-tail panels share `htail`; the fin has `fin`."""
+def panel_start_m(layout: AircraftLayout, surface: PlacedTailSurface, settings: FabricationSettings) -> float:
+    """Station of a tail panel's root rib: the fin start (height), the horizontal tail's root radius (y), or, along a
+    V-tail panel, the root block's face or the fuselage skin over the root chord, whichever is farther out."""
+    plan = surface.planform
+    if not plan.is_symmetric:
+        return _fin_start_m(layout, plan, settings)
+    if not has_root_block(surface):
+        return _root_radius_m(layout, plan)
+    return max(root_block_face_m(layout, settings), _over_root_chord(layout, plan))
 
-    htail: TubeStock
-    fin: TubeStock
 
-
-@dataclass(frozen=True)
-class TailSparLoads:
-    """Bending moment at each tail spar's root (N m): one horizontal-tail panel, and the fin."""
-
-    htail_nm: float
-    fin_nm: float
+TailSpars = Mapping[str, TubeStock]  # R35: each tail surface's stock spar (one for all its panels), by surface name
+TailSparLoads = Mapping[str, float]  # bending moment at each surface's panel spar root (N m), by surface name
 
 
 def tail_spar_loads(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> TailSparLoads:
-    """R35: each surface lifts q_max S CL_max (`tail_surface_load_n`), elliptically over its semi-span (each
-    horizontal-tail panel half of S_h, the fin all of S_v over its height); the spar's moment is taken where it
-    starts, at the tail root (R20) or the fin start."""
-    half_h = tail_surface_load_n(sizing, sizing.horizontal_tail_area_m2, settings) / 2.0
-    fin = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, settings)
-    ht, vt = layout.htail, layout.vtail
-    return TailSparLoads(htail_nm=elliptic_root_moment_nm(half_h, ht.semi_span_m, tail_root_radius_m(layout)),
-                         fin_nm=elliptic_root_moment_nm(fin, vt.semi_span_m, fin_start_m(layout, settings)))
+    """R35: each panel lifts q_max S_panel CL_max (`tail_panel_load_n`: half of a mirrored surface, all of a fin),
+    elliptically along it; the spar's moment is taken where it starts (`panel_start_m`)."""
+    return {t.name: elliptic_root_moment_nm(tail_panel_load_n(sizing, t, settings), t.planform.semi_span_m,
+                                            panel_start_m(layout, t, settings))
+            for t in layout.tail_surfaces}
 
 
-def _tail_spar_tube(name: str, station: str, surface: SurfacePlanform, root_m: float, moment_nm: float,
-                    airfoil: AirfoilShape, settings: FabricationSettings) -> TubeStock:
+def _surface_wording(surface: PlacedTailSurface) -> tuple[str, str]:
+    """(surface, station) names for messages."""
+    if not surface.planform.is_symmetric:
+        return "fin", "height"
+    return ("V-tail", "s") if has_root_block(surface) else ("horizontal tail", "y")
+
+
+def _tail_spar_tube(surface: PlacedTailSurface, root_m: float, moment_nm: float, airfoil: AirfoilShape,
+                    settings: FabricationSettings) -> TubeStock:
     """The smallest stock tube or rod that carries `moment_nm` at the root and fits the root's usable depth."""
-    depth = spar_depth_at(surface, airfoil, settings, root_doubler_m=None)(root_m)
+    depth = spar_depth_at(panel_planform(surface), airfoil, settings, root_doubler_m=None)(root_m)
     tube = smallest_passing(((moment_nm, 0.0),), depth, settings)
     if tube is None:
+        name, station = _surface_wording(surface)
         raise KitUnavailable(
             f"tail spar: no stock tube or rod carries the {name} load ({moment_nm:.1f} N·m) within its "
             f"{depth * 1e3:.1f} mm root depth at {station} = {root_m:.3f} m"
@@ -488,14 +552,11 @@ def _tail_spar_tube(name: str, station: str, surface: SurfacePlanform, root_m: f
 
 def tail_spar_tubes(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape,
                     settings: FabricationSettings) -> TailSpars:
-    """R35: each tail surface's spar, strength-sized at its root (`tail_spar_loads`). A spar runs out to where the
-    depth stops admitting it (`_tail_surface_ribs`); the moment falls outboard, so the root check covers it."""
+    """R35: each tail surface's panel spar, strength-sized at its root (`tail_spar_loads`). A spar runs out to where
+    the depth stops admitting it (`_tail_surface_ribs`); the moment falls outboard, so the root check covers it."""
     loads = tail_spar_loads(sizing, layout, settings)
-    htail = _tail_spar_tube("horizontal tail", "y", layout.htail, tail_root_radius_m(layout), loads.htail_nm,
-                            airfoil, settings)
-    fin = _tail_spar_tube("fin", "height", layout.vtail, fin_start_m(layout, settings), loads.fin_nm,
-                          airfoil, settings)
-    return TailSpars(htail=htail, fin=fin)
+    return {t.name: _tail_spar_tube(t, panel_start_m(layout, t, settings), loads[t.name], airfoil, settings)
+            for t in layout.tail_surfaces}
 
 
 def _tail_surface_ribs(
@@ -533,37 +594,74 @@ def tail_spar_hole(surface: SurfacePlanform, airfoil: AirfoilShape, tube: TubeSt
     return oblique_hole(surface, airfoil, SPAR_CHORD_STATION, span_m, mid, tube.od_m, t, settings)
 
 
-def _fin_mount(layout: AircraftLayout, settings: FabricationSettings) -> tuple[KitPart, ...]:
+def _fin_mount(layout: AircraftLayout, fin: SurfacePlanform) -> tuple[KitPart, ...]:
     """Ply saddle on top of the tail boom under the fin root (only where the boom is the limit, R20)."""
-    boom, vt = layout.tail_boom, layout.vtail
-    if boom is None or not has_fin_mount(layout):
+    boom = layout.tail_boom
+    if boom is None or not _fin_has_mount(layout, fin):
         return ()
     width = max(boom.diameter_m, TAIL_MOUNT_MIN_WIDTH_M)
-    outline = rect_face(0.0, -width / 2.0, vt.root_chord_m, width / 2.0)
-    location = bd.Location((vt.x_le_root_m, 0.0, boom.z_m + boom.diameter_m / 2.0), FLAT_ROTATION_DEG)
+    outline = rect_face(0.0, -width / 2.0, fin.root_chord_m, width / 2.0)
+    location = bd.Location((fin.x_le_root_m, 0.0, boom.z_m + boom.diameter_m / 2.0), FLAT_ROTATION_DEG)
     return (KitPart("TM-1", "plate", outline, location),)
+
+
+def _rib_top_m(index: int, span_m: float, thickness_m: float) -> float:
+    """Station of a right-panel rib's +y-most face: the root rib lies outboard of its station, the others centred."""
+    return span_m + (thickness_m if index == 0 else thickness_m / 2.0)
+
+
+def _panel_rib_location(surface: PlacedTailSurface, side: float, top_m: float, thickness_m: float) -> bd.Location:
+    """A mirrored panel's rib slab ending at station `top_m`, square to the panel: the right one extrudes inboard
+    from `top_m` (turned 90 + G about x), the left one, its mirror, outboard to `top_m` (turned 90 - G)."""
+    plan = surface.planform
+    dihedral = plan.dihedral_deg if has_root_block(surface) else 0.0
+    origin = top_m if side > 0 else top_m - thickness_m
+    return bd.Location(panel_point(surface, side, origin, plan.x_le_root_m, 0.0),
+                       (RIB_ROTATION_DEG[0] + side * dihedral, RIB_ROTATION_DEG[1], RIB_ROTATION_DEG[2]))
+
+
+def _mirrored_panel(part: KitPart, surface: PlacedTailSurface, side_from: str, side_to: str,
+                    settings: FabricationSettings) -> KitPart:
+    """Left-panel copy of a right V-tail panel part: same outline, placed so its solid is the exact y-mirror."""
+    pos, g = part.location.position, math.radians(surface.planform.dihedral_deg)
+    top = pos.Y * math.cos(g) + (pos.Z - surface.planform.z_root_m) * math.sin(g)  # the origin's panel station
+    location = _panel_rib_location(surface, -1.0, top, settings.sheet_for(part.family).thickness_m)
+    return dataclasses.replace(part, label=part.label.replace(side_from, side_to, 1), location=location)
+
+
+def _surface_ribs(layout: AircraftLayout, surface: PlacedTailSurface, airfoil: AirfoilShape, tube: TubeStock,
+                  settings: FabricationSettings) -> list[KitPart]:
+    """One tail surface's ribs: the fin's `V-…` extrude up from their station; a mirrored surface's right panel
+    (`HR-…` / `VR-…`) then its left mirror (`HL-…` / `VL-…`)."""
+    plan, start = panel_planform(surface), panel_start_m(layout, surface, settings)
+    t_rib = settings.sheet_for("rib").thickness_m
+    panels = tail_panels(surface)
+    if not plan.is_symmetric:
+        def fin_at(index: int, h: float) -> bd.Location:
+            return bd.Location((plan.x_le_root_m, 0.0, plan.z_root_m + h), FLAT_ROTATION_DEG)
+        return _tail_surface_ribs(f"{panels[0][1]}-", plan, fin_at, start, airfoil, tube, settings)
+
+    def right_at(index: int, s: float) -> bd.Location:
+        return _panel_rib_location(surface, 1.0, _rib_top_m(index, s, t_rib), t_rib)
+
+    (_, right_name), (_, left_name) = panels
+    right = _tail_surface_ribs(f"{right_name}-", plan, right_at, start, airfoil, tube, settings)
+    if has_root_block(surface):
+        left = [_mirrored_panel(p, surface, f"{right_name}-", f"{left_name}-", settings) for p in right]
+    else:
+        left = [_mirrored(p, f"{right_name}-", f"{left_name}-", settings) for p in right]
+    return [*right, *left]
 
 
 def tail_ribs(layout: AircraftLayout, airfoil: AirfoilShape, spars: TailSpars,
               settings: FabricationSettings) -> tuple[KitPart, ...]:
-    """Horizontal-tail ribs `HR-…`/`HL-…`, fin ribs `V-…` (split at the hinge) and, where the boom limits the fin
-    root, the fin mount `TM-1` (R20). Each surface's ribs carry its own spar from `spars` (`tail_spar_tubes`).
+    """Each tail surface's ribs in layout order (horizontal tail `HR-…`/`HL-…`, fin `V-…`, V-tail `VR-…`/`VL-…`,
+    split at the hinge), each carrying its surface's spar from `spars` (`tail_spar_tubes`), then, where the boom
+    limits a fin root, the fin mount `TM-1` (R20).
 
     `airfoil` is the tail section (`layout.TAIL_AIRFOIL_NAME` for OpenVSP-built tails). Fin ribs start on top of
-    the mount plate, or on the fuselage skin.
+    the mount plate, or on the fuselage skin; V-tail panels start at the root block's faces (or the skin).
     """
-    radius = tail_root_radius_m(layout)
-    ht, vt = layout.htail, layout.vtail
-    t_rib = settings.sheet_for("rib").thickness_m
-    fin_start = fin_start_m(layout, settings)
-
-    def htail_at(index: int, y: float) -> bd.Location:
-        return _rib_location(ht.x_le_root_m, y, ht.z_at(y), t_rib, index == 0)
-
-    def fin_at(index: int, h: float) -> bd.Location:
-        return bd.Location((vt.x_le_root_m, 0.0, vt.z_root_m + h), FLAT_ROTATION_DEG)
-
-    right = _tail_surface_ribs("HR-", ht, htail_at, radius, airfoil, spars.htail, settings)
-    fin = _tail_surface_ribs("V-", vt, fin_at, fin_start, airfoil, spars.fin, settings)
-    left = [_mirrored(p, "HR-", "HL-", settings) for p in right]
-    return (*right, *left, *fin, *_fin_mount(layout, settings))
+    ribs = [p for t in layout.tail_surfaces for p in _surface_ribs(layout, t, airfoil, spars[t.name], settings)]
+    mounts = [m for t in layout.tail_surfaces if not t.planform.is_symmetric for m in _fin_mount(layout, t.planform)]
+    return (*ribs, *mounts)

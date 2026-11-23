@@ -45,7 +45,7 @@ from src.tools.aero_cad.layout import AircraftLayout, PropellerStation
 from src.tools.aero_cad.mesh_export import export_viewer_model
 from src.tools.aero_cad.structure import COMPOSITE_DENSITY_KG_M3, WingStructure, build_wing_structure
 from src.tools.fabrication.build_kit import MAX_DOD_GROUP, build_kit
-from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart
+from src.tools.fabrication.kit import Kit, KitPart, KitUnavailable, TubePart, with_clearance_notes
 from src.tools.fabrication.kit_export import KitFiles, KitSolids, export_kit, kit_solid_sets, remove_kit_files
 from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
@@ -414,6 +414,11 @@ def _final_mass(sizing: SizingOutput, layout: AircraftLayout, final: _Airframe,
     return (*final.kit_items, *_gear_items(sizing, layout, gear), *(c.mass_item() for c in components)), gear
 
 
+def _noted_kit(kit: Optional[Kit], clearance: PropClearance) -> Optional[Kit]:
+    """The kit with the folding-propeller build note when the packed propeller needs one (belly landing)."""
+    return None if kit is None else with_clearance_notes(kit, clearance.needs_folding_prop)
+
+
 def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, layout: AircraftLayout,
                 oml_step: Path, settings: FabricationSettings = DEFAULT_FABRICATION) -> PackingResult:
     """Place every part, slide battery + tray for static margin, build the mass properties.
@@ -451,7 +456,7 @@ def pack_layout(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutpu
         containment_violations=parts.containment_violations(components, oml),
         shell_areal_density_kg_m2=final.shell_areal_density_kg_m2, oml=oml, structure=final.structure,
         propeller=layout.propeller, gear=gear, clearance=clearance,
-        kit=final.kit, kit_warning=final.kit_warning, mass_items=mass_items, settings=settings,
+        kit=_noted_kit(final.kit, clearance), kit_warning=final.kit_warning, mass_items=mass_items, settings=settings,
         kit_items=final.kit_items,
     )
     if not result.is_balanced:

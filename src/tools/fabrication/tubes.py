@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Callable, Final, Optional, Sequence
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.schemas.state import SizingOutput
-from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M, QUARTER_CHORD, AircraftLayout
+from src.tools.aero_cad.layout import MIN_BOOM_DIAMETER_M, QUARTER_CHORD, AircraftLayout, PlacedTailSurface
 from src.tools.aero_cad.structure import RIB_PITCH_M, SPAR_CHORD_STATION
 from src.tools.sizing.aero_model import air_properties
 from src.units import G0
@@ -318,35 +318,71 @@ def smallest_passing(cases: tuple[LoadCase, ...], depth_m: float,
     return next((t for t in stock if t.od_m <= depth_m + FIT_EPS_M and _passes(t, cases, settings)), None)
 
 
-def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings) -> LoadCase:
-    """(moment, torque) on the tail boom (R26, loads per R35): q_max S CL_max on each tail; the horizontal and
-    vertical forces' resultant bends the boom over the arm from its root (where the cone first holds it,
-    conservative) to the tails' aerodynamic centre, and the fin force twists it at its centre-of-pressure height
-    (the fin MAC station) above the boom axis. (0, 0) when the tail sits on the fuselage."""
+@dataclass(frozen=True)
+class BoomTipMass:
+    """A mass carried at the tail boom's end (a boom-end pusher's motor and propeller): kg, and its CG station x."""
+
+    mass_kg: float
+    x_m: float
+
+
+def tail_panel_count(surface: PlacedTailSurface) -> int:
+    """Panels of a tail surface: two for a mirrored one (H-tail, V-tail), one for a fin."""
+    return 2 if surface.planform.is_symmetric else 1
+
+
+def tail_panel_load_n(sizing: SizingOutput, surface: PlacedTailSurface, settings: FabricationSettings) -> float:
+    """R35 load of one panel, normal to its plane: q_max S_panel CL_max."""
+    return tail_surface_load_n(sizing, surface.planform.area_m2 / tail_panel_count(surface), settings)
+
+
+def _side_lever_m(surface: PlacedTailSurface, boom_z_m: float) -> float:
+    """Distance from the boom axis to the line of a panel's lift (normal to the panel, through its MAC station): the
+    panel rises from (0, z_root) along its dihedral; a fin's lever is its MAC height above the axis."""
+    plan, gamma = surface.planform, math.radians(surface.dihedral_deg)
+    return abs(plan.y_mac_m + (plan.z_root_m - boom_z_m) * math.sin(gamma))
+
+
+def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings,
+                    tip_mass: Optional[BoomTipMass] = None) -> LoadCase:
+    """(moment, torque) on the tail boom (R26, loads per R35): each tail panel lifts L = q_max S_panel CL_max normal
+    to its plane. Its components L |cos G| (pitch) and L |sin G| (side) are summed over the panels, and their
+    resultant bends the boom over the arm from its root (where the cone first holds it, conservative) to the tails'
+    aerodynamic centre; a boom-end `tip_mass` adds its weight at n_limit g over its own arm. The side components
+    twist the boom at each panel's lift line (its MAC station; a fin's MAC height) off the boom axis. (0, 0) when
+    the tail sits on the fuselage."""
     boom = layout.tail_boom
     if boom is None:
         return 0.0, 0.0
-    h_force = tail_surface_load_n(sizing, sizing.horizontal_tail_area_m2, settings)
-    v_force = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, settings)
-    arm = max(layout.htail.x_ac_m, layout.vtail.x_ac_m) - boom.x_start_m
-    height = layout.vtail.z_root_m + layout.vtail.y_mac_m - boom.z_m
-    return math.hypot(h_force, v_force) * max(arm, 0.0), v_force * max(height, 0.0)
+    pitch = side = torque = 0.0
+    for surface in layout.tail_surfaces:
+        load = tail_panel_count(surface) * tail_panel_load_n(sizing, surface, settings)
+        gamma = math.radians(surface.dihedral_deg)
+        pitch += load * abs(math.cos(gamma))
+        side += load * abs(math.sin(gamma))
+        torque += load * abs(math.sin(gamma)) * _side_lever_m(surface, boom.z_m)
+    arm = max(t.planform.x_ac_m for t in layout.tail_surfaces) - boom.x_start_m
+    moment = math.hypot(pitch, side) * max(arm, 0.0)
+    if tip_mass is not None:
+        moment += tip_mass.mass_kg * G0 * settings.n_limit * max(tip_mass.x_m - boom.x_start_m, 0.0)
+    return moment, torque
 
 
-def tail_boom_ratio(tube: TubeStock, sizing: SizingOutput, layout: AircraftLayout,
-                    settings: FabricationSettings) -> float:
-    return tube_ratio(tube, (tail_boom_loads(sizing, layout, settings),), settings)
+def tail_boom_ratio(tube: TubeStock, sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings,
+                    tip_mass: Optional[BoomTipMass] = None) -> float:
+    return tube_ratio(tube, (tail_boom_loads(sizing, layout, settings, tip_mass),), settings)
 
 
-def tail_boom_check(tube: TubeStock, sizing: SizingOutput, layout: AircraftLayout,
-                    settings: FabricationSettings) -> None:
+def tail_boom_check(tube: TubeStock, sizing: SizingOutput, layout: AircraftLayout, settings: FabricationSettings,
+                    tip_mass: Optional[BoomTipMass] = None) -> None:
     """Raises KitUnavailable when the stock tail boom (R13: the largest tube within the layout diameter) fails the
-    tail loads' bending + torsion interaction."""
-    ratio = tail_boom_ratio(tube, sizing, layout, settings)
+    tail loads' (and any boom-end motor's) bending + torsion interaction."""
+    ratio = tail_boom_ratio(tube, sizing, layout, settings, tip_mass)
     if ratio > 1.0 + RATIO_EPS:
-        moment, torque = tail_boom_loads(sizing, layout, settings)
+        moment, torque = tail_boom_loads(sizing, layout, settings, tip_mass)
+        motor = "" if tip_mass is None else f" and the {tip_mass.mass_kg * 1e3:.0f} g boom-end motor"
         raise KitUnavailable(
-            f"tail boom {tube.od_m * 1e3:.0f}x{tube.id_m * 1e3:.0f} mm is too weak for the tail loads "
+            f"tail boom {tube.od_m * 1e3:.0f}x{tube.id_m * 1e3:.0f} mm is too weak for the tail loads{motor} "
             f"({moment:.0f} N·m bending, {torque:.0f} N·m torsion; interaction {ratio:.2f} > 1)"
         )
 

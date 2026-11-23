@@ -23,9 +23,13 @@ def _synthetic_aero(layout: AircraftLayout, np_offset_mac: float = 0.25) -> Aero
     )
 
 
-def _fitted_layout(sizing: SizingOutput, bom: SelectedBOM, station: float = 0.30) -> AircraftLayout:
+def _fitted_layout(sizing: SizingOutput, bom: SelectedBOM, station: float = 0.30,
+                   with_propeller: bool = False) -> AircraftLayout:
+    """The pod as build.py sizes it; `with_propeller` places the BOM's propeller (a boom-end pusher needs it)."""
     diameter: float = max(sizing.fuselage_diameter_m, kit_fuselage_diameter_m(sizing, bom))  # as build.py sizes it
-    return layout_from_sizing(sizing, station, diameter, components.required_fuselage_length_m(sizing, bom, diameter))
+    propeller: float = bom.cruise_propeller.diameter_m if with_propeller else 0.0
+    return layout_from_sizing(sizing, station, diameter, components.required_fuselage_length_m(sizing, bom, diameter),
+                              propeller_diameter_m=propeller)
 
 
 def _synthetic_oml(layout: AircraftLayout, path: Path) -> Path:

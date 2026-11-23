@@ -16,6 +16,12 @@
   stops one rib-sheet thickness clear of it; the boom hole must still keep MIN_WEB_M there.
 - Motor plates `MP-1…4`: discs on top of each lift boom under every rotor hub, with a centre mark hole and a slotted
   cross for 16 / 19 / 25 mm bolt circles; they sit under the motor (`vtol_motor_k` when given).
+- V-tail root block `VR-1` (a mirrored tail surface with dihedral): one 3 mm clamp plate in the yz-plane, threaded on
+  the tail boom (hole = boom OD + fit clearance), centred chordwise on where the panel spars meet it. Its two upper
+  edges are the faces at +-G, square to each panel's span direction at `panel_start_m` from the boom axis: each
+  panel's root rib is glued to one, and its spar bottoms out on it there (the root rib's hole is the spar's socket).
+  Below the faces it keeps CLAMP_CHEEK_M of material beside and under the boom hole, and wide enough that each face
+  carries its spar's end (radius + MIN_WEB_M beyond it).
 """
 
 import math
@@ -26,14 +32,24 @@ import build123d as bd
 
 from src.schemas.fabrication import FabricationSettings, TubeStock
 from src.tools.aero_cad.components import PlacedComponent
-from src.tools.aero_cad.layout import AircraftLayout, Boom
+from src.tools.aero_cad.airfoil_geometry import load_airfoil
+from src.tools.aero_cad.layout import TAIL_AIRFOIL_NAME, AircraftLayout, Boom, PlacedTailSurface
+from src.tools.aero_cad.structure import SPAR_CHORD_STATION
 from src.tools.fabrication.fuselage_parts import socket_axis_m, station_location
 from src.tools.fabrication.kit import KitPart, TubePart, TubeRole
-from src.tools.fabrication.rib_outline import Hole, circle_face, drill, keeps_web, largest_face, rect_face
+from src.tools.fabrication.rib_outline import Hole, camber_point, circle_face, drill, keeps_web, largest_face, rect_face
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube, lift_boom_tube
-from src.tools.fabrication.wing_parts import RibKeepOut, spar_hole_m, wing_rib_stations
+from src.tools.fabrication.wing_parts import (
+    RibKeepOut,
+    TailSpars,
+    has_root_block,
+    panel_start_m,
+    spar_hole_m,
+    wing_rib_stations,
+)
 
 CLAMP_LABELS: Final[tuple[str, ...]] = ("BC-R1", "BC-R2", "BC-L1", "BC-L2")
+ROOT_BLOCK_LABEL: Final[str] = "VR-1"
 CLAMP_CHEEK_M: Final[float] = 0.005  # plate material beside and below the boom hole
 MOTOR_CENTRE_HOLE_M: Final[float] = 0.003  # centre mark hole
 MOTOR_BOLT_CIRCLES_M: Final[tuple[float, ...]] = (0.016, 0.019, 0.025)  # common motor bolt patterns
@@ -192,6 +208,49 @@ def _clamp_plates(clamp: _Clamp, settings: FabricationSettings) -> list[KitPart]
     outline = _clamp_outline(clamp, f"BC-{name}1")
     return [KitPart(f"BC-{name}1", "clamp", outline, station_location(clamp.x_m - t)),
             KitPart(f"BC-{name}2", "clamp", outline, station_location(clamp.x_m))]
+
+
+# -------------------------------------------------------------------------------------- V-tail root ---
+def _root_block_outline(layout: AircraftLayout, surface: PlacedTailSurface, spar: TubeStock, hole_d_m: float,
+                        settings: FabricationSettings) -> bd.Face:
+    """Local X = aircraft y, local Y = z: the faces p . (+-cos G, sin G) = face from the root point (0, z_root), the
+    sides and bottom CLAMP_CHEEK_M round the boom hole (sides wide enough to carry each spar end), the boom hole."""
+    boom, plan = layout.tail_boom, surface.planform
+    g, face = math.radians(plan.dihedral_deg), panel_start_m(layout, surface, settings)
+    half_spar = (spar.od_m + settings.fit_clearance_m) / 2.0
+    side = max(hole_d_m / 2.0 + CLAMP_CHEEK_M, face * math.cos(g) + (half_spar + MIN_WEB_M) * math.sin(g))
+    bottom = boom.z_m - hole_d_m / 2.0 - CLAMP_CHEEK_M
+    apex = plan.z_root_m + face / math.sin(g)
+    shoulder = plan.z_root_m + (face - side * math.cos(g)) / math.sin(g)
+    if shoulder <= bottom:
+        raise KitUnavailable(f"{ROOT_BLOCK_LABEL}: the V-tail faces at {plan.dihedral_deg:.1f} deg leave no room "
+                             f"for the boom clamp")
+    corners = [(0.0, apex, 0.0), (side, shoulder, 0.0), (side, bottom, 0.0), (-side, bottom, 0.0),
+               (-side, shoulder, 0.0)]
+    plain = bd.Face(bd.Wire.make_polygon(corners, close=True))
+    hole = Hole(0.0, boom.z_m, hole_d_m)  # a centre boom (`tail_root_blocks`)
+    if not keeps_web(plain, hole, []):
+        raise KitUnavailable(f"{ROOT_BLOCK_LABEL}: no {MIN_WEB_M * 1e3:.0f} mm web round the boom hole")
+    return drill(plain, (hole,), ROOT_BLOCK_LABEL)
+
+
+def tail_root_blocks(layout: AircraftLayout, spars: TailSpars, settings: FabricationSettings) -> tuple[KitPart, ...]:
+    """`VR-1` for a V-tail (none for a horizontal tail and fin): see the module docstring."""
+    surfaces = [t for t in layout.tail_surfaces if has_root_block(t)]
+    if not surfaces:
+        return ()
+    if len(surfaces) > 1 or layout.tail_boom is None:
+        raise KitUnavailable(f"{ROOT_BLOCK_LABEL}: the kit has a root block for one V-tail on a centre boom only")
+    surface, boom = surfaces[0], layout.tail_boom
+    plan, t = surface.planform, settings.sheet_for("clamp").thickness_m
+    hole_d = _hole_d(boom_tube(boom.diameter_m, settings), settings)
+    start = panel_start_m(layout, surface, settings)
+    spar_x = plan.x_le_root_m + camber_point(load_airfoil(TAIL_AIRFOIL_NAME), plan.chord_at(start),
+                                             SPAR_CHORD_STATION)[0]
+    if not (boom.x_start_m <= spar_x - t / 2.0 and spar_x + t / 2.0 <= boom.x_end_m):
+        raise KitUnavailable(f"{ROOT_BLOCK_LABEL}: the V-tail root at x = {spar_x:.3f} m is off the tail boom")
+    outline = _root_block_outline(layout, surface, spars[surface.name], hole_d, settings)
+    return (KitPart(ROOT_BLOCK_LABEL, "clamp", outline, station_location(spar_x - t / 2.0)),)
 
 
 # ------------------------------------------------------------------------------------------- tubes ---

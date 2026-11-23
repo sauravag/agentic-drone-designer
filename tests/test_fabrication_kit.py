@@ -2,7 +2,9 @@
 
 import dataclasses
 import math
+import re
 
+import build123d as bd
 import numpy as np
 import pytest
 
@@ -10,19 +12,28 @@ from src.schemas.fabrication import DEFAULT_FABRICATION, TubeStock
 from src.tools.aero_cad import components
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.airfoil_geometry import load_airfoil
+from src.tools.aero_cad.clearance import prop_clearance
 from src.tools.aero_cad.layout import FUSELAGE_PROFILE, TAIL_AIRFOIL_NAME, fuselage_radius_at
 from src.tools.fabrication.build_kit import MITRE_LABELS, _covering, build_kit, socket_end_m, spar_tubes
 from src.tools.fabrication.fittings import join_notes
 from src.tools.fabrication.fuselage_parts import STRINGER_COUNT, former_stations, socket_axis_m
-from src.tools.fabrication.kit import Kit, KitUnavailable, TubePart
+from src.tools.fabrication.kit import (
+    BOOM_MOTOR_WIRING_NOTE,
+    FOLDING_PROP_NOTE,
+    Kit,
+    KitUnavailable,
+    TubePart,
+    with_clearance_notes,
+)
+from src.tools.fabrication.kit_export import build_sheet_text
 from src.tools.fabrication.kit_mass import kit_mass_items, kit_mass_kg, residual_gear_item, tube_item
 from src.tools.fabrication.tubes import SparPlan, SparSegment
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at, spar_member_at
 from src.tools.fabrication.wing_stiffness import dbox_material_m2, dbox_web_x_m
-from src.tools.gear import GEAR_FRACTION
+from src.tools.gear import GEAR_FRACTION, GearGeometry
 from src.tools.sizing.mass_model import sizing_output_gear
-from tests.cad_helpers import part_solid, tube_solid
-from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components
+from tests.cad_helpers import _fitted_layout, hole_diameters, part_solid, tube_solid
+from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components, _test_battery
 
 SETTINGS = DEFAULT_FABRICATION
 MASS_REL = 1e-6
@@ -414,3 +425,217 @@ def test_kit_without_dbox_has_no_dbox_covering(g2_kit_inputs, g2_kit):
     # Assert
     assert "dbox" not in {c.kind for c in covering} and plain.dbox_area_m2 == 0.0
     assert "dbox_wing" not in {i.name for i in kit_mass_items(plain, SETTINGS)}
+
+
+# ------------------------------------------------------------------------------ V-tail pusher kit (Task 8) ---
+VTAIL_WING_STATIONS: dict[str, float] = {"g1": 0.45, "g2": 0.35}  # the balanced stations the phase-2 probe found
+ANGLE_TOL_DEG = 0.5
+TOUCH_M = 1e-6  # glued faces: solids meet within this distance
+
+
+@dataclasses.dataclass(frozen=True)
+class VTailCase:
+    sizing: object
+    bom: object
+    layout: object
+    placed: tuple
+    kit: Kit
+
+
+def _vtail_placed(bom, layout) -> tuple:
+    battery = _test_battery(layout).at_x(socket_axis_m(layout, 0.0)[0])
+    return (components.payload(bom, layout), components.cruise_motor(bom, layout), battery,
+            *components.vtol_motors(bom, layout))
+
+
+# The G2 V-tail (21.5 kg, heavier than its 19.9 kg tractor) fails two *wing* rules with today's stock: the R31
+# anti-rotation pin (300 N on the 5 mm rod with bosses) and, with a 6 mm rod, aileron reversal (34.5 vs 35.4 m/s with
+# the 1.5 mm D-box). Its V-tail parts are exercised with that wing stock added (6 mm rod, 3 mm D-box sheet).
+G2_WING_STOCK = SETTINGS.model_copy(update={"rods_m": (*SETTINGS.rods_m, 0.006), "dbox_sheet_thickness_m": 0.003})
+VTAIL_SETTINGS = {"g1": SETTINGS, "g2": G2_WING_STOCK}
+
+
+def _vtail_layout(design, case: str):
+    return _fitted_layout(*design, VTAIL_WING_STATIONS[case], with_propeller=True)
+
+
+def _vtail_case(design, case: str) -> VTailCase:
+    sizing, bom = design
+    layout = _vtail_layout(design, case)
+    placed = _vtail_placed(bom, layout)
+    kit = build_kit(sizing, layout, load_airfoil(layout.airfoil), placed, VTAIL_SETTINGS[case])
+    return VTailCase(sizing, bom, layout, placed, kit)
+
+
+@pytest.fixture(scope="module")
+def vtail_kits(vtail_g1, vtail_g2) -> dict[str, VTailCase]:
+    return {"g1": _vtail_case(vtail_g1, "g1"), "g2": _vtail_case(vtail_g2, "g2")}
+
+
+def test_g2_vtail_kit_needs_more_wing_pin_stock_than_today(vtail_g2):
+    """Documents today's limit (a wing rule, not the tail): the heavier G2 V-tail's root torque overloads the pin."""
+    layout = _vtail_layout(vtail_g2, "g2")
+    with pytest.raises(KitUnavailable, match="anti-rotation pin"):
+        build_kit(vtail_g2[0], layout, load_airfoil(layout.airfoil), _vtail_placed(vtail_g2[1], layout), SETTINGS)
+
+
+def _vtail_surface(layout):
+    return next(t for t in layout.tail_surfaces if t.name == "vtail_pair")
+
+
+def test_tractor_kit_unchanged_after_generalisation():
+    """The tractor kit (parts, positions, labels, tubes) still matches its golden snapshot after the tail
+    generalisation (the same gate as tests/test_layout_golden.py)."""
+    from tests.golden import GOLDEN_DIR, _kit_text
+
+    for case in ("g1", "g2"):
+        assert _kit_text(case) == (GOLDEN_DIR / case / "kit.json").read_text(), case
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_vtail_kit_has_two_panels_at_dihedral(case, vtail_kits):
+    c = vtail_kits[case]
+    spars = [t for t in c.kit.tubes if t.role == "tail_spar"]
+    assert sorted(t.label for t in spars) == ["TS-VL", "TS-VR"]
+    gamma = _vtail_surface(c.layout).dihedral_deg
+    for t in spars:
+        assert math.degrees(math.atan2(abs(t.axis[2]), abs(t.axis[1]))) == pytest.approx(gamma, abs=ANGLE_TOL_DEG)
+    by = {t.label: t for t in spars}
+    right, left = by["TS-VR"], by["TS-VL"]
+    assert right.axis[1] > 0 > left.axis[1] and right.axis[2] > 0 and left.axis[2] > 0
+    assert left.start_m == pytest.approx((right.start_m[0], -right.start_m[1], right.start_m[2]), abs=1e-9)
+    assert left.tube == right.tube and left.length_m == pytest.approx(right.length_m, abs=1e-9)
+    labels = {p.label for p in c.kit.parts}
+    assert {"VR-1", "VR-01", "VL-01"} <= labels
+    assert not labels & {"HR-01", "HL-01", "V-01", "TM-1"}
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_vtail_ribs_stand_square_to_their_panel(case, vtail_kits):
+    """Each panel's ribs lie in planes normal to its span direction (0, +-cos G, sin G); the left panel mirrors the
+    right one."""
+    c = vtail_kits[case]
+    g = math.radians(_vtail_surface(c.layout).dihedral_deg)
+    parts = {p.label: p for p in c.kit.parts}
+    right = sorted(label for label in parts if re.fullmatch(r"VR-\d\d", label))
+    assert right and right == sorted(label.replace("VL-", "VR-") for label in parts if re.fullmatch(r"VL-\d\d", label))
+    for label in right:
+        for name, side in ((label, 1.0), (label.replace("VR-", "VL-"), -1.0)):
+            loc = parts[name].location
+            normal = np.array(tuple((loc * bd.Location((0.0, 0.0, 1.0))).position - loc.position))
+            assert abs(np.dot(normal, (0.0, side * math.cos(g), math.sin(g)))) == pytest.approx(1.0, abs=1e-9), name
+        mirrored = part_solid(parts[label], SETTINGS).mirror(bd.Plane.XZ).bounding_box()
+        box = part_solid(parts[label.replace("VR-", "VL-")], SETTINGS).bounding_box()
+        assert tuple(mirrored.min) == pytest.approx(tuple(box.min), abs=1e-9)
+        assert tuple(mirrored.max) == pytest.approx(tuple(box.max), abs=1e-9)
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_vtail_root_block_rings_the_boom_and_carries_both_root_ribs(case, vtail_kits):
+    """`VR-1` is a ply clamp threaded on the tail boom; each panel's root rib is glued to one of its two faces at
+    +-G, and each panel spar starts at that face."""
+    c = vtail_kits[case]
+    parts, tubes = {p.label: p for p in c.kit.parts}, {t.label: t for t in c.kit.tubes}
+    block = parts["VR-1"]
+    boom = tubes["TB-1"]
+    assert block.family == "clamp"
+    assert hole_diameters(block.outline) == pytest.approx([boom.tube.od_m + SETTINGS.fit_clearance_m], abs=1e-9)
+    solid = part_solid(block, SETTINGS)
+    for rib, spar in (("VR-01", "TS-VR"), ("VL-01", "TS-VL")):
+        assert solid.distance_to(part_solid(parts[rib], SETTINGS)) < TOUCH_M, rib
+        assert solid.distance_to(tube_solid(tubes[spar])) < SETTINGS.sheet_for("rib").thickness_m, spar
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_vtail_kit_parts_and_tubes_do_not_intersect(case, vtail_kits):
+    c = vtail_kits[case]
+    solids = [(p.label, part_solid(p, SETTINGS)) for p in c.kit.parts]
+    solids += [(_mitre_name(t.label), tube_solid(t)) for t in c.kit.tubes]
+    motor = next(p for p in c.placed if p.name == "cruise_motor")
+    _assert_no_intersections([*solids, ("cruise_motor", motor.solid())])
+
+
+def test_vtail_kit_parts_fit_the_bed(vtail_kits):
+    for c in vtail_kits.values():
+        for part in c.kit.parts:
+            size = part.outline.bounding_box().size
+            long, short = max(size.X, size.Y), min(size.X, size.Y)
+            assert long <= USABLE_LONG_M + 1e-9 and short <= USABLE_SHORT_M + 1e-9, part.label
+
+
+def test_vtail_edge_strips_film_and_mass(vtail_kits):
+    c = vtail_kits["g1"]
+    for kind in ("le", "te"):
+        strips = sorted(s.label for s in c.kit.linear if s.kind == kind)
+        assert strips == sorted(f"{kind.upper()}-{s}" for s in ("WR", "WL", "VR", "VL"))
+    names = {i.name for i in kit_mass_items(c.kit, SETTINGS)}
+    assert {"film_wing", "film_vtail_pair", "VR-1", "MP-B", "MC-B"} <= names
+    assert not names & {"film_htail", "film_vtail"}
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_boom_end_motor_plate_replaces_nose_plate(case, vtail_kits):
+    labels = {p.label for p in vtail_kits[case].kit.parts}
+    assert "MP-B" in labels and "MC-B" in labels and "MP-C" not in labels
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_boom_end_motor_plate_sits_on_the_boom_end_ahead_of_the_motor(case, vtail_kits):
+    """`MP-B` covers the boom's end face, on the boom axis; the `MC-B` ring clamps it on the boom just ahead."""
+    c = vtail_kits[case]
+    parts, boom = {p.label: p for p in c.kit.parts}, c.layout.tail_boom
+    t = SETTINGS.sheet_for("plate").thickness_m
+    plate, clamp = parts["MP-B"], parts["MC-B"]
+    assert plate.location.position.X == pytest.approx(boom.x_end_m, abs=1e-9)
+    assert clamp.location.position.X == pytest.approx(boom.x_end_m - SETTINGS.sheet_for("clamp").thickness_m,
+                                                     abs=1e-9)
+    for part in (plate, clamp):
+        centre = part_solid(part, SETTINGS).bounding_box().center()
+        assert (centre.Y, centre.Z) == pytest.approx((boom.y_m, boom.z_m), abs=1e-6), part.label
+    od = next(tb for tb in c.kit.tubes if tb.label == "TB-1").tube.od_m
+    assert hole_diameters(clamp.outline) == pytest.approx([od + SETTINGS.fit_clearance_m], abs=1e-9)
+    motor = next(p for p in c.placed if p.name == "cruise_motor")
+    assert motor.x_min >= boom.x_end_m + t - 1e-9
+
+
+def test_boom_end_motor_reaching_back_into_its_plate_is_unavailable(vtail_kits):
+    c = vtail_kits["g1"]
+    motor = next(p for p in c.placed if p.name == "cruise_motor")
+    forward = dataclasses.replace(motor, center_m=(c.layout.tail_boom.x_end_m, *motor.center_m[1:]))
+    placed = tuple(forward if p is motor else p for p in c.placed)
+    with pytest.raises(KitUnavailable, match="MP-B: the cruise motor reaches back into its mount plate"):
+        build_kit(c.sizing, c.layout, load_airfoil(c.layout.airfoil), placed, SETTINGS)
+
+
+def test_boom_end_pusher_notes_the_motor_wiring(vtail_kits, g1_kit):
+    assert BOOM_MOTOR_WIRING_NOTE in vtail_kits["g1"].kit.notes
+    assert g1_kit.notes == ()  # the tractor's build sheet is unchanged
+
+
+def test_folding_prop_note_for_hand_launched_pusher(vtail_kits):
+    c = vtail_kits["g1"]
+    belly = prop_clearance(c.layout, GearGeometry(kind="none", contacts=(), leg_height_m=0.0), "hand")
+    assert belly.needs_folding_prop
+    text = build_sheet_text(with_clearance_notes(c.kit, belly.needs_folding_prop), SETTINGS, {})
+    assert "Folding propeller required (belly landing)" in text
+    assert BOOM_MOTOR_WIRING_NOTE in text
+    assert FOLDING_PROP_NOTE not in build_sheet_text(with_clearance_notes(c.kit, False), SETTINGS, {})
+
+
+def test_folding_prop_note_follows_the_flag_for_a_tractor_too(g1_kit):
+    """Controller ruling (Task 6): any hand-launched aircraft whose tip is below the belly line folds its prop."""
+    assert with_clearance_notes(g1_kit, True).notes == (FOLDING_PROP_NOTE,)
+    assert with_clearance_notes(g1_kit, False) == g1_kit
+
+
+@pytest.mark.parametrize("change", [{"booms": "twin"}, {"propeller": "pusher_pod"}, {"tail": "inverted_v"}])
+def test_unbuilt_layouts_still_get_no_kit(change, designs, g1_kit_inputs, monkeypatch):
+    """The kit cuts a conventional or V tail on a centre boom with a nose or boom-end propeller; any other layout
+    part (none is enabled yet) gets a clean refusal naming the layout."""
+    from src.tools.fabrication import build_kit as build_kit_module
+
+    real = build_kit_module.layout_spec
+    monkeypatch.setattr(build_kit_module, "layout_spec", lambda name: dataclasses.replace(real(name), **change))
+    layout, airfoil = g1_kit_inputs[0], g1_kit_inputs[1]
+    with pytest.raises(KitUnavailable, match="no parts for the Pod-and-boom tractor layout yet"):
+        build_kit(designs["g1"][0], layout, airfoil, (), SETTINGS)

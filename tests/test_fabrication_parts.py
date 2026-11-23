@@ -261,7 +261,7 @@ def test_tail_ribs_split_at_65_percent(g1_kit_inputs, tails):
 def test_each_tail_surface_root_rib_is_drilled_for_its_own_spar(g1_kit_inputs, g1_tail_spars, tails):
     settings = g1_kit_inputs[3]
     by = ribs_by_label(tails)
-    for label, tube in (("HR-01", g1_tail_spars.htail), ("V-01", g1_tail_spars.fin)):
+    for label, tube in (("HR-01", g1_tail_spars["htail"]), ("V-01", g1_tail_spars["vtail"])):
         hole = hole_diameters(by[label].outline)[0]
         assert tube.od_m + settings.fit_clearance_m <= hole <= tube.od_m + 0.001, label  # R19
 
@@ -458,3 +458,30 @@ def test_a_real_g2_wing_rib_steps_at_the_dbox_web(g2_kit_inputs):
     assert _thickness_at(plain, ahead) - _thickness_at(rib.outline, ahead) == pytest.approx(
         2.0 * settings.dbox_sheet_thickness_m, rel=0.15)
     assert _thickness_at(rib.outline, aft) == pytest.approx(_thickness_at(plain, aft), abs=1e-5)
+
+
+# --------------------------------------------------------------------------------------- V-tail (Task 8) ---
+@pytest.fixture(scope="module")
+def vtail_layout(vtail_g1):
+    from tests.cad_helpers import _fitted_layout
+
+    return _fitted_layout(*vtail_g1, station=0.45, with_propeller=True)
+
+
+def test_vtail_panel_ribs_carry_their_panel_spar(vtail_g1, vtail_layout):
+    """Each V-tail panel has its own rib set (`VR-…` right, `VL-…` left, as the H-tail's `H{n}`), and its root rib is
+    drilled for the panel's own strength-sized spar (R19)."""
+    from src.schemas.fabrication import DEFAULT_FABRICATION as settings
+
+    tail = load_airfoil(TAIL_AIRFOIL_NAME)
+    spars = tail_spar_tubes(vtail_g1[0], vtail_layout, tail, settings)
+    assert set(spars) == {"vtail_pair"}
+    by = ribs_by_label(tail_ribs(vtail_layout, tail, spars, settings))
+    right = sorted(label for label in by if label.startswith("VR-") and label[3:].isdigit())
+    assert right and right == sorted(label.replace("VL-", "VR-") for label in by
+                                     if label.startswith("VL-") and label[3:].isdigit())
+    tube = spars["vtail_pair"]
+    for label in ("VR-01", "VL-01"):
+        hole = hole_diameters(by[label].outline)[0]
+        assert tube.od_m + settings.fit_clearance_m <= hole <= tube.od_m + 0.001, label
+    assert not any(label.startswith(("HR-", "HL-", "V-", "TM-")) for label in by)
