@@ -49,7 +49,7 @@ from src.tools.fabrication.kit_mass import kit_mass_items, residual_gear_item
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, fits_kit, seat_low
 from src.tools.sizing import layouts
 from src.tools.sizing.layouts import StaticMarginBand
-from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg
+from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg, sizing_output_gear
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
 
 logger = logging.getLogger(__name__)
@@ -309,8 +309,9 @@ def _kit_airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: Airfoil
     """Raises KitUnavailable when the kit cannot be built around `placed`."""
     kit: Kit = build_kit(sizing, layout, airfoil, placed, settings)
     kit_items = tuple(kit_mass_items(kit, settings))
-    return _Airframe((*kit_items, residual_gear_item(sizing, layout)), _structure_boxes(kit, settings), kit=kit,
-                     kit_items=kit_items)
+    gear_item = residual_gear_item(sizing, layout, sizing_output_gear(sizing))
+    return _Airframe((*kit_items, *(() if gear_item is None else (gear_item,))), _structure_boxes(kit, settings),
+                     kit=kit, kit_items=kit_items)
 
 
 def _airframe(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShape, oml: bd.Shape,

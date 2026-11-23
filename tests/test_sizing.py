@@ -424,6 +424,15 @@ def test_sizing_records_the_resolved_launch(req: OperationalRequirements, expect
     assert size_aircraft(req).launch_method == expected
 
 
+def test_sizing_records_gear_kind() -> None:
+    hand = OperationalRequirements.model_validate({**G1_ELECTRIC_FW.model_dump(), "runway_available": False,
+                                                   "launch_method": "hand"})
+    hand_sizing = size_aircraft(hand)
+    assert hand_sizing.gear_kind == "none" and hand_sizing.empty_mass_breakdown["landing_gear"] == 0.0
+    runway = size_aircraft(G1_ELECTRIC_FW)
+    assert runway.gear_kind == "tricycle" and runway.empty_mass_breakdown["landing_gear"] > 0.0
+
+
 # ------------------------------------------------- explicit booms and stopped-rotor drag (phase-2 re-baseline) ---
 
 TUBE_WALL_KG_M2: float = 1.6  # 1 mm carbon wall at 1600 kg/m^3, the spec value the model must use

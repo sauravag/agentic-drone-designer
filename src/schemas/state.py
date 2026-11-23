@@ -97,6 +97,7 @@ class SizingOutput(_Frozen):
     vertical_tail_area_m2: NonNegative
     tail_arm_m: NonNegative
     launch_method: Literal["runway", "hand", "vertical"] = "runway"  # records that predate hand launch used runways
+    gear_kind: Literal["none", "tricycle"] = "tricycle"  # records that predate hand launch had gear
     airframe_layout: AirframeLayout = "pod_boom_tractor"  # records that predate layouts were all tractors
     tail_surfaces: tuple[TailSurface, ...] = ()  # empty in records that predate layouts
     battery_energy_j: Positive  # installed capacity

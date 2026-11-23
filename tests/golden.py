@@ -29,7 +29,7 @@ SNAPSHOT_DIGITS: Final[int] = 9  # snapshots: the last digits of a float differ 
 KIT_DECIMALS: Final[int] = 6  # micron: the CAD kernel differs from the 12th digit between macOS and Linux
 # SizingOutput keys added after the stored snapshots were taken (left out of the comparison until the next deliberate
 # re-baseline). Empty since the phase-2 re-baseline stored every key.
-NEW_SIZING_KEYS: Final[frozenset[str]] = frozenset()
+NEW_SIZING_KEYS: Final[frozenset[str]] = frozenset({"gear_kind"})
 SIZING_CASES: Final[tuple[str, ...]] = ("g1", "g2", "g3")
 DESIGN_CASES: Final[tuple[str, ...]] = ("g1", "g2")  # the cases with a saved flight-control design
 VSP_PARMS: Final[tuple[tuple[str, str], ...]] = (

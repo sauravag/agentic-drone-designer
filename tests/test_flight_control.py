@@ -21,7 +21,7 @@ from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
 from src.tools.flight_control.jsbsim_exporter import (export_jsbsim, lift_table, lift_thrust_curve)
-from src.tools.gear import TIP_BACK_ANGLE_DEG, tricycle_gear
+from src.tools.gear import TIP_BACK_ANGLE_DEG, GearInputs, PropellerDisc, landing_gear
 from src.tools.flight_control.step_metrics import StepAnalysisError, altitude_loss_m, analyse_step
 
 DATA = Path(__file__).parent / "data"
@@ -268,9 +268,9 @@ def test_exporter_refuses_a_derivative_it_has_no_coefficient_for(design: Any, tm
 
 def test_gear_meets_the_tip_back_rule_and_clears_the_propeller(design: Any) -> None:
     _, _, model = design
-    nose, left, right = tricycle_gear(model.fuselage_length_m, model.fuselage_diameter_m,
-                                      model.cruise_prop_diameter_m, model.mean_chord_m, model.wingspan_m,
-                                      model.x_cg_m).contacts
+    nose, left, right = landing_gear(GearInputs(
+        "runway", model.fuselage_length_m, model.fuselage_diameter_m, model.mean_chord_m, model.wingspan_m,
+        model.x_cg_m, PropellerDisc(0.0, 0.0, model.cruise_prop_diameter_m))).contacts
     assert nose.x_m < model.x_cg_m < left.x_m == right.x_m
     assert math.degrees(math.atan2(left.x_m - model.x_cg_m, -left.z_m)) >= TIP_BACK_ANGLE_DEG - 1e-9
     assert -left.z_m > model.cruise_prop_diameter_m / 2

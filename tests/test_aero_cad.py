@@ -20,6 +20,7 @@ from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_s
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
 from src.tools.fabrication import kit_export  # noqa: E402
 from src.tools.fabrication.kit import KitUnavailable  # noqa: E402
+from src.tools.sizing.mass_model import sizing_output_gear  # noqa: E402
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
 from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
@@ -281,7 +282,8 @@ def test_airframe_mass_round_trips_the_sizing_breakdown() -> None:
     loads = mm.PropulsionLoads(cruise_motor_power_w=800.0, vtol_total_thrust_n=280.0, generator_power_w=0.0)
     avionics: float = DEFAULT_ASSUMPTIONS.avionics_mass_kg(mtow, "cube_orange_plus", False)
     booms = mm.sizing_booms(geom, layout_spec("pod_boom_tractor"), rotor_diameter_m=0.4)
-    parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads, avionics, booms)
+    gear = mm.sizing_gear(geom, layout_spec("pod_boom_tractor"), "vertical")
+    parts = mm.empty_mass_breakdown(mtow, geom, "quadplane_vtol", loads, avionics, booms, gear)
     structural: float = (parts["wing"] + parts["tail"] + parts["fuselage"] + parts["landing_gear"]
                          + parts.get("tail_boom", 0.0) + parts["lift_booms"])
     assert mm.airframe_mass_kg(mtow, sum(parts.values()), loads, avionics) == pytest.approx(structural)
@@ -451,7 +453,7 @@ def test_kit_replaces_the_shell_mass(case: str, packed) -> None:
 def test_as_built_mass_is_kit_plus_gear_plus_components(case: str, designs: dict, packed) -> None:
     r = packed(case)
     sizing, bom = designs[case]
-    gear = residual_gear_item(sizing, _fitted_layout(sizing, bom)).mass_kg
+    gear = residual_gear_item(sizing, _fitted_layout(sizing, bom), sizing_output_gear(sizing)).mass_kg
     expected = kit_mass_kg(r.kit, DEFAULT_FABRICATION) + gear + sum(c.mass_kg for c in r.components)
     assert r.mass.mass_kg == pytest.approx(expected, rel=1e-9)
     assert r.mass.mass_kg == pytest.approx(sum(i.mass_kg for i in r.mass_items), rel=1e-12)

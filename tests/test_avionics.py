@@ -101,7 +101,7 @@ def test_change_sets_carry_avionics_fields() -> None:
 
 # ------------------------------------------------------------------- sizing ---
 from src.tools.sizing.layouts import layout_spec  # noqa: E402
-from src.tools.sizing.mass_model import PropulsionLoads, empty_mass_breakdown, size_geometry  # noqa: E402
+from src.tools.sizing.mass_model import PropulsionLoads, empty_mass_breakdown, size_geometry, sizing_gear  # noqa: E402
 from src.tools.sizing.mission_profile import hotel_power_w  # noqa: E402
 
 JETSON_W: Final[float] = 25.0
@@ -115,8 +115,9 @@ def test_hotel_power_adds_jetson_watts() -> None:
 
 def test_breakdown_avionics_entry_is_the_argument() -> None:
     geom = size_geometry(MTOW_KG, 1.0, 10.0, 0.5, 0.04, 1.0, layout_spec("pod_boom_tractor"))
+    gear = sizing_gear(geom, layout_spec("pod_boom_tractor"), "runway")
     parts = empty_mass_breakdown(MTOW_KG, geom, "fixed_wing", PropulsionLoads(500.0), avionics_mass_kg=0.5,
-                                 booms=())
+                                 booms=(), gear=gear)
     assert parts["avionics"] == 0.5
 
 

@@ -20,6 +20,7 @@ from src.tools.fabrication.tubes import SparPlan, SparSegment
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at, spar_member_at
 from src.tools.fabrication.wing_stiffness import dbox_material_m2, dbox_web_x_m
 from src.tools.gear import GEAR_FRACTION
+from src.tools.sizing.mass_model import sizing_output_gear
 from tests.cad_helpers import part_solid, tube_solid
 from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components
 
@@ -318,7 +319,7 @@ def test_film_sits_on_the_exposed_wing_planform_centroid(g1_kit, g1_kit_inputs):
 
 def test_residual_gear_item_is_the_gear_fraction_over_the_pod(designs, g2_kit_inputs):
     sizing, layout = designs["g2"][0], g2_kit_inputs[0]
-    item = residual_gear_item(sizing, layout)
+    item = residual_gear_item(sizing, layout, sizing_output_gear(sizing))
     assert item.name == "landing_gear"
     assert item.mass_kg == pytest.approx(GEAR_FRACTION[sizing.airframe_topology] * sizing.mtow_kg)
     assert item.cg_m == pytest.approx((layout.fuselage_length_m / 2.0, 0.0, 0.0))

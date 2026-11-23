@@ -23,7 +23,7 @@ from src.schemas.state import SizingOutput
 from src.tools.aero_cad import mass_properties as mp
 from src.tools.aero_cad.layout import AircraftLayout
 from src.tools.fabrication.kit import OVERWRAP_LABEL, CoverKind, CoverSurface, Kit, KitPart, LinearStock, TubePart
-from src.tools.gear import gear_mass_kg
+from src.tools.gear import GearGeometry, gear_mass_kg
 
 GLUE_NAME: Final[str] = "glue_hardware"
 GEAR_NAME: Final[str] = "landing_gear"
@@ -129,8 +129,11 @@ def kit_mass_kg(kit: Kit, settings: FabricationSettings) -> float:
     return sum(item.mass_kg for item in kit_mass_items(kit, settings))
 
 
-def residual_gear_item(sizing: SizingOutput, layout: AircraftLayout) -> mp.MassItem:
-    """Landing gear the kit does not cut: the shared gear mass spread over the pod as a solid cylinder."""
+def residual_gear_item(sizing: SizingOutput, layout: AircraftLayout, gear: GearGeometry) -> mp.MassItem | None:
+    """Landing gear the kit does not cut: the shared gear mass spread over the pod as a solid cylinder (none for a
+    gearless design)."""
+    if gear.kind == "none":
+        return None
     length, diameter = layout.fuselage_length_m, layout.fuselage_diameter_m
-    mass = gear_mass_kg(sizing.airframe_topology, sizing.mtow_kg)
+    mass = gear_mass_kg(gear, sizing.airframe_topology, sizing.mtow_kg)
     return mp.cylinder_item(GEAR_NAME, mass, (length / 2.0, 0.0, 0.0), length, diameter)

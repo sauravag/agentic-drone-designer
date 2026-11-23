@@ -9,8 +9,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from src.schemas.state import TailSurface
-from src.tools.gear import gear_mass_kg
+from src.schemas.state import SizingOutput, TailSurface
+from src.tools.gear import GearGeometry, GearInputs, PropellerDisc, gear_mass_kg, landing_gear
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
 from src.tools.sizing.layouts import (
     DEFAULT_WING_STATION,
@@ -23,13 +23,14 @@ from src.tools.sizing.layouts import (
     WING_TAPER_RATIO,
     BoomSet,
     LayoutSpec,
+    layout_spec,
     lift_boom_geometry,
     tail_arm_m,
     tail_boom_diameter_m,
     trapezoid_mac_m,
     trapezoid_root_chord_m,
 )
-from src.tools.sizing.topology import Airframe
+from src.tools.sizing.topology import Airframe, LaunchMethod
 from src.units import G0
 
 
@@ -163,6 +164,26 @@ def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> t
     return (*tail, BoomSet(LIFT_BOOM_COUNT, length, diameter, "lift_booms"))
 
 
+def sizing_gear(geom: Geometry, spec: LayoutSpec, launch: LaunchMethod) -> GearGeometry:
+    """Landing gear from sizing's own estimates: the wing at DEFAULT_WING_STATION, the CG at the layout's target
+    static margin ahead of the wing AC, and a propeller no larger than the fuselage (the propeller is not chosen
+    until the BOM; the CAD stage recomputes the gear from the real one)."""
+    if spec.propeller != "tractor_nose":
+        raise ValueError(f"no propeller-disc estimate for {spec.propeller!r} propellers yet")
+    _, _, x_ac = _default_station_wing_m(geom)
+    x_cg: float = x_ac - spec.static_margin.target * geom.mean_chord_m
+    return landing_gear(GearInputs(launch, geom.fuselage_length_m, geom.fuselage_diameter_m, geom.mean_chord_m,
+                                   geom.wingspan_m, x_cg, PropellerDisc(0.0, 0.0, geom.fuselage_diameter_m)))
+
+
+def sizing_output_gear(sizing: SizingOutput) -> GearGeometry:
+    """`sizing_gear` for a finished design (the same geometry, read back from the record)."""
+    geom = Geometry(sizing.wing_area_m2, sizing.aspect_ratio, sizing.wingspan_m, sizing.mean_chord_m,
+                    sizing.fuselage_length_m, sizing.fuselage_diameter_m, sizing.horizontal_tail_area_m2,
+                    sizing.vertical_tail_area_m2, sizing.tail_arm_m, sizing.tail_surfaces)
+    return sizing_gear(geom, layout_spec(sizing.airframe_layout), sizing.launch_method)
+
+
 def _structure_mass(mtow_kg: float, geom: Geometry, booms: Sequence[BoomSet]) -> dict[str, float]:
     wing_loading: float = mtow_kg * G0 / geom.wing_area_m2
     sigma_wing: float = (WING_AREAL_DENSITY_BASE + WING_AREAL_DENSITY_PER_LOADING * wing_loading) * (
@@ -202,14 +223,14 @@ def airframe_mass_kg(mtow_kg: float, empty_mass_kg: float, loads: PropulsionLoad
 
 def empty_mass_breakdown(
     mtow_kg: float, geom: Geometry, airframe: Airframe, loads: PropulsionLoads, avionics_mass_kg: float,
-    booms: Sequence[BoomSet],
+    booms: Sequence[BoomSet], gear: GearGeometry,
 ) -> dict[str, float]:
     """Itemised empty mass [kg]. `avionics_mass_kg` comes from DesignAssumptions.avionics_mass_kg; `booms` from
-    `sizing_booms` (booked under their names, e.g. "tail_boom" and "lift_booms")."""
+    `sizing_booms` (booked under their names, e.g. "tail_boom" and "lift_booms"); `gear` from `sizing_gear`."""
     return {
         **_structure_mass(mtow_kg, geom, booms),
         **_propulsion_mass(loads),
-        "landing_gear": gear_mass_kg(airframe, mtow_kg),
+        "landing_gear": gear_mass_kg(gear, airframe, mtow_kg),
         "avionics": avionics_mass_kg,
         "systems": SYSTEMS_FRACTION * mtow_kg,
     }
