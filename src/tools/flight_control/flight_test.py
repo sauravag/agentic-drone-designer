@@ -320,6 +320,8 @@ def fly_acceptance_test(pilot: SitlPilot, params: Mapping[str, float], is_quadpl
     """Fly the full sequence. `params` is the merged vehicle + SITL parameter set; climb_throttle_pct is
     the extra throttle (percent) the flight model needs to climb at +PITCH_STEP_DEG at cruise speed; `launch`
     picks the take-off (runway roll or hand launch; a quadplane always climbs vertically)."""
+    if is_quadplane and launch == "hand":
+        raise SitlFlightError("a quadplane cannot be hand-launched: it takes off vertically (launch 'vertical')")
     pilot.connect()
     if is_quadplane:
         _take_off_quadplane(pilot)

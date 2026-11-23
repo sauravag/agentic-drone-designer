@@ -625,6 +625,14 @@ def test_hand_launch_is_held_until_the_throttle_opens(tmp_path: Path) -> None:
     held = [frame(n, 1000) for n in range(1, 50)]
     assert all(s["position"] == [0.0, 0.0, 0.0] and s["airspeed"] == 0.0 for s in held)
     assert held[-1]["timestamp"] > held[0]["timestamp"]  # ArduPilot's clock keeps running
+    truth_t = [sample["t_s"] for sample in bridge.stats.truth]
+    assert len(truth_t) >= 2 and truth_t == sorted(truth_t) and len(set(truth_t)) == len(truth_t)  # logged in the hold
     thrown = [frame(n, 2000) for n in range(50, 100)]
     assert thrown[-1]["airspeed"] > HAND_LAUNCH_SPEED_MS / 2 and thrown[-1]["position"][0] > 0.0
     assert thrown[0]["timestamp"] > held[-1]["timestamp"]
+
+
+def test_a_hand_launched_quadplane_is_refused_not_held_forever() -> None:
+    flight_test = pytest.importorskip("src.tools.flight_control.flight_test", exc_type=ImportError)
+    with pytest.raises(flight_test.SitlFlightError, match="quadplane.*hand-launched"):
+        flight_test.fly_acceptance_test(None, {}, True, 0.0, "hand")  # type: ignore[arg-type]

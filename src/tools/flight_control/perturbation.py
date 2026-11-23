@@ -38,7 +38,8 @@ class PlantCase:
             if not (math.isfinite(getattr(self, field)) and getattr(self, field) > 0):
                 raise ValueError(f"PlantCase {self.name!r}: {field} must be finite and > 0, got {getattr(self, field)}")
         if self.margin_end not in ("minimum", "maximum"):
-            raise ValueError(f"PlantCase {self.name!r}: margin_end must be 'minimum' or 'maximum', got {self.margin_end!r}")
+            raise ValueError(
+                f"PlantCase {self.name!r}: margin_end must be 'minimum' or 'maximum', got {self.margin_end!r}")
 
 
 HOT: Final[PlantCase] = PlantCase("hot", 1.3, 0.7, 0.8, "minimum")

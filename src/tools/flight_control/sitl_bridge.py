@@ -229,18 +229,22 @@ class JsonPhysicsBridge:
         if self._held:  # ArduPilot boots and arms while the aircraft is still in the hand
             self._held_s += 1.0 / rate
             self._last_count, self.stats.frames = count, self.stats.frames + 1
+            self._record_truth_at_rate(fdm, rate)  # the hold is part of the truth log (same clock as the reports)
             self._last_reply = ("\n" + json.dumps(self._held_state(fdm)) + "\n").encode()
             return self._last_reply
         self._apply(pwm)
         fdm.run()
         self._last_count, self.stats.frames = count, self.stats.frames + 1
-        if self.stats.frames % max(1, round(rate / TRUTH_RATE_HZ)) == 0:
-            self._record_truth(fdm)
+        self._record_truth_at_rate(fdm, rate)
         self._last_reply = ("\n" + json.dumps(self._state()) + "\n").encode()
         return self._last_reply
 
+    def _record_truth_at_rate(self, fdm: jsbsim.FGFDMExec, rate: int) -> None:
+        if self.stats.frames % max(1, round(rate / TRUTH_RATE_HZ)) == 0:
+            self._record_truth(fdm)
+
     def _record_truth(self, fdm: jsbsim.FGFDMExec) -> None:
-        sample: dict[str, float] = {"t_s": fdm.get_sim_time()}
+        sample: dict[str, float] = {"t_s": fdm.get_sim_time() + self._held_s}
         sample |= {key: fdm[prop] * scale for key, prop, scale in TRUTH_PROPS}
         lat0, lon0, _ = self._origin
         sample |= dict(zip(TRUTH_POSITION_KEYS, north_east_m(
