@@ -22,11 +22,12 @@ from typing import Final, Literal
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, ControlSurfaceDerivatives, SizingOutput
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_TAPER_RATIO, layout_from_sizing
 from src.tools.aero_cad.stability import cruise_lift_coefficient
 from src.tools.flight_control.control_channels import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,  # noqa: F401 (re-exported)
-                                                       RUDDER_MAX_RAD, ControlChannel, control_channels)
+                                                       RUDDER_MAX_RAD, ControlChannel, channels_with_steering,
+                                                       control_channels)
 from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor
 from src.units import G0
 
@@ -120,6 +121,9 @@ class FlightModel:
     cruise_motor_lag_s: float
     lift_rotors: tuple[LiftRotor, ...]
     lift_motor_lag_s: float
+    # Per-surface derivatives for layouts whose surfaces are not the tractor triple; empty means the tractor
+    # aileron/elevator/rudder, derived from the aggregated `aero` so a perturbed plant keeps them consistent.
+    surfaces: tuple[ControlSurfaceDerivatives, ...] = ()
 
     @property
     def is_quadplane(self) -> bool:
@@ -127,8 +131,8 @@ class FlightModel:
 
     @property
     def channels(self) -> tuple[ControlChannel, ...]:
-        """One channel per physical surface, derived from `aero` so a perturbed plant keeps them consistent."""
-        return control_channels(self.aero)
+        """One channel per servo-driven surface, plus the dedicated ground-steering channel when no rudder steers."""
+        return channels_with_steering(control_channels(self.aero, self.surfaces, self.is_quadplane), self.is_quadplane)
 
     @property
     def weight_n(self) -> float:
@@ -224,6 +228,17 @@ def _lift_rotors(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutp
     return tuple(sorted(rotors, key=lambda r: r.motor_number))
 
 
+TRACTOR_SURFACES: Final[tuple[str, ...]] = ("aileron", "elevator", "rudder")
+
+
+def _model_surfaces(aero: AeroStabilityOutput) -> tuple[ControlSurfaceDerivatives, ...]:
+    """Per-surface derivatives the flight model keeps. The tractor triple stays on the aggregated (measured plus
+    estimated) derivatives so its parameters and JSBSim file are unchanged; other surface sets are used as recorded."""
+    if tuple(r.name for r in aero.control_surfaces) == TRACTOR_SURFACES:
+        return ()
+    return aero.control_surfaces
+
+
 def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                        aero: AeroStabilityOutput, cad: CADArtifacts) -> FlightModel:
     """Assemble the flight model; raises FlightModelError if the design cannot hover/accelerate."""
@@ -243,6 +258,7 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
         cruise_motor_lag_s=motor_lag_s(bom.cruise_propeller.diameter_m),
         lift_rotors=_lift_rotors(sizing, bom, aero, cad),
         lift_motor_lag_s=motor_lag_s(bom.vtol_propeller.diameter_m) if bom.vtol_propeller else 0.0,
+        surfaces=_model_surfaces(aero),
     )
     _check_flyable(model)
     return model

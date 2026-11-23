@@ -130,6 +130,16 @@ class SizingOutput(_Frozen):
         return self
 
 
+class ControlSurfaceDerivatives(_Frozen):
+    """Aerodynamic derivatives per rad of one servo-driven surface's own deflection (body axes, command convention)."""
+
+    name: str  # "aileron", "elevator", "rudder", "ruddervator_left", "ruddervator_right"
+    cl_per_rad: float
+    cl_roll_per_rad: float
+    cm_per_rad: float
+    cn_per_rad: float
+
+
 class AeroStabilityOutput(_Frozen):
     cl0: float
     cl_alpha_per_rad: float
@@ -144,6 +154,7 @@ class AeroStabilityOutput(_Frozen):
     cm_delta_e_per_rad: float
     cn_delta_r_per_rad: float
     x_np_m: Positive  # neutral point, metres aft of nose datum
+    control_surfaces: tuple[ControlSurfaceDerivatives, ...] = ()  # one per servo-driven surface; empty in old records
 
 
 class CADArtifacts(_Frozen):

@@ -132,6 +132,19 @@ def test_derivatives_from_synthetic_vspaero(g1_layout: AircraftLayout) -> None:
     assert out.x_np_m == pytest.approx(0.6 - out.cm_alpha_per_rad / out.cl_alpha_per_rad * 0.3)
 
 
+def test_tractor_control_surfaces_record_all_four_coefficients(g1_layout: AircraftLayout) -> None:
+    ref = stability.ReferenceGeometry(sref_m2=0.8, cref_m=0.3, bref_m=2.0, x_ref_m=0.6)
+    out = stability.derive_stability(_cases(), ref, g1_layout, cd0=0.03, cl_cruise=0.6)
+    by_name = {s.name: s for s in out.control_surfaces}
+    assert [s.name for s in out.control_surfaces] == ["aileron", "elevator", "rudder"]
+    step = 10 * DEG
+    assert by_name["aileron"].cl_roll_per_rad == pytest.approx(out.cl_delta_a_per_rad)
+    assert by_name["elevator"].cm_per_rad == pytest.approx(out.cm_delta_e_per_rad)
+    assert by_name["rudder"].cn_per_rad == pytest.approx(out.cn_delta_r_per_rad)
+    assert by_name["elevator"].cl_per_rad == pytest.approx(0.01 / step)
+    assert by_name["aileron"].cm_per_rad == pytest.approx(0.0) and by_name["rudder"].cl_roll_per_rad == pytest.approx(0.0)
+
+
 def test_fuselage_is_destabilising(g1_layout: AircraftLayout) -> None:
     ref = stability.ReferenceGeometry(sref_m2=0.8, cref_m=0.3, bref_m=2.0, x_ref_m=0.6)
     assert stability.fuselage_cm_alpha_per_rad(g1_layout, ref) > 0

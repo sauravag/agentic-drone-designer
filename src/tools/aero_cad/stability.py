@@ -25,7 +25,7 @@ from typing import Final, Literal
 
 import numpy as np
 
-from src.schemas.state import AeroStabilityOutput, SizingOutput
+from src.schemas.state import AeroStabilityOutput, ControlSurfaceDerivatives, SizingOutput
 from src.tools.aero_cad.layout import QUARTER_CHORD, AircraftLayout
 from src.tools.sizing.aero_model import lift_to_drag
 from src.units import G0
@@ -152,6 +152,26 @@ def _control_derivative(case: AeroCoefficients, base: AeroCoefficients, axis: in
     return sign * abs(_derivative(case, base, axis, step_deg))
 
 
+def _surface_record(name: str, case: AeroCoefficients, base: AeroCoefficients, step_deg: float,
+                    primary_axis: int, sign: float) -> ControlSurfaceDerivatives:
+    """All four derivatives of one deflection case. The primary axis carries the command-convention sign; the
+    other coefficients flip with it so the record describes one consistent deflection direction."""
+    step_rad: float = math.radians(step_deg)
+    roll, pitch, yaw = (_derivative(case, base, axis, step_deg) for axis in range(3))
+    primary: float = (roll, pitch, yaw)[primary_axis]
+    flip: float = sign * math.copysign(1.0, primary) if primary else sign
+    return ControlSurfaceDerivatives(name=name, cl_per_rad=flip * (case.cl - base.cl) / step_rad,
+                                     cl_roll_per_rad=flip * roll, cm_per_rad=flip * pitch, cn_per_rad=flip * yaw)
+
+
+def tractor_surface_records(cases: VspaeroCases, base: AeroCoefficients) -> tuple[ControlSurfaceDerivatives, ...]:
+    """Aileron, elevator and rudder records from the three deflection cases."""
+    step: float = cases.deflection_deg
+    return (_surface_record("aileron", cases.aileron, base, step, 0, AILERON_SIGN),
+            _surface_record("elevator", cases.elevator, base, step, 1, ELEVATOR_SIGN),
+            _surface_record("rudder", cases.rudder, base, step, 2, RUDDER_SIGN))
+
+
 def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: AircraftLayout,
                      cd0: float, cl_cruise: float) -> AeroStabilityOutput:
     """Finite-difference derivatives (per rad, body axes) + fuselage corrections + neutral point."""
@@ -173,6 +193,7 @@ def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: Aircra
         cm_delta_e_per_rad=_control_derivative(cases.elevator, base, 1, cases.deflection_deg, ELEVATOR_SIGN),
         cn_delta_r_per_rad=_control_derivative(cases.rudder, base, 2, cases.deflection_deg, RUDDER_SIGN),
         x_np_m=ref.x_ref_m - cm_alpha / cl_alpha * ref.cref_m,
+        control_surfaces=tractor_surface_records(cases, base),
     )
 
 

@@ -7,8 +7,10 @@ mix, so a wrong servo reversal cannot cancel against the plant and pass SITL.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Final, Optional, Sequence
+
+from src.schemas.state import ControlSurfaceDerivatives
 
 if TYPE_CHECKING:
     from src.tools.flight_control.flight_model import AeroCoefficients
@@ -16,8 +18,14 @@ if TYPE_CHECKING:
 AILERON_MAX_RAD: Final[float] = math.radians(20.0)
 ELEVATOR_MAX_RAD: Final[float] = math.radians(20.0)
 RUDDER_MAX_RAD: Final[float] = math.radians(25.0)
+RUDDERVATOR_MAX_RAD: Final[float] = math.radians(20.0)
 THROTTLE_SERVO: Final[int] = 3
 THROTTLE_SERVO_FUNCTION: Final[int] = 70
+LIFT_MOTOR_SERVOS: Final[tuple[int, ...]] = (5, 6, 7, 8)  # outputs reserved for lift motors 1-4
+STEERING_SURFACE: Final[str] = "steering"
+STEERING_SERVO_FUNCTION: Final[int] = 26  # ground steering
+RUDDER_SURFACE: Final[str] = "rudder"
+MAX_SERVO_OUTPUT: Final[int] = 16
 
 
 @dataclass(frozen=True)
@@ -32,20 +40,78 @@ class SurfaceDerivatives:
 
 @dataclass(frozen=True)
 class ControlChannel:
-    surface: str  # JSBSim name stem: "aileron", "elevator", "rudder"
+    surface: str  # JSBSim name stem: "aileron", "elevator", "rudder", "ruddervator_left", ...
     servo: int  # ArduPilot output number (1-based)
     servo_function: int  # SERVOn_FUNCTION
     bridge_sign: float  # +1 / -1: PWM above trim -> positive deflection
     max_deflection_rad: float
     derivatives: SurfaceDerivatives
+    steers_nose_wheel: bool = False  # the bridge drives the nose wheel from this channel's servo
 
 
-def control_channels(aero: AeroCoefficients) -> tuple[ControlChannel, ...]:
-    """The tractor airframe's surfaces: aileron, elevator, rudder."""
+@dataclass(frozen=True)
+class _SurfaceSpec:
+    servo: int
+    servo_function: int
+    bridge_sign: float  # the ruddervator signs are settled with the V-tail flight model
+    max_deflection_rad: float
+
+
+SURFACE_SPECS: Final[dict[str, _SurfaceSpec]] = {
+    "aileron": _SurfaceSpec(1, 4, 1.0, AILERON_MAX_RAD),
+    "elevator": _SurfaceSpec(2, 19, -1.0, ELEVATOR_MAX_RAD),
+    RUDDER_SURFACE: _SurfaceSpec(4, 21, -1.0, RUDDER_MAX_RAD),
+    "ruddervator_left": _SurfaceSpec(2, 79, 1.0, RUDDERVATOR_MAX_RAD),
+    "ruddervator_right": _SurfaceSpec(4, 80, 1.0, RUDDERVATOR_MAX_RAD),
+}
+
+
+def _channel(record: ControlSurfaceDerivatives) -> ControlChannel:
+    spec: Optional[_SurfaceSpec] = SURFACE_SPECS.get(record.name)
+    if spec is None:
+        raise ValueError(f"unknown control surface {record.name!r}; known: {sorted(SURFACE_SPECS)}")
+    return ControlChannel(record.name, spec.servo, spec.servo_function, spec.bridge_sign, spec.max_deflection_rad,
+                          SurfaceDerivatives(cl=record.cl_per_rad, cl_roll=record.cl_roll_per_rad,
+                                             cm=record.cm_per_rad, cn=record.cn_per_rad),
+                          steers_nose_wheel=record.name == RUDDER_SURFACE)
+
+
+def _tractor_records(aero: AeroCoefficients) -> tuple[ControlSurfaceDerivatives, ...]:
+    """The tractor triple from the aggregated derivatives (the path for records saved before per-surface data)."""
     return (
-        ControlChannel("aileron", 1, 4, 1.0, AILERON_MAX_RAD,
-                       SurfaceDerivatives(cl_roll=aero.cl_delta_a, cn=aero.cn_delta_a)),
-        ControlChannel("elevator", 2, 19, -1.0, ELEVATOR_MAX_RAD,
-                       SurfaceDerivatives(cl=aero.cl_delta_e, cm=aero.cm_delta_e)),
-        ControlChannel("rudder", 4, 21, -1.0, RUDDER_MAX_RAD, SurfaceDerivatives(cn=aero.cn_delta_r)),
+        ControlSurfaceDerivatives(name="aileron", cl_per_rad=0.0, cl_roll_per_rad=aero.cl_delta_a, cm_per_rad=0.0,
+                                  cn_per_rad=aero.cn_delta_a),
+        ControlSurfaceDerivatives(name="elevator", cl_per_rad=aero.cl_delta_e, cl_roll_per_rad=0.0,
+                                  cm_per_rad=aero.cm_delta_e, cn_per_rad=0.0),
+        ControlSurfaceDerivatives(name=RUDDER_SURFACE, cl_per_rad=0.0, cl_roll_per_rad=0.0, cm_per_rad=0.0,
+                                  cn_per_rad=aero.cn_delta_r),
     )
+
+
+def control_channels(aero: AeroCoefficients, surfaces: Sequence[ControlSurfaceDerivatives] = (),
+                     quad_motors: bool = False) -> tuple[ControlChannel, ...]:
+    """One channel per servo-driven surface, in order: from `surfaces` when given, else the tractor triple derived
+    from the aggregated derivatives. `quad_motors` is accepted for symmetry with `steering_channel`."""
+    return tuple(_channel(r) for r in (surfaces or _tractor_records(aero)))
+
+
+def steering_channel(channels: Sequence[ControlChannel], quad_motors: bool) -> Optional[ControlChannel]:
+    """The channel that steers the nose wheel: the rudder when there is one, otherwise a dedicated ground-steering
+    channel on the first output not used by a surface, the throttle or (with lift motors) outputs 5-8."""
+    rudder = next((c for c in channels if c.surface == RUDDER_SURFACE), None)
+    if rudder is not None:
+        return replace(rudder, steers_nose_wheel=True)
+    taken: set[int] = {c.servo for c in channels} | {THROTTLE_SERVO} | (set(LIFT_MOTOR_SERVOS) if quad_motors else set())
+    servo = next((n for n in range(1, MAX_SERVO_OUTPUT + 1) if n not in taken), None)
+    if servo is None:
+        return None
+    return ControlChannel(STEERING_SURFACE, servo, STEERING_SERVO_FUNCTION, 1.0, 0.0, SurfaceDerivatives(),
+                          steers_nose_wheel=True)
+
+
+def channels_with_steering(channels: tuple[ControlChannel, ...], quad_motors: bool) -> tuple[ControlChannel, ...]:
+    """`channels` plus the dedicated steering channel when no surface steers the nose wheel."""
+    if any(c.steers_nose_wheel for c in channels):
+        return channels
+    steer = steering_channel(channels, quad_motors)
+    return channels if steer is None else (*channels, steer)

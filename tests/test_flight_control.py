@@ -16,7 +16,11 @@ import pytest
 
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
-from src.schemas.state import AeroStabilityOutput, CADArtifacts, SizingOutput
+from src.schemas.state import AeroStabilityOutput, CADArtifacts, ControlSurfaceDerivatives, SizingOutput
+from src.tools.flight_control import sitl_bridge
+from src.tools.flight_control.control_channels import SurfaceDerivatives, control_channels, steering_channel
+from src.tools.flight_control.perturbation import SLUGGISH, perturbed_model
+from src.tools.sizing.layouts import TAILED_BAND
 from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
@@ -121,9 +125,9 @@ def test_servo_functions_refuse_a_surface_on_the_throttle_servo(design: Any, mon
         pg.fw_servo_functions(_with_channels(monkeypatch, model, (replace(aileron, servo=3), *others)))
 
 
-def test_servo_functions_refuse_a_surface_on_a_quadplane_motor_output(design: Any,
+def test_servo_functions_refuse_a_surface_on_a_quadplane_motor_output(g2: Any,
                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
-    _, _, model = design
+    _, model = g2
     aileron, *others = model.channels
     with pytest.raises(ValueError, match="servo"):
         pg.fw_servo_functions(_with_channels(monkeypatch, model, (replace(aileron, servo=pg.QUAD_SERVO_NUMBERS[0]), *others)))
@@ -376,3 +380,108 @@ def test_altitude_loss() -> None:
     assert altitude_loss_m([40.0, 41.0], 40.0) == 0.0
     with pytest.raises(StepAnalysisError):
         altitude_loss_m([], 40.0)
+
+
+# ------------------------------------------- per-servo surfaces, steering, servo allocation (phase 2, Task 4) ---
+def _surface(name: str, **overrides: float) -> ControlSurfaceDerivatives:
+    values = {"cl_per_rad": 0.1, "cl_roll_per_rad": 0.2, "cm_per_rad": -0.3, "cn_per_rad": 0.4, **overrides}
+    return ControlSurfaceDerivatives(name=name, **values)
+
+
+def _tractor_surfaces(a: Any) -> tuple[ControlSurfaceDerivatives, ...]:
+    """The three records the tractor path writes, equal to the aggregated derivatives."""
+    return (
+        _surface("aileron", cl_per_rad=0.0, cl_roll_per_rad=a.cl_delta_a, cm_per_rad=0.0, cn_per_rad=a.cn_delta_a),
+        _surface("elevator", cl_per_rad=a.cl_delta_e, cl_roll_per_rad=0.0, cm_per_rad=a.cm_delta_e, cn_per_rad=0.0),
+        _surface("rudder", cl_per_rad=0.0, cl_roll_per_rad=0.0, cm_per_rad=0.0, cn_per_rad=a.cn_delta_r),
+    )
+
+
+def _vtail_surfaces() -> tuple[ControlSurfaceDerivatives, ...]:
+    return (_surface("aileron"), _surface("ruddervator_left"), _surface("ruddervator_right"))
+
+
+def test_legacy_aero_record_gives_tractor_channels() -> None:
+    _, sizing, bom, aero, cad = load_design("g1")  # saved before phase 2: no control_surfaces
+    assert aero.control_surfaces == ()
+    model = build_flight_model(*load_design("g1"))
+    assert [(c.surface, c.servo, c.servo_function) for c in model.channels] == [
+        ("aileron", 1, 4), ("elevator", 2, 19), ("rudder", 4, 21)]
+
+
+def test_channels_from_surface_records_keep_tractor_values() -> None:
+    model = build_flight_model(*load_design("g1"))
+    assert control_channels(model.aero, _tractor_surfaces(model.aero)) == control_channels(model.aero)
+
+
+def test_surface_channels_follow_the_servo_map() -> None:
+    model = build_flight_model(*load_design("g1"))
+    channels = control_channels(model.aero, _vtail_surfaces())
+    assert [(c.surface, c.servo, c.servo_function) for c in channels] == [
+        ("aileron", 1, 4), ("ruddervator_left", 2, 79), ("ruddervator_right", 4, 80)]
+    assert channels[1].derivatives == SurfaceDerivatives(cl=0.1, cl_roll=0.2, cm=-0.3, cn=0.4)
+
+
+def test_unknown_surface_name_is_refused() -> None:
+    model = build_flight_model(*load_design("g1"))
+    with pytest.raises(ValueError, match="canard"):
+        control_channels(model.aero, (_surface("canard"),))
+
+
+def test_rudder_steers_the_nose_wheel() -> None:
+    model = build_flight_model(*load_design("g1"))
+    steer = steering_channel(control_channels(model.aero), quad_motors=False)
+    assert steer is not None and (steer.surface, steer.servo, steer.servo_function) == ("rudder", 4, 21)
+    assert steer.steers_nose_wheel
+    assert [c.surface for c in model.channels if c.steers_nose_wheel] == ["rudder"]
+
+
+def test_no_rudder_gets_ground_steering_servo() -> None:
+    model = build_flight_model(*load_design("g1"))
+    vt = _vtail_surfaces()
+    steer = steering_channel(control_channels(model.aero, vt), quad_motors=False)
+    assert steer is not None
+    assert (steer.surface, steer.servo, steer.servo_function) == ("steering", 5, 26)
+    assert steer.steers_nose_wheel
+    quad = steering_channel(control_channels(model.aero, vt, quad_motors=True), quad_motors=True)
+    assert quad is not None and quad.servo == 9
+
+
+def test_vtail_model_channels_include_the_steering_channel() -> None:
+    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+    assert [(c.surface, c.servo, c.servo_function) for c in model.channels] == [
+        ("aileron", 1, 4), ("ruddervator_left", 2, 79), ("ruddervator_right", 4, 80), ("steering", 5, 26)]
+    assert [c.surface for c in model.channels if c.steers_nose_wheel] == ["steering"]
+
+
+def test_fixed_wing_does_not_reserve_quad_servos() -> None:
+    fixed_wing = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+    functions = pg.fw_servo_functions(fixed_wing)  # the V-tail rate gains arrive with the V-tail flight model
+    assert functions == {"SERVO1_FUNCTION": 4, "SERVO2_FUNCTION": 79, "SERVO3_FUNCTION": 70, "SERVO4_FUNCTION": 80,
+                         "SERVO5_FUNCTION": 26}  # steering on output 5, not lift motor 1 (33)
+
+
+def test_quadplane_keeps_outputs_5_to_8_for_lift_motors(g2: Any) -> None:
+    (_, sizing, bom, _, _), model = g2
+    params = pg.generate_params(model, sizing, bom)
+    assert [params[f"SERVO{n}_FUNCTION"] for n in (5, 6, 7, 8)] == [33, 34, 35, 36]
+
+
+def test_perturbation_scales_every_surface() -> None:
+    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+    perturbed = perturbed_model(model, SLUGGISH, TAILED_BAND)
+    for before, after in zip(model.surfaces, perturbed.surfaces, strict=True):
+        assert after.name == before.name
+        assert after.cl_roll_per_rad == pytest.approx(SLUGGISH.control_power * before.cl_roll_per_rad)
+        assert after.cm_per_rad == pytest.approx(SLUGGISH.control_power * before.cm_per_rad)
+        assert after.cn_per_rad == pytest.approx(SLUGGISH.control_power * before.cn_per_rad)
+        assert after.cl_per_rad == before.cl_per_rad
+    assert model.surfaces == _vtail_surfaces()  # the input is not mutated
+
+
+def test_bridge_drives_steering_from_the_channel_that_steers() -> None:
+    model = replace(build_flight_model(*load_design("g1")), surfaces=_vtail_surfaces())
+    fdm: dict[str, float] = {}
+    pwm = [1500, 1500, 1000, 1500, 1750]  # servo 5 (steering) at +0.5
+    sitl_bridge._apply_channels(fdm, model.channels, pwm)
+    assert fdm["fcs/steer-cmd-norm"] == pytest.approx(0.5)

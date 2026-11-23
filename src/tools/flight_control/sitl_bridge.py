@@ -12,7 +12,7 @@ m/s^2), position (NED m from home), attitude (rad), velocity (NED m/s) and airsp
 
 Servo mapping (ArduPilot outputs, PWM > trim = roll right / pitch up / yaw right):
 SERVO1 aileron, SERVO2 elevator, SERVO3 cruise throttle, SERVO4 rudder + nose-wheel steering,
-SERVO5-8 lift motors 1-4.
+SERVO5-8 lift motors 1-4 (a layout with no rudder steers the nose wheel from the first free output).
 """
 
 import json
@@ -38,7 +38,6 @@ PWM_16: Final[struct.Struct] = struct.Struct("<HHI16H")
 PWM_32: Final[struct.Struct] = struct.Struct("<HHI32H")
 PWM_TRIM: Final[float] = 1500.0
 PWM_HALF_RANGE: Final[float] = 500.0
-STEERING_SURFACE: Final[str] = "rudder"  # nose-wheel steering is driven from this surface's servo
 PWM_MIN: Final[float] = 1000.0
 PWM_RANGE: Final[float] = 1000.0
 FT_TO_M: Final[float] = 0.3048
@@ -95,7 +94,7 @@ def _apply_channels(fdm: MutableMapping[str, float], channels: Sequence[ControlC
     """Each servo drives its own surface; ArduPilot has already mixed, so nothing is un-mixed here."""
     for c in channels:
         fdm[f"fcs/{c.surface}-cmd-norm"] = c.bridge_sign * _centred(pwm[c.servo - 1])
-        if c.surface == STEERING_SURFACE:  # the nose wheel follows the rudder servo
+        if c.steers_nose_wheel:  # the nose wheel follows the rudder servo, or the dedicated steering servo
             fdm["fcs/steer-cmd-norm"] = _centred(pwm[c.servo - 1])
 
 

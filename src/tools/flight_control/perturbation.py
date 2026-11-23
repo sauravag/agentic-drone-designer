@@ -7,8 +7,9 @@ two off-nominal plants so a design that only works on its own model is caught.
     so it exposes the worst settling time.
 
 Only the roll/pitch terms (Cl_delta_a, Cm_delta_e, Cl_p, Cm_q), the inertia and the static margin change. Yaw/rudder
-terms and the VTOL lift rotors are not perturbed, and the lift-rotor geometry stays referenced to the nominal CG, so
-the hover sees the inertia change but no CG imbalance. The transition gate uses the nominal flight.
+terms of the tractor aggregates and the VTOL lift rotors are not perturbed, and the lift-rotor geometry stays
+referenced to the nominal CG, so the hover sees the inertia change but no CG imbalance. A layout with per-surface
+records (V-tail) scales every surface's roll, pitch and yaw moment power by the case factor. The transition gate uses the nominal flight.
 
 Known gap: mixed corners (e.g. high control power with high damping) are not flown.
 
@@ -58,8 +59,13 @@ def perturbed_model(model: FlightModel, case: PlantCase, band: StaticMarginBand)
     )
     # x_cg_m deliberately stays nominal: the JSBSim exporter puts AERORP and the CG both at x_cg_m, so the CG
     # move is carried entirely by cm_alpha/cm0. Moving x_cg_m too would double-count it.
+    surfaces = tuple(
+        r.model_copy(update={"cl_roll_per_rad": r.cl_roll_per_rad * case.control_power,
+                             "cm_per_rad": r.cm_per_rad * case.control_power,
+                             "cn_per_rad": r.cn_per_rad * case.control_power})
+        for r in model.surfaces)  # per-surface layouts (V-tail): every surface's moment power scales
     return replace(
-        model, aero=aero, static_margin=margin,
+        model, aero=aero, surfaces=surfaces, static_margin=margin,
         ixx_kgm2=model.ixx_kgm2 * case.inertia, iyy_kgm2=model.iyy_kgm2 * case.inertia,
         izz_kgm2=model.izz_kgm2 * case.inertia, ixz_kgm2=model.ixz_kgm2 * case.inertia,
     )
