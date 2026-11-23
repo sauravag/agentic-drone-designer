@@ -8,9 +8,10 @@
   unavailable.
 - Cruise-motor plate `MP-C` (R17): a disc glued to the firewall's front face, motor diameter + 2 MIN_WEB_M, centre
   hole and slotted bolt cross as the lift-motor plates. It may overhang a small firewall on a pointed nose.
-- Boom-end pusher (`layout.propeller.is_pusher`): no `MP-C`; the motor plate `MP-B` (the same disc) covers the tail
-  boom's end face, and the boom clamp `MC-B`, a ring of the same diameter threaded on the boom (hole = boom OD + fit
-  clearance), is glued to its front face. Both are at least the boom hole + 2 CLAMP_CHEEK_M across.
+- Boom-end pusher (`at_boom_end`, from the layout's propeller placement): no `MP-C`; the motor plate `MP-B` (the
+  same disc) covers the tail boom's end face, and the boom clamp `MC-B`, a ring of the same diameter threaded on the
+  boom (hole = boom OD + fit clearance), is glued to its front face. Both are at least the boom hole + 2 CLAMP_CHEEK_M
+  across.
 - Boom clamps, lift-motor plates and boom tubes live in `boom_parts.py` (re-exported here).
 - `split_to_bed`: a part too long for the usable bed (bed - 2 margin each way, less one kerf) is cut across its long
   axis into the fewest equal pieces that fit, each cut moved up to SPLIT_SEARCH_M so the joint keeps
@@ -182,14 +183,16 @@ def _boom_end_mount(motor: PlacedComponent, layout: AircraftLayout,
 
 
 def cruise_motor_plate(
-    components: Sequence[PlacedComponent], layout: AircraftLayout, settings: FabricationSettings
+    components: Sequence[PlacedComponent], layout: AircraftLayout, settings: FabricationSettings,
+    at_boom_end: bool = False,
 ) -> tuple[KitPart, ...]:
-    """`MP-C` on the firewall's front face, centred on the cruise motor's axis, or for a pusher the boom-end
-    `MP-B` + `MC-B` (none without a cruise motor)."""
+    """`MP-C` on the firewall's front face, centred on the cruise motor's axis, or for a motor `at_boom_end` (the
+    layout's propeller placement says so; a pod pusher is not one) the boom-end `MP-B` + `MC-B`. None without a
+    cruise motor."""
     motor = next((c for c in components if c.name == CRUISE_MOTOR_NAME), None)
     if motor is None:
         return ()
-    if layout.propeller.is_pusher:
+    if at_boom_end:
         return _boom_end_mount(motor, layout, settings)
     front = firewall_station(layout, settings, components) - settings.sheet_for("plate").thickness_m
     if front < motor.x_max:

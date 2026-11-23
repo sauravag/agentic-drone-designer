@@ -50,8 +50,11 @@ RATE_BANDWIDTH_RAD_S: Final[float] = 5.0  # minimum closed-loop rate bandwidth, 
 RATE_BANDWIDTH_TO_DAMPING: Final[float] = 1.5  # rate pole at 1.5x the axis's natural damping rate
 FF_BOUNDS: Final[tuple[float, float]] = (0.15, 1.5)  # SRS clamp on RLL/PTCH feed-forward
 P_FLOOR_TO_FF: Final[float] = 0.25  # minimum rate P as a fraction of FF (ArduPilot defaults ~0.23)
-# Rate D's high-frequency loop gain D_phys x control power, at most: the reference tractors fly at 0.73 (G1) and 0.63
-# (G2), clean in the hot corner; a light roll inertia (V-tail kit, |L_p| ~ 80 1/s) would give ~2 and ring at ~13 Hz.
+# Rate D's high-frequency loop gain D_phys x control power (D = P x servo lag gives 0.5 |L_p| x servo lag), at most.
+# Anchored on the reference tractors, which fly the hot corner cleanly: G1 roll 0.728, G2 0.626 (G1 ~3 % under the
+# cap); the V-tail kit's light roll inertia (|L_p| ~ 80 1/s) gives ~2.0 and rings the rate loop at ~13 Hz. A value
+# derived with more headroom (e.g. from the servo bandwidth, 1/lag = 20 rad/s) would cap G1 itself, changing the
+# reference tractors' gains: that shows as a golden params change (tests/data/golden/layouts_phase2/*/params.json).
 D_LOOP_GAIN_MAX: Final[float] = 0.75
 INTEGRAL_CORNER_FRACTION: Final[float] = 1.0 / 3.0  # PI zero at 1/3 of the angle-loop bandwidth 1/tau
 Q_BANDWIDTH_MAX_RAD_S: Final[float] = 18.0

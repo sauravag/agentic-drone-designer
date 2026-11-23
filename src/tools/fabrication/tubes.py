@@ -52,6 +52,7 @@ SEA_LEVEL_DENSITY_KG_M3: Final[float] = air_properties(0.0)[0]  # SizingOutput.v
 AIRFOIL_CM0_DEFAULT: Final[float] = -0.10  # no airfoil Cm0 in SizingOutput: conservative for cambered UAV sections
 AC_CHORD_FRACTION: Final[float] = QUARTER_CHORD  # aerodynamic centre of the section
 TORQUE_INTEGRATION_STEPS: Final[int] = 400  # midpoint rule, tip to station
+SIDE_LOAD_EPS: Final[float] = 1e-9  # |sin G| below this: a flat tail panel, no side load
 TAIL_CL_MAX: Final[float] = 1.0  # tail surface (NACA 0010, low Re, finite span) maximum lift coefficient
 WRAP_LAP_DIAMETERS: Final[float] = 2.0  # the overwrap laps at least 2 socket OD onto each side
 WRAP_SIDES: Final[int] = 2  # the wrap laps both socket tubes
@@ -348,9 +349,11 @@ def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: Fabr
     """(moment, torque) on the tail boom (R26, loads per R35): each tail panel lifts L = q_max S_panel CL_max normal
     to its plane. Its components L |cos G| (pitch) and L |sin G| (side) are summed over the panels, and their
     resultant bends the boom over the arm from its root (where the cone first holds it, conservative) to the tails'
-    aerodynamic centre; a boom-end `tip_mass` adds its weight at n_limit g over its own arm. The side components
-    twist the boom at each panel's lift line (its MAC station; a fin's MAC height) off the boom axis. (0, 0) when
-    the tail sits on the fuselage."""
+    aerodynamic centre; a boom-end `tip_mass` adds its weight at n_limit g over its own arm. Every panel that takes
+    a side load (sin G != 0: a fin, a V-tail panel) twists the boom by its full lift at its lift line's distance from
+    the boom axis, the antisymmetric (yaw) case, conservatively at full L (`_side_lever_m`; a fin: L times its MAC
+    height); a flat horizontal tail loads symmetrically and does not twist it. (0, 0) when the tail sits on the
+    fuselage."""
     boom = layout.tail_boom
     if boom is None:
         return 0.0, 0.0
@@ -360,7 +363,8 @@ def tail_boom_loads(sizing: SizingOutput, layout: AircraftLayout, settings: Fabr
         gamma = math.radians(surface.dihedral_deg)
         pitch += load * abs(math.cos(gamma))
         side += load * abs(math.sin(gamma))
-        torque += load * abs(math.sin(gamma)) * _side_lever_m(surface, boom.z_m)
+        if not math.isclose(math.sin(gamma), 0.0, abs_tol=SIDE_LOAD_EPS):
+            torque += load * _side_lever_m(surface, boom.z_m)
     arm = max(t.planform.x_ac_m for t in layout.tail_surfaces) - boom.x_start_m
     moment = math.hypot(pitch, side) * max(arm, 0.0)
     if tip_mass is not None:

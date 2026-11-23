@@ -628,14 +628,44 @@ def test_folding_prop_note_follows_the_flag_for_a_tractor_too(g1_kit):
     assert with_clearance_notes(g1_kit, False) == g1_kit
 
 
-@pytest.mark.parametrize("change", [{"booms": "twin"}, {"propeller": "pusher_pod"}, {"tail": "inverted_v"}])
+@pytest.mark.parametrize("change", [{"booms": "twin"}, {"propeller": "pusher_pod"}, {"tail": "inverted_v"},
+                                    {"propeller": "pusher_boom_end"}, {"tail": "v"}])
 def test_unbuilt_layouts_still_get_no_kit(change, designs, g1_kit_inputs, monkeypatch):
-    """The kit cuts a conventional or V tail on a centre boom with a nose or boom-end propeller; any other layout
-    part (none is enabled yet) gets a clean refusal naming the layout."""
+    """The kit cuts exactly two (tail, propeller, booms) combinations, the tractor's and the V-tail pusher's; any
+    other, even one mixing their parts (a V-tail tractor, a conventional boom-end pusher), gets a clean refusal naming
+    the layout and its parts."""
     from src.tools.fabrication import build_kit as build_kit_module
 
     real = build_kit_module.layout_spec
     monkeypatch.setattr(build_kit_module, "layout_spec", lambda name: dataclasses.replace(real(name), **change))
     layout, airfoil = g1_kit_inputs[0], g1_kit_inputs[1]
-    with pytest.raises(KitUnavailable, match="no parts for the Pod-and-boom tractor layout yet"):
+    spec = dataclasses.replace(real("pod_boom_tractor"), **change)
+    parts = f"({spec.tail} tail, {spec.propeller} propeller, {spec.booms} booms)"
+    with pytest.raises(KitUnavailable, match=re.escape(f"no parts for the Pod-and-boom tractor layout yet {parts}")):
         build_kit(designs["g1"][0], layout, airfoil, (), SETTINGS)
+
+
+def test_built_layout_parts_are_the_tractor_and_the_vtail_pusher():
+    from src.tools.fabrication.build_kit import BUILT_LAYOUT_PARTS
+    from src.tools.sizing.layouts import layout_spec
+
+    specs = [layout_spec(name) for name in ("pod_boom_tractor", "single_boom_vtail_pusher")]
+    assert BUILT_LAYOUT_PARTS == {(s.tail, s.propeller, s.booms) for s in specs}
+
+
+def test_skin_governed_vtail_root_still_meets_its_root_block(vtail_g1):
+    """Constructed case: at wing station 0.30 the V-tail root chord lies over the pod's tail cone, so the fuselage
+    skin, not the boom web, sets the panels' root station. VR-1's faces move out with it: both root ribs are still
+    glued to it and both spars still butt it (no disconnected joint)."""
+    from src.tools.fabrication.wing_parts import panel_start_m, root_block_face_m
+
+    sizing, bom = vtail_g1
+    layout = _fitted_layout(sizing, bom, 0.30, with_propeller=True)
+    surface = _vtail_surface(layout)
+    assert panel_start_m(layout, surface, SETTINGS) > root_block_face_m(layout, SETTINGS) + 0.01  # the skin governs
+    kit = build_kit(sizing, layout, load_airfoil(layout.airfoil), _vtail_placed(bom, layout), SETTINGS)
+    parts, tubes = {p.label: p for p in kit.parts}, {t.label: t for t in kit.tubes}
+    block = part_solid(parts["VR-1"], SETTINGS)
+    for rib, spar in (("VR-01", "TS-VR"), ("VL-01", "TS-VL")):
+        assert block.distance_to(part_solid(parts[rib], SETTINGS)) < TOUCH_M, rib
+        assert block.distance_to(tube_solid(tubes[spar])) < SETTINGS.sheet_for("rib").thickness_m, spar

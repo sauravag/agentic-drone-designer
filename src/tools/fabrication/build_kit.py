@@ -13,7 +13,7 @@ Tubes (`TubePart.start_m` + `length_m` along the unit `axis`):
 - `TB-1`, `LB-R`, `LB-L` booms as `boom_parts` places them.
 - One spar per tail panel, in the panel's own frame (`wing_parts.panel_point`): `TS-HR`, `TS-HL` horizontal-tail
   spars from the tail root (boom or fuselage skin, R20), `TS-V` fin spar from the fin start (top of `TM-1`, or the
-  skin), `TS-VR`, `TS-VL` V-tail spars from the root block `VR-1`'s faces along each panel's dihedral; each the
+  skin), `TS-VR`, `TS-VL` V-tail spars butting the root block `VR-1`'s faces, along each panel's dihedral; each the
   surface's strength-sized stock (R35, `tail_spar_tubes`), out to the tip or to where the tail's depth stops admitting
   it, short of the first rib too thin for its hole (the tail ribs' own rule). A tube's end faces are square to its
   axis, which leans (taper), so a tail spar starts just far enough off its root surface for its rim to clear it.
@@ -135,9 +135,10 @@ from src.tools.fabrication.wing_stiffness import (
 from src.tools.sizing.layouts import layout_spec
 
 MAX_DOD_GROUP: Final[int] = 2
-BUILT_TAILS: Final[frozenset[str]] = frozenset({"conventional", "v"})  # LayoutSpec parts the kit can cut so far
-BUILT_PROPELLERS: Final[frozenset[str]] = frozenset({"tractor_nose", "pusher_boom_end"})
-BUILT_BOOMS: Final[frozenset[str]] = frozenset({"centre"})
+# (tail, propeller, booms) LayoutSpec combinations the kit has parts and checks for; any other is refused whole
+BUILT_LAYOUT_PARTS: Final[frozenset[tuple[str, str, str]]] = frozenset({("conventional", "tractor_nose", "centre"),
+                                                                       ("v", "pusher_boom_end", "centre")})
+BOOM_END_PROPELLER: Final[str] = "pusher_boom_end"  # LayoutSpec.propeller of a motor at the tail boom's end
 PIN_REACH_M: Final[float] = 0.020  # R18: pin end this far outboard of the root doubler
 MITRE_LABELS: Final[tuple[str, ...]] = ("SK-R", "SK-L", "SP-R1", "SP-L1")
 SIDES: Final[tuple[tuple[float, str], ...]] = ((1.0, "R"), (-1.0, "L"))
@@ -468,19 +469,19 @@ def assert_unique_labels(parts: Sequence[KitPart], tubes: Sequence[TubePart]) ->
         raise KitUnavailable(f"duplicate kit labels: {', '.join(duplicates)}")
 
 
-def _boom_tip_mass(layout: AircraftLayout, components: Sequence[PlacedComponent]) -> Optional[BoomTipMass]:
-    """A pusher's cruise motor (and propeller) at the boom end, which the tail boom carries (none for a tractor)."""
+def _boom_tip_mass(components: Sequence[PlacedComponent], boom_end: bool) -> Optional[BoomTipMass]:
+    """A boom-end cruise motor (and propeller), which the tail boom carries (none for a nose or pod motor)."""
     motor = next((c for c in components if c.name == CRUISE_MOTOR_NAME), None)
-    if motor is None or not layout.propeller.is_pusher:
+    if motor is None or not boom_end:
         return None
     return BoomTipMass(mass_kg=motor.mass_kg, x_m=motor.center_m[0])
 
 
 def _check_tail_boom(sizing: SizingOutput, layout: AircraftLayout, components: Sequence[PlacedComponent],
-                     settings: FabricationSettings) -> None:
+                     boom_end: bool, settings: FabricationSettings) -> None:
     if layout.tail_boom is not None:
         tail_boom_check(boom_tube(layout.tail_boom.diameter_m, settings), sizing, layout, settings,
-                        _boom_tip_mass(layout, components))
+                        _boom_tip_mass(components, boom_end))
 
 
 def _split_all(parts: Sequence[KitPart], settings: FabricationSettings) -> tuple[KitPart, ...]:
@@ -493,11 +494,13 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     if sizing.dod_group > MAX_DOD_GROUP:
         raise KitUnavailable("laser-cut construction covers Group 1–2 designs only")
     spec = layout_spec(sizing.airframe_layout)
-    if spec.tail not in BUILT_TAILS or spec.propeller not in BUILT_PROPELLERS or spec.booms not in BUILT_BOOMS:
+    if (spec.tail, spec.propeller, spec.booms) not in BUILT_LAYOUT_PARTS:
         label: str = LAYOUT_LABELS.get(sizing.airframe_layout, sizing.airframe_layout)
-        raise KitUnavailable(f"the laser-cut kit has no parts for the {label} layout yet")
+        raise KitUnavailable(f"the laser-cut kit has no parts for the {label} layout yet ({spec.tail} tail, "
+                             f"{spec.propeller} propeller, {spec.booms} booms)")
+    boom_end = spec.propeller == BOOM_END_PROPELLER
     spar = stiffened_spar_plan(sizing, layout, airfoil, settings)
-    _check_tail_boom(sizing, layout, components, settings)
+    _check_tail_boom(sizing, layout, components, boom_end, settings)
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
     tails = tail_spar_tubes(sizing, layout, tail, settings)
     ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, tails, settings))
@@ -507,14 +510,14 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     booms, boom_tubes = boom_parts(layout, spar, settings, components=components,
                                    lift_thrust_n=sizing.vtol_thrust_per_motor_n)
     booms = (*booms, *tail_root_blocks(layout, tails, settings))
-    motor = cruise_motor_plate(components, layout, settings)
+    motor = cruise_motor_plate(components, layout, settings, at_boom_end=boom_end)
     parts = _split_all((*ribs, *fuselage, *trays, *booms, *motor), settings)
     tubes = (*spar_tubes(layout, spar, settings), *_socket_and_pins(layout, spar, fuselage, settings),
              *boom_tubes, *_tail_spars(layout, tail, tails, settings))
     stations = former_stations(layout, spar, settings, components)
     linear = (*_stringers(layout, stations, settings), *_edge_strips(layout, spar, airfoil, tail, settings))
     assert_unique_labels(parts, tubes)
-    notes = (BOOM_MOTOR_WIRING_NOTE,) if layout.propeller.is_pusher else ()
+    notes = (BOOM_MOTOR_WIRING_NOTE,) if boom_end else ()
     return Kit(parts=parts, tubes=tubes, linear=linear, covering=_covering(layout, airfoil, spar, settings), spar=spar,
                joins=join_notes(parts), overwrap=overwrap, wing_bolt=_wing_bolt(layout, spar, fuselage, settings),
                notes=notes)

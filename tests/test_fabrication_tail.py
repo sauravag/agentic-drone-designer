@@ -135,11 +135,19 @@ def test_vtail_panel_spar_moment_is_its_own_elliptic_root_moment(vtail_g1, vtail
 
 def test_vtail_boom_loads_project_each_panel(vtail_g1, vtail_layout):
     """R26 per surface: each panel's load L (normal to it) bends the boom through its components, L cos G (pitch) and
-    L sin G (side); the side components twist it at the panel's MAC station off the boom axis."""
+    L sin G (side); in the antisymmetric (yaw) case each panel twists it by its full L at its MAC station's lever."""
     sizing, surface = vtail_g1[0], vtail_layout.tail_surfaces[0]
     g = math.radians(surface.dihedral_deg)
     panel = tail_surface_load_n(sizing, surface.planform.area_m2 / 2.0, SETTINGS)
     arm = surface.planform.x_ac_m - vtail_layout.tail_boom.x_start_m
     moment, torque = tail_boom_loads(sizing, vtail_layout, SETTINGS)
     assert moment == pytest.approx(math.hypot(2.0 * panel * math.cos(g), 2.0 * panel * math.sin(g)) * arm, rel=REL)
-    assert torque == pytest.approx(2.0 * panel * math.sin(g) * surface.planform.y_mac_m, rel=REL)
+    assert torque == pytest.approx(2.0 * panel * surface.planform.y_mac_m, rel=REL)
+
+
+def test_tractor_boom_torque_is_the_fin_load_at_its_mac_height(designs, g2_kit_inputs):
+    """The fin (90 deg) twists the boom by its full load at its MAC height; the flat H-tail adds no torque."""
+    sizing, layout = designs["g2"][0], g2_kit_inputs[0]
+    fin = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, SETTINGS)
+    height = layout.vtail.z_root_m + layout.vtail.y_mac_m - layout.tail_boom.z_m
+    assert tail_boom_loads(sizing, layout, SETTINGS)[1] == pytest.approx(fin * height, rel=REL)

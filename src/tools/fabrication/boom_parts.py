@@ -18,8 +18,10 @@
   cross for 16 / 19 / 25 mm bolt circles; they sit under the motor (`vtol_motor_k` when given).
 - V-tail root block `VR-1` (a mirrored tail surface with dihedral): one 3 mm clamp plate in the yz-plane, threaded on
   the tail boom (hole = boom OD + fit clearance), centred chordwise on where the panel spars meet it. Its two upper
-  edges are the faces at +-G, square to each panel's span direction at `panel_start_m` from the boom axis: each
-  panel's root rib is glued to one, and its spar bottoms out on it there (the root rib's hole is the spar's socket).
+  edges are the faces at +-G, square to each panel's span direction at `panel_start_m` from the boom axis. Joint:
+  each panel's root rib (a 3 mm rib) is glued flat against one face, and the panel spar, threaded through the root
+  rib's hole, butts end-on against the 3 mm face edge; the block carries the spar in compression and through the
+  glued rib, it does not grip the spar in a socket.
   Below the faces it keeps CLAMP_CHEEK_M of material beside and under the boom hole, and wide enough that each face
   carries its spar's end (radius + MIN_WEB_M beyond it).
 """
@@ -235,7 +237,8 @@ def _root_block_outline(layout: AircraftLayout, surface: PlacedTailSurface, spar
 
 
 def tail_root_blocks(layout: AircraftLayout, spars: TailSpars, settings: FabricationSettings) -> tuple[KitPart, ...]:
-    """`VR-1` for a V-tail (none for a horizontal tail and fin): see the module docstring."""
+    """`VR-1` for a V-tail (none for a horizontal tail and fin): a clamp plate whose faces the root ribs are glued
+    to and the panel spars butt against (module docstring)."""
     surfaces = [t for t in layout.tail_surfaces if has_root_block(t)]
     if not surfaces:
         return ()
