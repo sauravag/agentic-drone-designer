@@ -21,7 +21,7 @@ from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control import sitl_bridge
 from src.tools.flight_control.control_channels import (ControlChannel, SurfaceDerivatives, channels_with_steering,
                                                        control_channels, jsbsim_stem, steering_channel)
-from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, FlightModel, FlightModelError,
+from src.tools.flight_control.flight_model import (ELEVATOR_MAX_RAD, SERVO_TIME_CONSTANT_S, FlightModel, FlightModelError,
                                                    build_flight_model, transition_time_s)
 from src.tools.flight_control.jsbsim_exporter import (export_jsbsim, lift_table, lift_thrust_curve)
 from src.tools.flight_control.perturbation import SLUGGISH, perturbed_model
@@ -846,3 +846,38 @@ def test_vtail_model_rests_on_its_gear_in_jsbsim(vtail_model: FlightModel, tmp_p
         fdm.run()
     assert abs(fdm["attitude/theta-deg"]) < 10 and abs(fdm["attitude/phi-deg"]) < 1
     assert fdm["velocities/vt-fps"] * 0.3048 < 0.5
+
+
+# ------------------------------------------------------------------- rate-loop D path (Task 8 fix) ---
+def _roll_loop(model: FlightModel) -> tuple[float, float]:
+    """(L_delta_a in rad/s^2 per rad, aileron throw in rad) as the gain design computes them."""
+    qs = model.dynamic_pressure(model.v_cruise_ms) * model.wing_area_m2
+    throw = next(c.max_deflection_rad for c in model.channels if c.surface == "aileron")
+    return qs * model.wingspan_m * model.aero.cl_delta_a / model.ixx_kgm2, throw
+
+
+def _d_loop_gain(params: pg.ParamSet, prefix: str, control_power: float, throw_rad: float) -> float:
+    """The D path's dimensionless high-frequency loop gain D_phys x control power (D_phys from ArduPilot units)."""
+    return params[f"{prefix}_D"] / pg._to_ap_units(1.0, throw_rad) * control_power
+
+
+def test_light_roll_inertia_caps_the_rate_d_path(vtail_g1_design: DesignInputs) -> None:
+    """The V-tail's as-built roll inertia (kit, 0.095 kg m^2) makes its bare roll mode fast (|L_p| ~ 80 1/s); D = P x
+    servo lag then gives the D path a loop gain ~2 (the tractor's is 0.73), which rings the rate loop at ~13 Hz on the
+    hot corner once the retry raises P. D is capped at D_LOOP_GAIN_MAX; P, I and FF are unchanged."""
+    model = build_flight_model(*vtail_g1_design)
+    l_da, throw = _roll_loop(model)
+    params = pg.fixed_wing_gains(model)
+    assert _d_loop_gain(params, "RLL_RATE", l_da, throw) == pytest.approx(pg.D_LOOP_GAIN_MAX, rel=1e-9)
+    uncapped_p = params["RLL_RATE_P"]
+    assert params["RLL_RATE_D"] < uncapped_p * SERVO_TIME_CONSTANT_S  # the cap binds here
+
+
+@pytest.mark.parametrize("case", ["g1", "g2"])
+def test_reference_tractors_keep_d_equal_to_p_times_servo_lag(case: str) -> None:
+    """The cap sits above both reference tractors' D-path loop gain (0.73 and 0.63): their gains are unchanged."""
+    model = build_flight_model(*load_design(case))
+    l_da, throw = _roll_loop(model)
+    params = pg.fixed_wing_gains(model)
+    assert params["RLL_RATE_D"] == pytest.approx(params["RLL_RATE_P"] * SERVO_TIME_CONSTANT_S, rel=1e-12)
+    assert _d_loop_gain(params, "RLL_RATE", l_da, throw) < pg.D_LOOP_GAIN_MAX

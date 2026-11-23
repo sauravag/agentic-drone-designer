@@ -14,7 +14,9 @@ Gain design (all at the cruise speed, which becomes SCALING_SPEED so ArduPilot's
   it scales inversely with the control-power-to-inertia ratio. In a steady hold the angle loop acts like
   an angle PI controller with proportional gain (FF + P) / tau and integral gain I / tau, so
   I = (FF + P) / (3 tau) puts the PI zero at a third of the angle bandwidth: it removes trim and
-  speed-change (ramp) disturbances without adding overshoot. D = P * servo lag.
+  speed-change (ramp) disturbances without adding overshoot. D = P * servo lag, capped so the D path's
+  high-frequency loop gain D x control power stays below D_LOOP_GAIN_MAX (a fast bare roll mode, from a light roll
+  inertia, would otherwise ring the 50 Hz rate loop).
 * QuadPlane rate P = w_q * Ixx / (2 L_arm T_max) (SRS: proportional to Ixx / (L_arm T_max)); the
   factor 2 is ArduPilot's normalised X-frame mix (4 motors x 0.5 factor).
 * V-tail: ArduPilot mixes elevator and rudder into the two ruddervator outputs (SERVOn_FUNCTION 79/80), each output
@@ -48,6 +50,9 @@ RATE_BANDWIDTH_RAD_S: Final[float] = 5.0  # minimum closed-loop rate bandwidth, 
 RATE_BANDWIDTH_TO_DAMPING: Final[float] = 1.5  # rate pole at 1.5x the axis's natural damping rate
 FF_BOUNDS: Final[tuple[float, float]] = (0.15, 1.5)  # SRS clamp on RLL/PTCH feed-forward
 P_FLOOR_TO_FF: Final[float] = 0.25  # minimum rate P as a fraction of FF (ArduPilot defaults ~0.23)
+# Rate D's high-frequency loop gain D_phys x control power, at most: the reference tractors fly at 0.73 (G1) and 0.63
+# (G2), clean in the hot corner; a light roll inertia (V-tail kit, |L_p| ~ 80 1/s) would give ~2 and ring at ~13 Hz.
+D_LOOP_GAIN_MAX: Final[float] = 0.75
 INTEGRAL_CORNER_FRACTION: Final[float] = 1.0 / 3.0  # PI zero at 1/3 of the angle-loop bandwidth 1/tau
 Q_BANDWIDTH_MAX_RAD_S: Final[float] = 18.0
 Q_BANDWIDTH_LAG_FACTOR: Final[float] = 0.4  # rate bandwidth <= 0.4 / motor lag
@@ -95,8 +100,9 @@ def _rate_gains(prefix: str, ff_phys: float, damping: float, control_power: floa
     p_phys: float = (bandwidth + damping) / control_power
     p: float = max(_to_ap_units(p_phys, max_defl), P_FLOOR_TO_FF * ff)
     i: float = (ff + p) * INTEGRAL_CORNER_FRACTION / ANGLE_TIME_CONSTANT_S
-    return {f"{prefix}_FF": ff, f"{prefix}_P": gain_scale * p, f"{prefix}_I": gain_scale * i,
-            f"{prefix}_D": min(gain_scale, 1.0) * p * SERVO_TIME_CONSTANT_S}
+    d_cap: float = _to_ap_units(D_LOOP_GAIN_MAX / control_power, max_defl)  # D_phys x control power <= the max
+    d: float = min(min(gain_scale, 1.0) * p * SERVO_TIME_CONSTANT_S, d_cap)
+    return {f"{prefix}_FF": ff, f"{prefix}_P": gain_scale * p, f"{prefix}_I": gain_scale * i, f"{prefix}_D": d}
 
 
 def _ruddervators(model: FlightModel) -> Optional[tuple[ControlChannel, ControlChannel]]:
