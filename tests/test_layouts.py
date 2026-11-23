@@ -23,7 +23,7 @@ from src.tools.sizing.layouts import StaticMarginBand, layout_spec, tail_arm_m
 from src.tools.sizing.mission_solver import size_aircraft
 from src.tools.sizing.topology import resolved_launch_method, select_airframe
 from src.ui import presenters
-from tests.reference_designs import G1_ELECTRIC_FW
+from tests.reference_designs import G1_ELECTRIC_FW, G2_ELECTRIC_VTOL
 from tests.test_flight_control import load_design
 
 G1_SIZING_RECORD = Path(__file__).parent / "data" / "flight_control" / "g1" / "sizing.json"
@@ -312,8 +312,6 @@ def test_change_set_hand_launch_on_a_quadplane_is_a_readable_error() -> None:
 
 
 def test_change_set_hand_launch_with_the_airframe_switch_succeeds() -> None:
-    from tests.reference_designs import G2_ELECTRIC_VTOL
-
     change = _launch_change(launch_method="hand", airframe_topology="fixed_wing")
     req, _, _ = apply_changes(G2_ELECTRIC_VTOL, DEFAULT_ASSUMPTIONS, change)
     assert (select_airframe(req), resolved_launch_method(req)) == ("fixed_wing", "hand")
