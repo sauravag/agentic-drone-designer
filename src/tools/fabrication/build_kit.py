@@ -27,6 +27,7 @@ mitre gets its overwrap (`Kit.overwrap`), which must fit between the plates' (or
 labels are unique.
 """
 
+import dataclasses
 import math
 from collections import Counter
 from typing import Callable, Final, Optional, Sequence
@@ -46,6 +47,7 @@ from src.tools.aero_cad.layout import (
     fuselage_radius_at,
 )
 from src.tools.aero_cad.structure import SPAR_CHORD_STATION
+from src.tools.fabrication.boom_parts import lift_boom_keep_out
 from src.tools.fabrication.fittings import boom_parts, component_plates, cruise_motor_plate, join_notes, split_to_bed
 from src.tools.fabrication.fuselage_parts import (
     FULL_TURN_DEG,
@@ -94,7 +96,9 @@ from src.tools.fabrication.wing_parts import (
     TailSpars,
     tail_spar_hole,
     tail_spar_tubes,
+    clear_rib_stations,
     panel_rib_stations,
+    wing_rib_stations,
     spar_member_at,
     wing_ribs,
 )
@@ -165,7 +169,7 @@ def _member_end(line: Line, spar: SparPlan, k: int, settings: FabricationSetting
     of the first rib outboard of the step, whose hole is cut for the next, smaller member."""
     seg = spar.segments[k]
     half_t = settings.sheet_for("rib").thickness_m / 2.0
-    face = next((y - half_t for y in panel_rib_stations(spar.joint_y_m, spar.segments[-1].y_end_m)
+    face = next((y - half_t for y in wing_rib_stations(spar, spar.segments[-1].y_end_m)
                  if y > seg.y_end_m + FIT_EPS_M), None)
     if face is None:  # the tip member, or no rib outboard of this step
         return seg.y_end_m
@@ -379,7 +383,10 @@ def stiffened_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: A
         return wing_stiffness(spar, airfoil, with_dbox, sizing.mtow_kg, layout.wing.semi_span_m,
                               layout.wing.chord_at, sizing.aspect_ratio, v_cruise_ms, settings)
 
-    return stiffen_spar(kit_spar_plan(sizing, layout, airfoil, settings), check, settings)
+    spar = stiffen_spar(kit_spar_plan(sizing, layout, airfoil, settings), check, settings)
+    keep_out = lift_boom_keep_out(layout, settings, sizing.vtol_thrust_per_motor_n if layout.vtol_booms else None)
+    nominal = panel_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
+    return dataclasses.replace(spar, rib_stations_m=clear_rib_stations(nominal, keep_out, layout.wing.semi_span_m))
 
 
 def _plate_gap_m(fuselage: Sequence[KitPart], settings: FabricationSettings) -> float:

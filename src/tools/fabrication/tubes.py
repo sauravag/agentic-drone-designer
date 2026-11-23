@@ -80,6 +80,9 @@ class SparPlan:
     pin: "PinPlan"  # anti-rotation pin sized for the root torque (R31)
     stiffness: Optional["WingStiffness"] = None  # set by `stiffen_spar` (R43-R45); `plan_spar` is strength-only
     dbox: bool = False  # the balsa D-box (R45) is fitted
+    # Wing rib stations of one panel, moved clear of the lift-boom clamps (set by `build_kit.stiffened_spar_plan`);
+    # empty for a strength-only plan, whose ribs sit at the nominal pitch.
+    rib_stations_m: tuple[float, ...] = ()
 
 
 def spar_member_at(spar: SparPlan, y_m: float) -> TubeStock:

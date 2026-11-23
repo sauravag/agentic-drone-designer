@@ -12,6 +12,7 @@ Each tail surface's ribs carry its own stock spar, strength-sized at the root fo
 """
 
 import dataclasses
+import logging
 import math
 from dataclasses import dataclass
 from typing import Callable, Final, Optional, Sequence
@@ -67,6 +68,8 @@ from src.tools.fabrication.wing_retention import (
 )
 from src.tools.fabrication.wing_stiffness import dbox_web_x_m
 
+logger = logging.getLogger(__name__)
+
 AILERON_HINGE_FRACTION: Final[float] = 1.0 - AILERON_CHORD_FRACTION
 TAIL_HINGE_FRACTION: Final[float] = 1.0 - TAIL_CONTROL_CHORD_FRACTION
 WIRING_CHORD_FRACTIONS: Final[tuple[float, ...]] = (0.50, 0.45, 0.40, 0.35)  # 50 % chord, forward if too thin
@@ -115,6 +118,52 @@ def panel_rib_stations(start_m: float, semi_span_m: float) -> tuple[float, ...]:
     outboard of it, up to the semi-span (fin: height)."""
     count = math.floor((semi_span_m - start_m) / RIB_PITCH_M + STATION_EPS) + 1
     return tuple(start_m + k * RIB_PITCH_M for k in range(count))
+
+
+@dataclass(frozen=True)
+class RibKeepOut:
+    """Span band |y - centre_m| < half_width_m that no wing rib centre may fall in (a lift-boom clamp)."""
+
+    centre_m: float
+    half_width_m: float
+
+    def contains(self, y_m: float) -> bool:
+        return abs(y_m - self.centre_m) < self.half_width_m - STATION_EPS
+
+
+def _clear_station(y_m: float, lo_m: float, hi_m: float, keep_out: Sequence[RibKeepOut]) -> Optional[float]:
+    """`y_m` moved to the nearest edge of the zone it falls in, outboard first, staying strictly between its
+    neighbours `lo_m` and `hi_m` and outside every zone; None when neither edge is clear."""
+    zone = next((z for z in keep_out if z.contains(y_m)), None)
+    if zone is None:
+        return y_m
+    for edge in (zone.centre_m + zone.half_width_m, zone.centre_m - zone.half_width_m):
+        if lo_m < edge < hi_m and not any(z.contains(edge) for z in keep_out):
+            return edge
+    return None
+
+
+def clear_rib_stations(stations: Sequence[float], keep_out: Sequence[RibKeepOut],
+                       semi_span_m: float) -> tuple[float, ...]:
+    """`stations` with every rib that falls in a keep-out zone moved to the zone's nearest clear edge (outboard
+    preferred; the tip rib can only move inboard). The root rib (first station, on the fuselage joint) stays. A rib
+    with no clear edge between its neighbours is dropped, with a warning."""
+    if not stations:
+        return ()
+    moved: tuple[float, ...] = (stations[0],)
+    for i, y in enumerate(stations[1:], start=1):
+        hi = stations[i + 1] if i + 1 < len(stations) else semi_span_m + STATION_EPS
+        clear = _clear_station(y, moved[-1], hi, keep_out)
+        if clear is None:
+            logger.warning("wing rib at y = %.3f m has no station clear of the lift-boom clamps; rib dropped", y)
+            continue
+        moved = (*moved, clear)
+    return moved
+
+
+def wing_rib_stations(spar: SparPlan, semi_span_m: float) -> tuple[float, ...]:
+    """The wing rib stations of one panel: the plan's (moved clear of the lift-boom clamps) or the nominal pitch."""
+    return spar.rib_stations_m or panel_rib_stations(spar.joint_y_m, semi_span_m)
 
 
 def socket_axis_m(layout: AircraftLayout, y_m: float = 0.0,
@@ -340,7 +389,7 @@ def wing_ribs(
 ) -> tuple[KitPart, ...]:
     """Right-panel ribs `WR-01…` (+ aileron pieces `WR-kA`, servo plate `WR-SV`, pin boss `WR-PD` when needed),
     then the left panel `WL-…`, then the R36 captive-nut plates `NP-R`, `NP-L`."""
-    stations = panel_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)
+    stations = wing_rib_stations(spar, layout.wing.semi_span_m)
     servo_y = _servo_bay_y(stations, layout.wing)
     right = [p for i, y in enumerate(stations) for p in _wing_rib(i, y, servo_y, layout, airfoil, spar, settings)]
     right.append(_servo_plate(layout.wing, servo_y))

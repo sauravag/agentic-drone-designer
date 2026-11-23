@@ -31,7 +31,7 @@ from src.tools.fabrication.fuselage_parts import socket_axis_m, station_location
 from src.tools.fabrication.kit import KitPart, TubePart, TubeRole
 from src.tools.fabrication.rib_outline import Hole, circle_face, drill, keeps_web, largest_face, rect_face
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, KitUnavailable, SparPlan, boom_tube, lift_boom_tube
-from src.tools.fabrication.wing_parts import spar_hole_m, panel_rib_stations
+from src.tools.fabrication.wing_parts import RibKeepOut, spar_hole_m, wing_rib_stations
 
 CLAMP_LABELS: Final[tuple[str, ...]] = ("BC-R1", "BC-R2", "BC-L1", "BC-L2")
 CLAMP_CHEEK_M: Final[float] = 0.005  # plate material beside and below the boom hole
@@ -108,7 +108,7 @@ def _rib_bands(spar: SparPlan, layout: AircraftLayout, settings: FabricationSett
     """(label, |y| from, |y| to) of each rib slab of one panel: centred on its station, the root doubler outboard."""
     t_rib, t_root = settings.sheet_for("rib").thickness_m, settings.sheet_for("doubler").thickness_m
     bands = []
-    for i, y in enumerate(panel_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)):
+    for i, y in enumerate(wing_rib_stations(spar, layout.wing.semi_span_m)):
         lo, hi = (y, y + t_root) if i == 0 else (y - t_rib / 2.0, y + t_rib / 2.0)
         bands.append((f"{prefix}{i + 1:02d}", lo, hi))
     return bands
@@ -139,12 +139,31 @@ def _seat_z(layout: AircraftLayout, spar: SparPlan, settings: FabricationSetting
     return z0 - radius * stretch, z1 - radius * stretch
 
 
+def _hole_d(tube: TubeStock, settings: FabricationSettings) -> float:
+    return tube.od_m + settings.fit_clearance_m
+
+
+def _clamp_keep_out(y_boom: float, tube: TubeStock, settings: FabricationSettings) -> RibKeepOut:
+    """Where a regular rib centre would leave the clamp less than MIN_WEB_M beside the boom hole (the BC-R1 check):
+    hole half-width + web + the rib-sheet gap `_clear_of_ribs` keeps + half the rib slab."""
+    t_rib = settings.sheet_for("rib").thickness_m
+    return RibKeepOut(y_boom, _hole_d(tube, settings) / 2.0 + MIN_WEB_M + t_rib + t_rib / 2.0)
+
+
+def lift_boom_keep_out(layout: AircraftLayout, settings: FabricationSettings,
+                       lift_thrust_n: Optional[float]) -> tuple[RibKeepOut, ...]:
+    """One keep-out zone per lift boom (none for a fixed-wing layout), from the tube R21 sizes for it."""
+    thrust = _lift_thrust_n(layout, lift_thrust_n)
+    return tuple(_clamp_keep_out(abs(b.y_m), _lift_tube(b, layout, thrust, settings), settings)
+                 for b in layout.vtol_booms)
+
+
 def _clamp(boom: Boom, tube: TubeStock, layout: AircraftLayout, spar: SparPlan,
            settings: FabricationSettings) -> _Clamp:
     side, y_boom = (RIGHT if boom.y_m > 0 else LEFT), abs(boom.y_m)
     label = f"BC-{'R' if side == RIGHT else 'L'}1"
     od = tube.od_m
-    hole_d = od + settings.fit_clearance_m
+    hole_d = _hole_d(tube, settings)
     reach = hole_d / 2.0 + CLAMP_CHEEK_M
     span = _clear_of_ribs(label, y_boom, (y_boom - reach, y_boom + reach), od, spar, layout, settings)
     if min(y_boom - span[0], span[1] - y_boom) - hole_d / 2.0 < MIN_WEB_M - WEB_EPS_M:

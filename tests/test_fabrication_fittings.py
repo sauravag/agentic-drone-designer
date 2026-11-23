@@ -28,7 +28,9 @@ from src.tools.fabrication.fuselage_parts import firewall_station, fuselage_part
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.rib_outline import Hole, circle_face, rect_face
 from src.tools.fabrication.tubes import FIT_EPS_M, MIN_WEB_M, NO_PLATE_LOADS, boom_tube
-from src.tools.fabrication.wing_parts import socket_axis_m, wing_ribs
+from src.tools.fabrication.build_kit import stiffened_spar_plan
+from src.tools.fabrication.wing_parts import (RibKeepOut, clear_rib_stations, panel_rib_stations, socket_axis_m,
+                                              wing_rib_stations, wing_ribs)
 from tests.cad_helpers import hole_centre, hole_diameters, part_solid, ribs_by_label
 from tests.test_fabrication_fuselage import (
     _assert_no_intersections,
@@ -465,3 +467,60 @@ def test_narrow_neck_far_from_the_joint_still_splits():
     part = KitPart("C-9", "crutch", face, bd.Location((0.1, 0.0, -0.0015)))
     parts = split_to_bed(part, DEFAULT_FABRICATION)
     assert len(_pieces(parts)) == 3 and len(_doublers(parts)) == 2
+
+
+# ------------------------------------------------------------------- wing ribs clear the lift-boom clamps ---
+def test_rib_inside_a_clamp_zone_moves_to_the_outboard_edge():
+    moved = clear_rib_stations((0.1, 0.3, 0.5, 0.7), (RibKeepOut(0.49, 0.03),), semi_span_m=0.8)
+    assert moved == pytest.approx((0.1, 0.3, 0.52, 0.7))
+
+
+def test_tip_rib_inside_a_clamp_zone_moves_inboard():
+    moved = clear_rib_stations((0.2, 0.4, 0.6, 0.8), (RibKeepOut(0.79, 0.03),), semi_span_m=0.8)
+    assert moved == pytest.approx((0.2, 0.4, 0.6, 0.76))
+
+
+def test_rib_moves_inboard_when_the_outboard_edge_is_in_another_zone():
+    zones = (RibKeepOut(0.49, 0.03), RibKeepOut(0.56, 0.05))
+    moved = clear_rib_stations((0.1, 0.3, 0.5, 0.7), zones, semi_span_m=0.8)
+    assert moved == pytest.approx((0.1, 0.3, 0.46, 0.7))
+
+
+def test_root_rib_never_moves():
+    moved = clear_rib_stations((0.1, 0.3), (RibKeepOut(0.1, 0.03),), semi_span_m=0.8)
+    assert moved[0] == 0.1
+
+
+def _boom_beside_rib(layout, spar, offset_m: float):
+    """`layout` with both lift booms (and their rotors) `offset_m` inboard of the third nominal wing rib station."""
+    y_target = panel_rib_stations(spar.joint_y_m, layout.wing.semi_span_m)[2] - offset_m
+    booms = tuple(dataclasses.replace(b, y_m=math.copysign(y_target, b.y_m)) for b in layout.vtol_booms)
+    rotors = tuple((x, math.copysign(y_target, y), z) for x, y, z in layout.rotor_positions)
+    return dataclasses.replace(layout, vtol_booms=booms, rotor_positions=rotors)
+
+
+def test_lift_boom_inside_a_nominal_rib_clamp_zone_still_builds(g2_kit_inputs, designs):
+    layout, airfoil, spar, settings = g2_kit_inputs
+    sizing, thrust = designs["g2"][0], _thrust(designs)
+    shifted = _boom_beside_rib(layout, spar, offset_m=0.005)
+    spar_shifted = stiffened_spar_plan(sizing, shifted, airfoil, settings)
+    parts, tubes = boom_parts(shifted, spar_shifted, settings, _lift_motors(designs, shifted), lift_thrust_n=thrust)
+    assert {p.label for p in parts} >= set(CLAMP_LABELS[::2])
+    nominal = panel_rib_stations(spar_shifted.joint_y_m, shifted.wing.semi_span_m)
+    stations = wing_rib_stations(spar_shifted, shifted.wing.semi_span_m)
+    assert len(stations) == len(nominal) and stations != nominal
+    od = next(t for t in tubes if t.role == "lift_boom").tube.od_m
+    t_rib = settings.sheet_for("rib").thickness_m
+    y_boom = abs(shifted.vtol_booms[0].y_m)
+    for y in stations[1:]:  # BC-R1 margin: hole half-width + web + rib gap + half a rib, from every rib centre
+        assert abs(y - y_boom) >= (od + settings.fit_clearance_m) / 2 + MIN_WEB_M + 1.5 * t_rib - 1e-12
+    ribs = wing_ribs(shifted, airfoil, spar_shifted, settings)
+    by = ribs_by_label(ribs)  # the rib parts sit at the moved stations (same slab offset as their neighbour)
+    gap = by["WR-03"].location.position.Y - by["WR-02"].location.position.Y
+    assert gap == pytest.approx(stations[2] - stations[1], abs=1e-9)
+
+
+def test_fixed_wing_rib_stations_are_the_nominal_pitch(g1_kit_inputs):
+    layout, _, spar, _ = g1_kit_inputs
+    assert wing_rib_stations(spar, layout.wing.semi_span_m) == panel_rib_stations(spar.joint_y_m,
+                                                                                  layout.wing.semi_span_m)
