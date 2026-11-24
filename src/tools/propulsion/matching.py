@@ -57,7 +57,7 @@ def match_propulsion(context: MatchContext) -> PropulsionMatch:
     lift: Optional[_RoleResult] = _role(context, True, buses) if context.lift_rotor_count else None
     chosen: Optional[tuple[Option, Optional[Option]]] = _best_set(context, buses, cruise, lift)
     if chosen is None:
-        raise _failure(cruise, lift)
+        raise _failure(context, cruise, lift)
     cruise_option, lift_option = chosen
     cells = classes[cruise_option.bus.key[:3]]
     return assemble_match(context, cruise_option, lift_option, cells, _hotel_kg(context, cruise_option.bus))
@@ -246,14 +246,15 @@ def _limits(rejections: tuple[Rejection, ...]) -> str:
                      for (rule, point), n in counted)
 
 
-def _failure(cruise: _RoleResult, lift: Optional[_RoleResult]) -> PropulsionMatchError:
+def _failure(context: MatchContext, cruise: _RoleResult, lift: Optional[_RoleResult]) -> PropulsionMatchError:
     if cruise.best and lift is not None and lift.best:
         cruise_s = sorted({k[3] for k in cruise.best})
         lift_s = sorted({k[3] for k in lift.best})
         return PropulsionMatchError(f"no common bus voltage: the cruise propulsor works at S={cruise_s}, the lift "
                                     f"rotors at S={lift_s}")
-    parts: list[str] = [f"{name} propulsor: {_limits(result.rejections)}"
-                        for name, result in (("cruise", cruise), ("lift", lift))
+    scopes = ((f"cruise propulsor (propellers up to {context.max_cruise_prop_diameter_m:.3f} m diameter)", cruise),
+              (f"lift rotors (at least {context.min_lift_rotor_diameter_m:.3f} m diameter)", lift))
+    parts: list[str] = [f"{scope}: {_limits(result.rejections)}" for scope, result in scopes
                         if result is not None and not result.best]
     return PropulsionMatchError("no propulsion set meets every matching rule; limiting constraints - "
                                 + " | ".join(parts))

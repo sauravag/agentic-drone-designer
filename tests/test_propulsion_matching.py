@@ -59,8 +59,8 @@ def _context(points: tuple[FlightPoint, ...] = G1_POINTS, **changes: object) -> 
 
 
 def _quad_context(**changes: object) -> MatchContext:
-    return _context(points=G1_POINTS + QUAD_HOVER, lift_rotor_count=4, min_lift_rotor_diameter_m=G1_LIFT_MIN_D_M,
-                    **changes)
+    quad: dict[str, object] = dict(lift_rotor_count=4, min_lift_rotor_diameter_m=G1_LIFT_MIN_D_M)
+    return _context(points=G1_POINTS + QUAD_HOVER, **{**quad, **changes})
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -149,6 +149,20 @@ def test_thrust_beyond_catalogue_names_the_constraint() -> None:
     huge = tuple(replace(p, thrust_n=2_000.0) for p in G1_POINTS)
     with pytest.raises(PropulsionMatchError, match="current|power|tip Mach|throttle|diameter"):
         match_propulsion(_context(points=huge))
+
+
+def test_failure_names_the_flight_point_and_the_diameter_scope() -> None:
+    heavy = tuple(replace(p, thrust_n=4.0 * p.thrust_n) for p in G1_POINTS)
+    with pytest.raises(PropulsionMatchError) as failure:
+        match_propulsion(_context(points=heavy))
+    message: str = str(failure.value)
+    assert any(f"at {name}" for name in FORWARD_PHASES if f"at {name}" in message)
+    assert f"{G1_MAX_CRUISE_D_M:.3f} m" in message
+
+
+def test_lift_rotor_beyond_catalogue_names_diameter() -> None:
+    with pytest.raises(PropulsionMatchError, match="diameter"):
+        match_propulsion(_quad_context(min_lift_rotor_diameter_m=5.0))
 
 
 def test_cruise_diameter_below_catalogue_names_diameter() -> None:
