@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import src.tools.propulsion.bemt as bemt
-from src.tools.propulsion.bemt import (BladeGeometry, PropModelError, PropPoint, bemt_point,
+from src.tools.propulsion.bemt import (BladeGeometry, PropModelError, PropPoint, bemt_point, bemt_points,
                                          generic_blade)
 
 INCH_M: Final[float] = 0.0254
@@ -217,3 +217,43 @@ def test_raises_when_representative_section_reynolds_below_floor() -> None:
     # A 9x6 at 800 rpm: Re ~8e3 at r/R 0.75, while every station stays inside the 1e3 grid floor.
     with pytest.raises(PropModelError, match="r/R 0.75"):
         bemt_point(generic_blade(9 * INCH_M, 6 * INCH_M), 800, 0.0, RHO, MU, SPEED_OF_SOUND)
+
+
+def test_batch_matches_single_points() -> None:
+    blade = generic_blade(0.254, 0.178)
+    rpm = np.array([4000.0, 6000.0, 9000.0, 6000.0])
+    airspeed = np.array([0.0, 8.0, 15.0, 22.0])
+    batch = bemt_points(blade, rpm, airspeed, RHO, MU, SPEED_OF_SOUND)
+    assert batch.ok.all()
+    for i in range(len(rpm)):
+        single = bemt_point(blade, float(rpm[i]), float(airspeed[i]), RHO, MU, SPEED_OF_SOUND)
+        assert batch.thrust_n[i] == pytest.approx(single.thrust_n, rel=1e-9)
+        assert batch.torque_nm[i] == pytest.approx(single.torque_nm, rel=1e-9)
+        assert batch.is_windmilling[i] == single.is_windmilling
+
+
+def test_batch_reports_failed_points_without_touching_the_others() -> None:
+    blade = generic_blade(0.254, 0.178)
+    supersonic_tip_rpm: float = 0.9 * SPEED_OF_SOUND / (math.pi * blade.diameter_m) * 60.0
+    rpm = np.array([6000.0, supersonic_tip_rpm, 6000.0, 800.0])
+    batch = bemt_points(blade, rpm, np.zeros(4), RHO, MU, SPEED_OF_SOUND)
+    expected = bemt_point(blade, 6000.0, 0.0, RHO, MU, SPEED_OF_SOUND)
+    assert batch.ok.tolist() == [True, False, True, False]
+    assert "Mach" in str(batch.errors[1]) and "r/R 0.75" in str(batch.errors[3])
+    assert np.isnan(batch.thrust_n[[1, 3]]).all() and np.isnan(batch.shaft_power_w[[1, 3]]).all()
+    assert batch.thrust_n[0] == batch.thrust_n[2] == pytest.approx(expected.thrust_n, rel=1e-12)
+
+
+def test_batch_accepts_per_point_density() -> None:
+    blade = generic_blade(0.254, 0.178)
+    rho = np.array([RHO, 0.8 * RHO])
+    batch = bemt_points(blade, np.array([6000.0, 6000.0]), np.zeros(2), rho, MU, SPEED_OF_SOUND)
+    assert batch.ok.all() and batch.thrust_n[1] < batch.thrust_n[0]
+
+
+def test_batch_rejects_invalid_inputs_for_the_whole_batch() -> None:
+    blade = generic_blade(0.254, 0.178)
+    with pytest.raises(ValueError, match="airspeed"):
+        bemt_points(blade, np.array([6000.0, 6000.0]), np.array([0.0, -1.0]), RHO, MU, SPEED_OF_SOUND)
+    with pytest.raises(ValueError, match="finite"):
+        bemt_points(blade, np.array([6000.0, math.nan]), np.zeros(2), RHO, MU, SPEED_OF_SOUND)

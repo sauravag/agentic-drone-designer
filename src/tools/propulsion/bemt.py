@@ -17,13 +17,12 @@ raises a readable error instead of returning a silently wrong point.
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Final
 
 import aerosandbox as asb
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
 
 PROP_AIRFOIL: Final[str] = "naca4409"  # generic thin cambered propeller section (chosen against the UIUC gate)
 PROP_MODEL_VERSION: Final[int] = 1  # bump when the blade, airfoil or solver changes (keys the on-disk tables)
@@ -146,25 +145,55 @@ def _check_in_grid(reynolds: np.ndarray, mach: np.ndarray) -> None:
 
 @lru_cache(maxsize=None)
 def _section_coefficients(airfoil: str) -> SectionCoefficients:
-    """Interpolator (Reynolds, Mach, alpha deg) -> (CL, CD) over the polar grid (log Re); out-of-grid raises."""
+    """Trilinear (log Re, Mach, alpha) -> (CL, CD) over the polar grid, for arrays of any shape; out-of-grid
+    Reynolds or Mach raises. Alpha is on a uniform grid, so it is indexed arithmetically."""
     sweeps: list[list[tuple[np.ndarray, np.ndarray]]] = [[_alpha_sweep(airfoil, re, m) for m in POLAR_MACH_NODES]
                                                          for re in POLAR_RE_NODES]
-    grid: tuple[np.ndarray, np.ndarray, np.ndarray] = (np.log10(POLAR_RE_NODES), np.asarray(POLAR_MACH_NODES),
-                                                       POLAR_ALPHA_DEG)
-    cl_table = RegularGridInterpolator(grid, np.array([[s[0] for s in row] for row in sweeps]))
-    cd_table = RegularGridInterpolator(grid, np.array([[s[1] for s in row] for row in sweeps]))
+    cl_flat: np.ndarray = np.array([[s[0] for s in row] for row in sweeps]).ravel()
+    cd_flat: np.ndarray = np.array([[s[1] for s in row] for row in sweeps]).ravel()
+    log_re_nodes: np.ndarray = np.log10(POLAR_RE_NODES)
+    mach_nodes: np.ndarray = np.asarray(POLAR_MACH_NODES)
+    n_alpha: int = len(POLAR_ALPHA_DEG)
+    mach_stride: int = n_alpha
+    re_stride: int = len(mach_nodes) * n_alpha
+    alpha_step: float = float(POLAR_ALPHA_DEG[1] - POLAR_ALPHA_DEG[0])
 
     def coefficients(reynolds: np.ndarray, mach: np.ndarray, alpha_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         _check_in_grid(reynolds, mach)
-        query: np.ndarray = np.column_stack([np.log10(reynolds), mach, alpha_deg])
-        return cl_table(query), cd_table(query)
+        ir, fr = _node_fraction(log_re_nodes, np.log10(reynolds))
+        im, fm = _node_fraction(mach_nodes, mach)
+        ia, fa = _node_fraction(POLAR_ALPHA_DEG, np.clip(alpha_deg, POLAR_ALPHA_DEG[0], POLAR_ALPHA_DEG[-1]),
+                                step=alpha_step)
+        base: np.ndarray = ir * re_stride + im * mach_stride + ia
+        return (_trilinear(cl_flat, base, re_stride, mach_stride, fr, fm, fa),
+                _trilinear(cd_flat, base, re_stride, mach_stride, fr, fm, fa))
 
     return coefficients
 
 
+def _node_fraction(nodes: np.ndarray, x: np.ndarray, step: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Lower node index and fraction towards the next node (arithmetic when the nodes are uniform with `step`)."""
+    if step is None:
+        index: np.ndarray = np.clip(np.searchsorted(nodes, x, side="right") - 1, 0, len(nodes) - 2)
+    else:
+        index = np.clip(np.floor((x - nodes[0]) / step).astype(int), 0, len(nodes) - 2)
+    return index, (x - nodes[index]) / (nodes[index + 1] - nodes[index])
+
+
+def _trilinear(flat: np.ndarray, base: np.ndarray, re_stride: int, mach_stride: int, fr: np.ndarray, fm: np.ndarray,
+               fa: np.ndarray) -> np.ndarray:
+    """Blend the eight table corners around flat index `base` (alpha stride 1)."""
+    def along_alpha(offset: int) -> np.ndarray:
+        return flat[base + offset] * (1.0 - fa) + flat[base + offset + 1] * fa
+
+    low: np.ndarray = along_alpha(0) * (1.0 - fm) + along_alpha(mach_stride) * fm
+    high: np.ndarray = along_alpha(re_stride) * (1.0 - fm) + along_alpha(re_stride + mach_stride) * fm
+    return low * (1.0 - fr) + high * fr
+
+
 @dataclass(frozen=True)
 class _Stations:
-    """Per-station quantities that do not depend on the inflow angle."""
+    """Per-station quantities. Shapes: (stations,) except `inflow_ratio`, which is (points, stations)."""
     r_frac: np.ndarray
     radius_m: np.ndarray
     hub_frac: float
@@ -183,7 +212,44 @@ class _Section:
     loss: np.ndarray
 
 
-def _stations(blade: BladeGeometry, omega: float, airspeed_ms: float) -> _Stations:
+class _Failures:
+    """Per-point failure reasons for a batch: the first reason wins and the point is excluded from later checks."""
+
+    def __init__(self, count: int) -> None:
+        self._reasons: list[str | None] = [None] * count
+
+    def flag(self, mask: np.ndarray, reason: Callable[[int], str]) -> None:
+        """Record `reason(point)` for every point in `mask` (full-batch boolean) that has not failed yet."""
+        for point in np.flatnonzero(mask):
+            if self._reasons[point] is None:
+                self._reasons[point] = reason(int(point))
+
+    @property
+    def mask(self) -> np.ndarray:
+        return np.array([r is not None for r in self._reasons], dtype=bool)
+
+    @property
+    def reasons(self) -> tuple[str | None, ...]:
+        return tuple(self._reasons)
+
+
+@dataclass(frozen=True)
+class PropBatch:
+    """Operating points of `bemt_points`. A point that failed has `errors[i]` set and NaN in every value array;
+    `ok[i]` is False for it. `is_windmilling` follows `PropPoint`."""
+    thrust_n: np.ndarray
+    torque_nm: np.ndarray
+    shaft_power_w: np.ndarray
+    efficiency: np.ndarray
+    is_windmilling: np.ndarray
+    errors: tuple[str | None, ...]
+
+    @property
+    def ok(self) -> np.ndarray:
+        return np.array([e is None for e in self.errors], dtype=bool)
+
+
+def _stations(blade: BladeGeometry, omega: np.ndarray, airspeed_ms: np.ndarray) -> _Stations:
     tip_radius: float = blade.diameter_m / 2.0
     r_frac: np.ndarray = np.asarray(blade.stations)
     edges: np.ndarray = _element_edges(r_frac)
@@ -192,7 +258,7 @@ def _stations(blade: BladeGeometry, omega: float, airspeed_ms: float) -> _Statio
     return _Stations(r_frac=r_frac, radius_m=radius, hub_frac=float(edges[0]), width_m=np.diff(edges) * tip_radius,
                      chord_m=chord, twist=np.asarray(blade.twist_rad),
                      solidity=blade.n_blades * chord / (2.0 * math.pi * radius),
-                     inflow_ratio=airspeed_ms / (omega * radius))
+                     inflow_ratio=airspeed_ms[:, None] / (omega[:, None] * radius))
 
 
 def _prandtl_loss(n_blades: int, stations: _Stations, sin_phi: np.ndarray) -> np.ndarray:
@@ -219,90 +285,206 @@ def _residual(stations: _Stations, phi: np.ndarray, section: _Section) -> np.nda
 
 
 def _solve_inflow(stations: _Stations, n_blades: int, reynolds: np.ndarray, mach: np.ndarray,
-                  coefficients: SectionCoefficients) -> np.ndarray:
-    """Inflow angle per station by vectorised bisection on (0, pi/2); raises where the residual has no sign change."""
+                  coefficients: SectionCoefficients) -> tuple[np.ndarray, np.ndarray]:
+    """(phi, bracketed): inflow angle per (point, station) by vectorised bisection on (0, pi/2), and where the
+    residual changes sign on that interval (phi is meaningless where it does not)."""
     def residual(phi: np.ndarray) -> np.ndarray:
         return _residual(stations, phi, _section(stations, n_blades, phi, reynolds, mach, coefficients))
 
-    low: np.ndarray = np.full_like(stations.r_frac, PHI_MIN_RAD)
-    high: np.ndarray = np.full_like(stations.r_frac, math.pi / 2.0)
+    low: np.ndarray = np.full(reynolds.shape, PHI_MIN_RAD)
+    high: np.ndarray = np.full(reynolds.shape, math.pi / 2.0)
     bracketed: np.ndarray = (residual(low) < 0.0) & (residual(high) > 0.0)
-    if not np.all(bracketed):
-        bad: float = float(stations.r_frac[np.argmin(bracketed)])
-        raise PropModelError(f"BEMT inflow residual has no sign change on (0, pi/2) at r/R = {bad:.3f} "
-                             f"({int(np.sum(~bracketed))} station(s)); no momentum solution there")
     for _ in range(BISECTION_STEPS):
         mid: np.ndarray = (low + high) / 2.0
         negative: np.ndarray = residual(mid) < 0.0
         low, high = np.where(negative, mid, low), np.where(negative, high, mid)
-    return (low + high) / 2.0
+    return (low + high) / 2.0, bracketed
 
 
-def _relative_speed(stations: _Stations, omega: float, phi: np.ndarray, section: _Section) -> np.ndarray:
-    """Relative speed W from the tangential balance W (cos phi + sigma' ct / (4 F sin phi)) = Omega r."""
+def _relative_speed(stations: _Stations, omega: np.ndarray, phi: np.ndarray, section: _Section) -> np.ndarray:
+    """Relative speed W from the tangential balance W (cos phi + sigma' ct / (4 F sin phi)) = Omega r;
+    `omega` is a (points, 1) column."""
     swirl_term: np.ndarray = stations.solidity * section.ct / (4.0 * section.loss * np.sin(phi))
     return omega * stations.radius_m / (np.cos(phi) + swirl_term)
 
 
-def _check_speed(speed: np.ndarray, stations: _Stations) -> np.ndarray:
-    """Raise unless every relative speed is finite and positive (the swirl balance can break past zero thrust)."""
-    valid: np.ndarray = np.isfinite(speed) & (speed > 0.0)
-    if not np.all(valid):
-        bad: int = int(np.argmin(valid))
-        raise PropModelError(f"BEMT relative speed is {float(speed[bad])} m/s at r/R = "
-                             f"{float(stations.r_frac[bad]):.3f}; the swirl balance has no physical solution")
-    return speed
-
-
-def _validate_conditions(rpm: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float) -> None:
-    values: tuple[float, ...] = (rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-    if not all(math.isfinite(x) for x in values) or min(rpm, rho, mu, speed_of_sound_ms) <= 0.0 or airspeed_ms < 0.0:
-        raise ValueError(f"bemt_point needs finite rpm, rho, mu, a > 0 and airspeed >= 0, got rpm={rpm}, "
+def _validate_conditions(rpm: np.ndarray, airspeed_ms: np.ndarray, rho: np.ndarray, mu: np.ndarray,
+                         speed_of_sound_ms: np.ndarray) -> None:
+    values: tuple[np.ndarray, ...] = (rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
+    positive: bool = all(np.all(x > 0.0) for x in (rpm, rho, mu, speed_of_sound_ms))
+    if not all(np.all(np.isfinite(x)) for x in values) or not positive or np.any(airspeed_ms < 0.0):
+        raise ValueError(f"bemt needs finite rpm, rho, mu, a > 0 and airspeed >= 0, got rpm={rpm}, "
                          f"V={airspeed_ms}, rho={rho}, mu={mu}, a={speed_of_sound_ms}")
 
 
-def _check_representative_reynolds(stations: _Stations, reynolds: np.ndarray) -> None:
-    """Raise when the r/R 0.75 section is below the Reynolds number where NeuralFoil is credible."""
-    re_75: float = float(np.interp(REPRESENTATIVE_STATION, stations.r_frac, reynolds))
-    if re_75 < REPRESENTATIVE_RE_MIN:
-        raise PropModelError(f"Reynolds number at r/R {REPRESENTATIVE_STATION} is {re_75:.3g}, below "
-                             f"{REPRESENTATIVE_RE_MIN:.0e} where the airfoil polars are credible (raise rpm or size)")
+def _grid_reason(reynolds: np.ndarray, mach: np.ndarray) -> str:
+    """The `_check_in_grid` message for one point (a row of stations)."""
+    try:
+        _check_in_grid(reynolds, mach)
+    except PropModelError as exc:
+        return str(exc)
+    return "section Reynolds or Mach number is not finite"
 
 
-def _converged_state(blade: BladeGeometry, stations: _Stations, omega: float, airspeed_ms: float, rho: float,
-                     mu: float, speed_of_sound_ms: float) -> tuple[_Section, np.ndarray]:
-    """(section, W) with Reynolds and Mach taken from the converged W: start from the geometric speed, solve phi,
-    update W, and repeat until W changes by less than SPEED_REL_TOLERANCE. The returned section was evaluated
-    at that converged W, so loads built from it are consistent."""
+def _bracket_reason(stations: _Stations, bracketed_row: np.ndarray) -> str:
+    bad: float = float(stations.r_frac[np.argmin(bracketed_row)])
+    return (f"BEMT inflow residual has no sign change on (0, pi/2) at r/R = {bad:.3f} "
+            f"({int(np.sum(~bracketed_row))} station(s)); no momentum solution there")
+
+
+def _speed_reason(stations: _Stations, speed_row: np.ndarray) -> str:
+    bad: int = int(np.argmin(np.isfinite(speed_row) & (speed_row > 0.0)))
+    return (f"BEMT relative speed is {float(speed_row[bad])} m/s at r/R = {float(stations.r_frac[bad]):.3f}; "
+            f"the swirl balance has no physical solution")
+
+
+def _representative_reynolds(stations: _Stations, reynolds: np.ndarray) -> np.ndarray:
+    """Reynolds number at r/R 0.75 per point (linear between the stations around it)."""
+    r_frac: np.ndarray = stations.r_frac
+    lower: int = int(np.clip(np.searchsorted(r_frac, REPRESENTATIVE_STATION, side="right") - 1, 0, len(r_frac) - 2))
+    weight: float = float(np.clip((REPRESENTATIVE_STATION - r_frac[lower]) / (r_frac[lower + 1] - r_frac[lower]),
+                                  0.0, 1.0))
+    return reynolds[:, lower] * (1.0 - weight) + reynolds[:, lower + 1] * weight
+
+
+def _subset(stations: _Stations, rows: np.ndarray) -> _Stations:
+    return replace(stations, inflow_ratio=stations.inflow_ratio[rows])
+
+
+@dataclass(frozen=True)
+class _Conditions:
+    """Per-point operating conditions as (points, 1) columns."""
+    omega: np.ndarray
+    rho: np.ndarray
+    mu: np.ndarray
+    sound: np.ndarray
+
+    def rows(self, rows: np.ndarray) -> "_Conditions":
+        return _Conditions(self.omega[rows], self.rho[rows], self.mu[rows], self.sound[rows])
+
+
+def _scatter(size: int, rows: np.ndarray, sub_mask: np.ndarray) -> np.ndarray:
+    full: np.ndarray = np.zeros(size, dtype=bool)
+    full[rows] = sub_mask
+    return full
+
+
+def _converged_state(blade: BladeGeometry, stations: _Stations, omega: np.ndarray, airspeed_ms: np.ndarray,
+                     rho: np.ndarray, mu: np.ndarray, speed_of_sound_ms: np.ndarray,
+                     failures: _Failures) -> tuple[_Section, np.ndarray]:
+    """(section, W) per point with Reynolds and Mach from the converged W: start from the geometric speed, solve
+    phi, update W, repeat until W changes by less than SPEED_REL_TOLERANCE. The returned section was evaluated at
+    that converged W, so loads built from it are consistent. Points that fail are recorded in `failures` and left
+    at zero; converged points drop out of later passes."""
     coefficients: SectionCoefficients = _section_coefficients(PROP_AIRFOIL)
-    speed: np.ndarray = np.hypot(airspeed_ms, omega * stations.radius_m)
+    count: int = len(omega)
+    cond: _Conditions = _Conditions(omega[:, None], rho[:, None], mu[:, None], speed_of_sound_ms[:, None])
+    speed: np.ndarray = np.hypot(airspeed_ms[:, None], cond.omega * stations.radius_m)
+    shape: tuple[int, int] = speed.shape
+    out: dict[str, np.ndarray] = {key: np.zeros(shape) for key in ("cn", "ct", "loss", "speed")}
+    done: np.ndarray = np.zeros(count, dtype=bool)
     for _ in range(MAX_SPEED_PASSES):
-        reynolds: np.ndarray = rho * speed * stations.chord_m / mu
-        mach: np.ndarray = speed / speed_of_sound_ms
-        phi: np.ndarray = _solve_inflow(stations, blade.n_blades, reynolds, mach, coefficients)
-        section: _Section = _section(stations, blade.n_blades, phi, reynolds, mach, coefficients)
-        new_speed: np.ndarray = _check_speed(_relative_speed(stations, omega, phi, section), stations)
-        if np.max(np.abs(new_speed / speed - 1.0)) < SPEED_REL_TOLERANCE:
-            _check_representative_reynolds(stations, reynolds)
-            return section, speed
-        speed = new_speed
-    raise PropModelError(f"BEMT relative speed did not converge in {MAX_SPEED_PASSES} Reynolds/Mach passes")
+        rows: np.ndarray = np.flatnonzero(~(done | failures.mask))
+        if len(rows) == 0:
+            break
+        converged: np.ndarray = _speed_pass(blade, _subset(stations, rows), cond.rows(rows), speed, rows, coefficients,
+                                            failures, out)
+        done |= _scatter(count, rows, converged)
+    failures.flag(~done, lambda _p: f"BEMT relative speed did not converge in {MAX_SPEED_PASSES} Reynolds/Mach passes")
+    return _Section(cn=out["cn"], ct=out["ct"], loss=out["loss"]), out["speed"]
+
+
+def _speed_pass(blade: BladeGeometry, stations: _Stations, cond: _Conditions, speed: np.ndarray, rows: np.ndarray,
+                coefficients: SectionCoefficients, failures: _Failures, out: dict[str, np.ndarray]) -> np.ndarray:
+    """One Reynolds/Mach pass for the points `rows`: updates `speed` in place for them, stores converged results in
+    `out`, flags failures; returns which of `rows` converged this pass."""
+    count: int = len(speed)
+    reynolds: np.ndarray = cond.rho * speed[rows] * stations.chord_m / cond.mu
+    mach: np.ndarray = speed[rows] / cond.sound
+    in_grid: np.ndarray = (np.all(reynolds >= POLAR_RE_NODES[0], axis=1) & np.all(reynolds <= POLAR_RE_NODES[-1], axis=1)
+                           & np.all(mach <= POLAR_MACH_NODES[-1], axis=1))
+    failures.flag(_scatter(count, rows, ~in_grid), lambda p: _grid_reason(reynolds[_at(rows, p)], mach[_at(rows, p)]))
+    safe_re: np.ndarray = np.clip(np.nan_to_num(reynolds, nan=POLAR_RE_NODES[0]), POLAR_RE_NODES[0], POLAR_RE_NODES[-1])
+    safe_mach: np.ndarray = np.clip(np.nan_to_num(mach), 0.0, POLAR_MACH_NODES[-1])
+    phi, bracketed = _solve_inflow(stations, blade.n_blades, safe_re, safe_mach, coefficients)
+    all_bracketed: np.ndarray = np.all(bracketed, axis=1)
+    failures.flag(_scatter(count, rows, ~all_bracketed),
+                  lambda p: _bracket_reason(stations, bracketed[_at(rows, p)]))
+    section: _Section = _section(stations, blade.n_blades, phi, safe_re, safe_mach, coefficients)
+    new_speed: np.ndarray = _relative_speed(stations, cond.omega, phi, section)
+    valid: np.ndarray = np.all(np.isfinite(new_speed) & (new_speed > 0.0), axis=1)
+    failures.flag(_scatter(count, rows, ~valid), lambda p: _speed_reason(stations, new_speed[_at(rows, p)]))
+    alive: np.ndarray = ~failures.mask[rows]
+    change: np.ndarray = np.abs(new_speed / speed[rows] - 1.0)
+    converged: np.ndarray = alive & np.all(change < SPEED_REL_TOLERANCE, axis=1)
+    _flag_low_reynolds(failures, stations, reynolds, rows, converged, count)
+    final: np.ndarray = converged & ~failures.mask[rows]
+    for key, value in (("cn", section.cn), ("ct", section.ct), ("loss", section.loss), ("speed", speed[rows])):
+        out[key][rows[final]] = value[final]
+    speed[rows[valid]] = new_speed[valid]
+    return final
+
+
+def _at(rows: np.ndarray, point: int) -> int:
+    """Position of batch point `point` within the active `rows`."""
+    return int(np.searchsorted(rows, point))
+
+
+def _flag_low_reynolds(failures: _Failures, stations: _Stations, reynolds: np.ndarray, rows: np.ndarray,
+                       converged: np.ndarray, count: int) -> None:
+    """Flag converged points whose r/R 0.75 section is below the Reynolds number where the polars are credible."""
+    re_75: np.ndarray = _representative_reynolds(stations, reynolds)
+    low: np.ndarray = converged & (re_75 < REPRESENTATIVE_RE_MIN)
+    failures.flag(_scatter(count, rows, low), lambda p: (
+        f"Reynolds number at r/R {REPRESENTATIVE_STATION} is {float(re_75[_at(rows, p)]):.3g}, below "
+        f"{REPRESENTATIVE_RE_MIN:.0e} where the airfoil polars are credible (raise rpm or size)"))
+
+
+def bemt_points(blade: BladeGeometry, rpm: np.ndarray, airspeed_ms: np.ndarray, rho: float | np.ndarray,
+                mu: float | np.ndarray, speed_of_sound_ms: float | np.ndarray) -> PropBatch:
+    """Thrust, torque, shaft power and efficiency at many operating points at once (1-D arrays; rho, mu and the
+    speed of sound may be scalars or per-point). Invalid inputs raise ValueError for the whole batch; a point the
+    model cannot solve is reported in `PropBatch.errors` (NaN values) without affecting the others."""
+    columns = np.broadcast_arrays(*(np.atleast_1d(np.asarray(x, dtype=float))
+                                    for x in (rpm, airspeed_ms, rho, mu, speed_of_sound_ms)))
+    rpm_a, speed_a, rho_a, mu_a, sound_a = (np.array(c) for c in columns)
+    _validate_conditions(rpm_a, speed_a, rho_a, mu_a, sound_a)
+    omega: np.ndarray = rpm_a * 2.0 * math.pi / SECONDS_PER_MINUTE
+    stations: _Stations = _stations(blade, omega, speed_a)
+    failures: _Failures = _Failures(len(omega))
+    section, speed = _converged_state(blade, stations, omega, speed_a, rho_a, mu_a, sound_a, failures)
+    load: np.ndarray = 0.5 * rho_a[:, None] * speed ** 2 * blade.n_blades * stations.chord_m * stations.width_m
+    with np.errstate(invalid="ignore", over="ignore"):
+        thrust: np.ndarray = np.sum(load * section.cn, axis=-1)
+        torque: np.ndarray = np.sum(load * section.ct * stations.radius_m, axis=-1)
+    finite: np.ndarray = np.isfinite(thrust) & np.isfinite(torque)
+    failures.flag(~finite, lambda p: f"BEMT produced non-finite loads: thrust {thrust[p]} N, torque {torque[p]} N m")
+    return _batch_result(failures, thrust, torque, omega, speed_a)
+
+
+def _batch_result(failures: _Failures, thrust: np.ndarray, torque: np.ndarray, omega: np.ndarray,
+                  airspeed_ms: np.ndarray) -> PropBatch:
+    failed: np.ndarray = failures.mask
+    power: np.ndarray = torque * omega
+    moving: np.ndarray = (airspeed_ms > 0.0) & (power > 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        efficiency: np.ndarray = np.where(moving, thrust * airspeed_ms / power, 0.0)
+    windmilling: np.ndarray = (airspeed_ms > 0.0) & (power <= 0.0)
+
+    def masked(values: np.ndarray) -> np.ndarray:
+        return np.where(failed, math.nan, values)
+
+    return PropBatch(thrust_n=masked(thrust), torque_nm=masked(torque), shaft_power_w=masked(power),
+                     efficiency=masked(efficiency), is_windmilling=windmilling & ~failed,
+                     errors=failures.reasons)
 
 
 def bemt_point(blade: BladeGeometry, rpm: float, airspeed_ms: float, rho: float, mu: float,
                speed_of_sound_ms: float) -> PropPoint:
     """Thrust, torque, shaft power and efficiency of `blade` at `rpm` and axial `airspeed_ms` (>= 0)."""
-    _validate_conditions(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-    omega: float = rpm * 2.0 * math.pi / SECONDS_PER_MINUTE
-    stations: _Stations = _stations(blade, omega, airspeed_ms)
-    section, speed = _converged_state(blade, stations, omega, airspeed_ms, rho, mu, speed_of_sound_ms)
-    load: np.ndarray = 0.5 * rho * speed ** 2 * blade.n_blades * stations.chord_m * stations.width_m
-    thrust: float = float(np.sum(load * section.cn))
-    torque: float = float(np.sum(load * section.ct * stations.radius_m))
-    if not (math.isfinite(thrust) and math.isfinite(torque)):
-        raise PropModelError(f"BEMT produced non-finite loads: thrust {thrust} N, torque {torque} N m")
-    power: float = torque * omega
-    is_windmilling: bool = airspeed_ms > 0.0 and power <= 0.0
-    efficiency: float = thrust * airspeed_ms / power if airspeed_ms > 0.0 and power > 0.0 else 0.0
-    return PropPoint(thrust_n=thrust, torque_nm=torque, shaft_power_w=power, efficiency=efficiency,
-                     is_windmilling=is_windmilling)
+    batch: PropBatch = bemt_points(blade, np.array([rpm]), np.array([airspeed_ms]), rho, mu, speed_of_sound_ms)
+    if batch.errors[0] is not None:
+        raise PropModelError(batch.errors[0])
+    return PropPoint(thrust_n=float(batch.thrust_n[0]), torque_nm=float(batch.torque_nm[0]),
+                     shaft_power_w=float(batch.shaft_power_w[0]), efficiency=float(batch.efficiency[0]),
+                     is_windmilling=bool(batch.is_windmilling[0]))
