@@ -68,7 +68,9 @@ class Propulsor:
     max_current_a: float
     esc_efficiency: float
     bus_voltage_v: float  # nominal bus; point_for_thrust may solve at another (sagged) voltage
-    installation_factor: float = 1.0  # multiplies the propeller efficiency (pusher installation loss)
+    # Delivered / propeller thrust (pusher installation loss): the propeller makes T / factor to deliver T, so the
+    # loss costs rpm, current and power, and the efficiencies are quoted on the delivered thrust.
+    installation_factor: float = 1.0
     role: PropulsorRole = "cruise"
 
     def __post_init__(self) -> None:
@@ -107,24 +109,27 @@ class Propulsor:
             return hi
         return _bracketed_root(excess, lo, hi, f_lo, f_hi, ROOT_THRUST_RTOL * thrust_n)
 
-    def _efficiency(self, thrust_n: float, airspeed_ms: float, rho: float, shaft_w: float) -> float:
+    def _efficiency(self, delivered_n: float, airspeed_ms: float, rho: float, shaft_w: float) -> float:
+        """T V / P_shaft forward, the figure of merit in hover, both on the delivered thrust."""
         if airspeed_ms <= HOVER_AIRSPEED_MS:
             disk_area: float = math.pi * self.table.diameter_m ** 2 / 4.0
-            ideal_w: float = thrust_n ** 1.5 / math.sqrt(2.0 * rho * disk_area)  # momentum-theory hover power
-            return self.installation_factor * ideal_w / shaft_w
-        return self.installation_factor * thrust_n * airspeed_ms / shaft_w
+            ideal_w: float = delivered_n ** 1.5 / math.sqrt(2.0 * rho * disk_area)  # momentum-theory hover power
+            return ideal_w / shaft_w
+        return delivered_n * airspeed_ms / shaft_w
 
     def point_for_thrust(self, name: str, thrust_n: float, airspeed_ms: float, rho: float, mu: float,
                          speed_of_sound_ms: float, bus_voltage_v: Optional[float] = None,
                          sagged: bool = False) -> Optional[OperatingPoint]:
-        """The operating point giving `thrust_n`, or None when it is not achievable: outside the table (tip Mach
-        0.80, above pitch speed), more voltage than the bus, or more current than the motor's max."""
+        """The operating point delivering `thrust_n` (the propeller makes thrust_n / installation_factor), or None
+        when it is not achievable: outside the table (tip Mach 0.80, above pitch speed, below the lowest tabulated
+        rpm), more voltage than the bus, or more current than the motor's max."""
         _require(thrust_n, "thrust_n", 0.0)
         _require_air(airspeed_ms, rho, mu, speed_of_sound_ms)
         bus: float = self.bus_voltage_v if bus_voltage_v is None else bus_voltage_v
         _require(bus, "bus_voltage_v", 0.0)
         try:
-            rpm: Optional[float] = self._rpm_for_thrust(thrust_n, airspeed_ms, rho, mu, speed_of_sound_ms)
+            prop_thrust_n: float = thrust_n / self.installation_factor
+            rpm: Optional[float] = self._rpm_for_thrust(prop_thrust_n, airspeed_ms, rho, mu, speed_of_sound_ms)
             if rpm is None:
                 return None
             torque: float = self.table.torque_nm(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
@@ -149,18 +154,20 @@ class Propulsor:
 
     def _prop_torque_nm(self, rpm: float, airspeed_ms: float, rho: float, mu: float,
                         speed_of_sound_ms: float) -> float:
-        try:
-            return self.table.torque_nm(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-        except ValueError:  # inside the rpm window this is only "past the computed J": windmilling, no load
-            return 0.0
+        if self.table.past_computed_j(rpm, airspeed_ms, rho, mu, speed_of_sound_ms):
+            return 0.0  # past zero thrust (windmilling): the propeller loads the motor with nothing
+        return self.table.torque_nm(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
 
-    def thrust_n(self, throttle: float, airspeed_ms: float, rho: float, mu: float,
-                 speed_of_sound_ms: float) -> float:
-        """Thrust (N, >= 0) at `throttle` x bus voltage. Zero when the motor cannot turn the propeller up to the
+    def thrust_n(self, throttle: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float,
+                 bus_voltage_v: Optional[float] = None) -> float:
+        """Delivered thrust (N, >= 0: propeller thrust x installation_factor) at `throttle` x bus voltage (default
+        the nominal bus; pass a sagged value to model sag). Zero when the motor cannot turn the propeller up to the
         table's lowest rpm; held at the table's top rpm (tip Mach 0.80) when the motor could spin it faster."""
         _require(throttle, "throttle", 0.0, 1.0, low_open=False)
         _require_air(airspeed_ms, rho, mu, speed_of_sound_ms)
-        volts: float = throttle * self.bus_voltage_v
+        bus: float = self.bus_voltage_v if bus_voltage_v is None else bus_voltage_v
+        _require(bus, "bus_voltage_v", 0.0)
+        volts: float = throttle * bus
         window: Optional[tuple[float, float]] = self._rpm_window(airspeed_ms, rho, mu, speed_of_sound_ms)
         if window is None:
             return 0.0
@@ -174,7 +181,7 @@ class Propulsor:
             return 0.0
         f_hi: float = surplus(hi)
         rpm: float = hi if f_hi >= 0.0 else _bracketed_root(surplus, lo, hi, f_lo, f_hi)
-        return self.table.thrust_n(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
+        return self.installation_factor * self.table.thrust_n(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
 
 
 def propulsor_from_parts(motor: CruiseMotor | VtolMotor, propeller: Propeller, esc: Esc, battery: Battery,

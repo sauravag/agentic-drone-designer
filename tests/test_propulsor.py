@@ -17,6 +17,7 @@ from src.tools.propulsion.propulsor import Propulsor, propulsor_from_parts
 
 SMALL_PROP: Final[tuple[float, float]] = (0.254, 0.1143)  # 10 x 4.5 inch
 MOTOR_NAME: Final[str] = "Outrunner 2814-900KV"
+LIFT_MOTOR_NAME: Final[str] = "Lift 3110-900KV"
 RHO, MU, SOUND = 1.225, 1.81e-5, 340.3
 AIR: Final[tuple[float, float, float]] = (RHO, MU, SOUND)
 BUS_V: Final[float] = 14.8
@@ -122,12 +123,49 @@ def test_thrust_n_is_monotonic_in_throttle(propulsor: Propulsor, airspeed_ms: fl
     assert thrusts[-1] > thrusts[5] > 0.0
 
 
-def test_installation_factor_scales_prop_efficiency_only(propulsor: Propulsor) -> None:
-    clean = propulsor.point_for_thrust("cruise", 5.0, 12.0, *AIR)
-    pusher = replace(propulsor, installation_factor=0.9).point_for_thrust("cruise", 5.0, 12.0, *AIR)
-    assert clean is not None and pusher is not None
-    assert pusher.prop_efficiency == pytest.approx(0.9 * clean.prop_efficiency)
-    assert (pusher.rpm, pusher.current_a, pusher.throttle) == (clean.rpm, clean.current_a, clean.throttle)
+@pytest.mark.parametrize("airspeed_ms", [12.0, 0.0])
+def test_installation_factor_costs_power(propulsor: Propulsor, airspeed_ms: float) -> None:
+    # A 0.9 installation factor: the propeller must make T / 0.9 to deliver T, so the same delivered thrust costs
+    # more rpm, current and electrical power, and the delivered efficiency is 0.9 x that of the bare T / 0.9 point.
+    pusher_prop = replace(propulsor, installation_factor=0.9)
+    clean = propulsor.point_for_thrust("cruise", 5.0, airspeed_ms, *AIR)
+    pusher = pusher_prop.point_for_thrust("cruise", 5.0, airspeed_ms, *AIR)
+    bare = propulsor.point_for_thrust("cruise", 5.0 / 0.9, airspeed_ms, *AIR)
+    assert clean is not None and pusher is not None and bare is not None
+    assert pusher.electrical_power_w > clean.electrical_power_w
+    assert pusher.current_a > clean.current_a and pusher.rpm > clean.rpm
+    assert (pusher.rpm, pusher.current_a, pusher.throttle) == (bare.rpm, bare.current_a, bare.throttle)
+    expected = 0.9 * bare.prop_efficiency if airspeed_ms > 0 else 0.9 ** 1.5 * bare.prop_efficiency
+    assert pusher.prop_efficiency == pytest.approx(expected)
+    assert pusher_prop.thrust_n(pusher.throttle, airspeed_ms, *AIR) == pytest.approx(5.0, rel=ROUND_TRIP_TOL)
+
+
+def test_thrust_below_the_table_floor_is_none(propulsor: Propulsor) -> None:
+    window = propulsor._rpm_window(0.0, *AIR)
+    assert window is not None
+    floor_n = propulsor.table.thrust_n(window[0], 0.0, *AIR)
+    assert propulsor.point_for_thrust("idle", 0.1 * floor_n, 0.0, *AIR) is None
+    assert propulsor.point_for_thrust("idle", 2.0 * floor_n, 0.0, *AIR) is not None
+
+
+def test_thrust_n_floor_saturation_and_monotonic_across_both(propulsor: Propulsor) -> None:
+    roomy = replace(propulsor, bus_voltage_v=200.0, max_current_a=500.0)
+    window = roomy._rpm_window(0.0, *AIR)
+    assert window is not None
+    top_n = roomy.table.thrust_n(window[1], 0.0, *AIR)
+    thrusts = [roomy.thrust_n(t / 400.0, 0.0, *AIR) for t in range(401)]
+    assert thrusts[1] == 0.0  # 0.5 V: the motor cannot turn the prop up to the table's lowest rpm
+    assert thrusts[-1] == pytest.approx(top_n)  # held at the tip-Mach-0.80 rpm
+    assert all(b >= a for a, b in zip(thrusts, thrusts[1:]))
+    first_positive = next(i for i, t in enumerate(thrusts) if t > 0.0)
+    first_saturated = next(i for i, t in enumerate(thrusts) if t == pytest.approx(top_n))
+    assert 1 < first_positive < first_saturated < len(thrusts) - 1
+
+
+def test_thrust_n_at_a_sagged_bus(propulsor: Propulsor) -> None:
+    sagged = propulsor.thrust_n(0.8, 12.0, *AIR, bus_voltage_v=13.2)
+    assert sagged == pytest.approx(propulsor.thrust_n(0.8 * 13.2 / BUS_V, 12.0, *AIR))
+    assert sagged < propulsor.thrust_n(0.8, 12.0, *AIR)
 
 
 @pytest.mark.parametrize("throttle", [-0.1, 1.1, math.nan])
@@ -171,11 +209,11 @@ def test_propulsor_from_parts_wires_catalogue_values(table: PropellerTable, monk
 def test_propulsor_from_parts_lift_role(table: PropellerTable, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prop_tables, "_build_table", lambda d, p: table)
     prop, esc, battery = _parts("vtol")
-    lift_motor: VtolMotor = next(m for m in catalog_rows("vtol_motors") if m.kv is not None)
+    lift_motor: VtolMotor = next(m for m in catalog_rows("vtol_motors") if m.name == LIFT_MOTOR_NAME)
     built = propulsor_from_parts(lift_motor, prop, esc, battery)
     assert built.role == "lift" and built.kv == lift_motor.kv
     point = built.point_for_thrust("hover", 3.0, 0.0, *AIR)
-    assert point is None or point.propulsor == "lift"
+    assert point is not None and point.propulsor == "lift" and point.flight_point == "hover"
 
 
 def test_propulsor_from_parts_rejects_legacy_motor(table: PropellerTable, monkeypatch: pytest.MonkeyPatch) -> None:

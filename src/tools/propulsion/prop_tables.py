@@ -9,9 +9,10 @@ kept in memory and written to disk as JSON.
 Grid. Re75 and tip Mach are independent axes, so air density and temperature are free (altitude, ISA+20): each
 (M, Re75) cell is solved at the table's reference speed of sound (340.3 m/s) and viscosity with the density that
 gives that Re75, which fixes the section Mach numbers exactly. M runs from the lowest tip Mach of the rpm sweep (Re75
-just above the BEMT floor of 1e4 at sea level) up to 0.80; Re75 runs from just above 1e4 up to the sea-level value
-at tip Mach 0.80, so lower-density points at the same tip Mach fall inside; J runs from 0 up to where CT <= 0 in
-every (M, Re75) row, so thrust rolls off to zero. Interpolation is trilinear in (J, M, log Re75).
+just above the BEMT floor of 1e4 at sea level) up to 0.80; Re75 runs from just above 1e4 up to the cold-day value
+(sea level at -30 C: rho 1.46, mu 1.55e-5) at tip Mach 0.80, so any less dense or warmer point at the same tip Mach
+falls inside; J runs from 0 up to where CT <= 0 in every (M, Re75) row, so thrust rolls off to zero. Interpolation
+is trilinear in (J, M, log Re75).
 
 Out of range is an error, not a clamp: `coefficients` (and so `thrust_n` and `torque_nm`) raise ValueError for J, M
 or Re75 outside the table. Thrust never goes below zero (CT is clamped at 0 in `thrust_n`). Past the J where BEMT
@@ -43,7 +44,10 @@ logger: logging.Logger = logging.getLogger(__name__)
 # from Re75, so the result is valid for any atmosphere inside the axes.
 TABLE_MU: Final[float] = 1.81e-5
 TABLE_SPEED_OF_SOUND: Final[float] = 340.3
-TABLE_SEA_LEVEL_RHO: Final[float] = 1.225  # sea-level density that defines the top of the Re75 axis
+TABLE_SEA_LEVEL_RHO: Final[float] = 1.225  # sea-level density that sets the bottom of the tip-Mach axis
+# Cold dense air (sea level at -30 C) that sets the top of the Re75 axis, so a cold day still reaches tip Mach 0.80.
+TABLE_COLD_RHO: Final[float] = 1.46
+TABLE_COLD_MU: Final[float] = 1.55e-5
 TABLE_MAX_TIP_MACH: Final[float] = 0.80
 RE_FLOOR_MARGIN: Final[float] = 1.1  # lowest table Re75 sits this far above the BEMT floor
 N_RE_NODES: Final[int] = 22  # geometric in Re75
@@ -64,9 +68,10 @@ AXIS_TOLERANCE: Final[float] = 1e-9
 
 # Everything that shapes the grid: a change to any of these changes the hash in the cache key and payload.
 GRID_SPEC: Final[str] = hashlib.sha1(repr((
-    TABLE_MU, TABLE_SPEED_OF_SOUND, TABLE_SEA_LEVEL_RHO, TABLE_MAX_TIP_MACH, RE_FLOOR_MARGIN, N_RE_NODES, N_J_NODES,
-    FIXED_MACH_NODES, MACH_NODE_MIN_RATIO, J_SCAN_STEP, J_SCAN_CHUNK, J_SCAN_MAX, J_TOP_MARGIN, J_EXTEND_FACTOR,
-    MAX_J_EXTENSIONS, REPRESENTATIVE_RE_MIN, REPRESENTATIVE_STATION)).encode()).hexdigest()[:SPEC_HASH_LENGTH]
+    TABLE_MU, TABLE_SPEED_OF_SOUND, TABLE_SEA_LEVEL_RHO, TABLE_COLD_RHO, TABLE_COLD_MU, TABLE_MAX_TIP_MACH,
+    RE_FLOOR_MARGIN, N_RE_NODES, N_J_NODES, FIXED_MACH_NODES, MACH_NODE_MIN_RATIO, J_SCAN_STEP, J_SCAN_CHUNK,
+    J_SCAN_MAX, J_TOP_MARGIN, J_EXTEND_FACTOR, MAX_J_EXTENSIONS, REPRESENTATIVE_RE_MIN,
+    REPRESENTATIVE_STATION)).encode()).hexdigest()[:SPEC_HASH_LENGTH]
 
 
 @dataclass(frozen=True)
@@ -138,6 +143,14 @@ class PropellerTable:
         n, _, _, ct, _ = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
         return max(ct, 0.0) * rho * n ** 2 * self.diameter_m ** 4
 
+    def past_computed_j(self, rpm: float, airspeed_ms: float, rho: float, mu: float,
+                        speed_of_sound_ms: float) -> bool:
+        """True where `torque_nm` would refuse the point for lying beyond the last J BEMT computed (past zero
+        thrust); ValueError outside the table axes."""
+        _, j, tip_mach, _, _ = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
+        re75: float = reynolds75_at(self.diameter_m, self.pitch_m, rpm, rho, mu)
+        return j > self._computed_j_limit(tip_mach, re75)
+
     def torque_nm(self, rpm: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float) -> float:
         """Shaft torque in N m from CP as tabulated; ValueError outside the table or beyond the J BEMT computed."""
         n, j, tip_mach, _, cp = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
@@ -186,7 +199,7 @@ def _rpm_for_tip_mach(diameter_m: float, tip_mach: float) -> float:
 
 def _axes(diameter_m: float, pitch_m: float) -> tuple[np.ndarray, np.ndarray]:
     """(tip Mach nodes, Re75 nodes): the lowest Mach and Re75 are the sea-level rpm sweep's floor, the top Re75 the
-    sea-level value at tip Mach TABLE_MAX_TIP_MACH."""
+    cold-day value at tip Mach TABLE_MAX_TIP_MACH."""
     re_low: float = REPRESENTATIVE_RE_MIN * RE_FLOOR_MARGIN
     rpm_low: float = rpm_for_reynolds75(diameter_m, pitch_m, re_low, TABLE_SEA_LEVEL_RHO, TABLE_MU)
     rpm_high: float = _rpm_for_tip_mach(diameter_m, TABLE_MAX_TIP_MACH)
@@ -196,7 +209,7 @@ def _axes(diameter_m: float, pitch_m: float) -> tuple[np.ndarray, np.ndarray]:
     mach_low: float = math.pi * diameter_m * rpm_low / SECONDS_PER_MINUTE / TABLE_SPEED_OF_SOUND
     inner: list[float] = [m for m in FIXED_MACH_NODES if mach_low * MACH_NODE_MIN_RATIO < m < TABLE_MAX_TIP_MACH]
     mach: list[float] = [mach_low, *inner, TABLE_MAX_TIP_MACH]  # always >= 2 nodes, top node exactly the limit
-    re_high: float = reynolds75_at(diameter_m, pitch_m, rpm_high, TABLE_SEA_LEVEL_RHO, TABLE_MU)
+    re_high: float = reynolds75_at(diameter_m, pitch_m, rpm_high, TABLE_COLD_RHO, TABLE_COLD_MU)
     return np.asarray(mach), np.geomspace(re_low, re_high, N_RE_NODES)
 
 

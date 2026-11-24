@@ -270,7 +270,7 @@ def test_generator_voltage_variants_follow_their_base_rows(db_path: Path) -> Non
     variants = [g for g in gens if g.output_voltage_v is not None]
     assert gens[:len(bases)] == bases  # every legacy (unregulated) row first, in its original order
     labels = {g.name.rsplit(" ", 1)[-1] for g in variants}
-    assert {"6S", "12S", "14S"} <= labels
+    assert {"6S", "8S", "10S", "12S", "14S", "24S", "48S", "96S"} == labels
     assert max(g.output_voltage_v for g in variants) >= 300.0  # HV classes for the big gensets
     by_name = {g.name: g for g in bases}
     for variant in variants:

@@ -54,7 +54,7 @@ ESC_ASPECT: Final[tuple[float, float, float]] = (3.0, 2.0, 1.0)  # L : W : H
 # sits inside the bus window of that series count for both chemistries. Same mass as the base genset (the
 # rectifier/regulator is part of the genset). HV classes (>= 24S) only on the big gensets; any class whose output
 # current would exceed GENSET_MAX_OUTPUT_CURRENT_A is not offered.
-GENSET_SERIES_CLASSES: Final[tuple[int, ...]] = (6, 12, 14, 24, 48, 96)
+GENSET_SERIES_CLASSES: Final[tuple[int, ...]] = (6, 8, 10, 12, 14, 24, 48, 96)
 GENSET_HV_MIN_SERIES: Final[int] = 24
 GENSET_HV_MIN_POWER_W: Final[float] = 5_000.0
 GENSET_MAX_OUTPUT_CURRENT_A: Final[float] = 250.0

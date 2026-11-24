@@ -178,6 +178,17 @@ def test_j_axis_reaches_zero_thrust_in_every_row(which: str, small_table: Propel
     assert table.reynolds75[0] > 1e4 and table.tip_mach[-1] == pytest.approx(0.80)
 
 
+COLD_DAY_OFFSET_C: Final[float] = -45.0  # sea level at -30 C: rho 1.45 kg/m^3
+
+
+def test_reynolds_axis_covers_cold_dense_air_at_the_mach_limit(small_table: PropellerTable) -> None:
+    rho, mu = air_properties(0.0, COLD_DAY_OFFSET_C)
+    rpm_top = prop_tables.TABLE_MAX_TIP_MACH * SEA_LEVEL[2] / (math.pi * SMALL_PROP[0]) * SECONDS_PER_MINUTE
+    re_cold = prop_tables.reynolds75_at(*SMALL_PROP, rpm_top, rho, mu)
+    assert small_table.reynolds75[-1] >= re_cold * (1.0 - 1e-9)
+    small_table.coefficients(0.1, prop_tables.TABLE_MAX_TIP_MACH * (1.0 - 1e-9), re_cold * (1.0 - 1e-6))
+
+
 def test_pitch_speed(small_table: PropellerTable) -> None:
     assert small_table.pitch_speed_ms(6000.0) == pytest.approx(SMALL_PROP[1] * 100.0)
 
