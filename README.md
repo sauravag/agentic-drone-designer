@@ -174,7 +174,9 @@ a 30 % laminar boundary layer on its wing and tails (`HAND_LAUNCH_LAMINAR_FRACTI
 profile drag with transition forced at 30 % chord, and VSPAERO's ParasiteDrag runs 30 % laminar on the same
 surfaces, so the L/D gate compares like with like. Runway and VTOL designs keep NeuralFoil's free transition and
 OpenVSP's fully turbulent build-up. Records saved before launch methods existed that hold a fixed-wing with no
-runway load as hand launches.
+runway load as hand launches. Re-running such a legacy record re-sizes it as a hand launch, with the hand-launch
+stall cap and the 30 % laminar assumption, and a design that then sizes above 9.07 kg fails with a clear
+hand-launch error ("hand launch needs MTOW <= 9.07 kg (Group 1)").
 
 **Landing gear.** One rule (`src/tools/gear.py`) serves sizing, the kit and the JSBSim model. Runway and VTOL
 aircraft get a tricycle whose leg is the tallest of the fuselage/propeller ground clearance and the propeller-tip
