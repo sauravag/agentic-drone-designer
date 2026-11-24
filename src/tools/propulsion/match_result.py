@@ -87,7 +87,7 @@ def _cell(context: MatchContext, options: tuple[Option, ...], cells: tuple[Cell,
 
 def _notes(context: MatchContext, options: tuple[Option, ...], hotel_kg: float, pack: Battery,
            skipped: tuple[str, ...]) -> tuple[str, ...]:
-    storage_kg: float = sum(o.energy_j * o.bus.storage_kg_per_j for o in options) + hotel_kg
+    storage_kg: float = sum(o.storage_kg for o in options) + hotel_kg
     energy_wh: float = (sum(o.energy_j for o in options) + context.hotel_w * context.mission_duration_s) / WH_TO_J
     kind: str = "fuel (with fuel system)" if context.is_hybrid else "battery"
     return (f"objective: hardware + estimated {kind} {storage_kg:.3f} kg for {energy_wh:.1f} Wh of mission energy",

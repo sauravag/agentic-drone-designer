@@ -65,6 +65,9 @@ class MatchContext:
     pusher_factor: float
     hotel_w: float
     assumptions: DesignAssumptions
+    # Series hybrid: the generator rating sizing used this pass. Energy above it (climb, hover) is booked on the LiPo
+    # buffer, so the objective prices it there. None: the largest in-window genset (an upper bound).
+    generator_w: Optional[float] = None
 
     def __post_init__(self) -> None:
         names: list[str] = [p.name for p in self.points]
@@ -85,6 +88,8 @@ class MatchContext:
         _require(self.max_cruise_prop_diameter_m, "max_cruise_prop_diameter_m", 0.0)
         _require(self.pusher_factor, "pusher_factor", 0.0, high=1.0)
         _require(self.hotel_w, "hotel_w", 0.0, low_open=False)
+        if self.generator_w is not None:
+            _require(self.generator_w, "generator_w", 0.0)
         if self.mission_duration_s <= 0.0:
             raise ValueError("the flight points must have a positive total duration (mission energy)")
 

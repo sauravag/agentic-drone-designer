@@ -19,6 +19,7 @@ from src.tools.propulsion.matching import (
     ESC_CURRENT_MARGIN, MAX_MATCH_THROTTLE, PROP_TIP_MACH_MAX, FlightPoint, MatchContext, PropulsionMatchError,
     match_propulsion,
 )
+from src.tools.propulsion.match_search import ESC_BURST_DURATION_S
 from src.tools.propulsion.prop_tables import propeller_table
 from src.tools.sizing.errors import SizingDivergenceError
 
@@ -129,7 +130,11 @@ def _assert_meets_every_rule(match: PropulsionMatch, context: MatchContext) -> N
         esc: Esc = _row("escs", esc_name)  # type: ignore[assignment]
         peak_a: float = max(op.current_a for op in role_ops)
         assert peak_a <= motor.max_current_a
-        assert esc.continuous_current_a >= ESC_CURRENT_MARGIN * peak_a
+        durations = {p.name: p.duration_s for p in context.points}
+        sustained = [op.current_a for op in role_ops if durations[op.flight_point] > ESC_BURST_DURATION_S]
+        transient = [op.current_a for op in role_ops if durations[op.flight_point] <= ESC_BURST_DURATION_S]
+        assert esc.continuous_current_a >= ESC_CURRENT_MARGIN * max(sustained, default=0.0)
+        assert esc.burst_current_a >= max(transient, default=0.0)
     prop: Propeller = _row("propellers", match.cruise_propeller)  # type: ignore[assignment]
     assert prop.diameter_m <= context.max_cruise_prop_diameter_m
 
@@ -352,3 +357,57 @@ def test_lift_rotor_candidates_keep_the_next_size_up_across_a_catalogue_gap() ->
     rotors = mt._lift_rotors(_quad_context(min_lift_rotor_diameter_m=minimum))
     assert {p.diameter_m for p in rotors} == ({gap_high} if gap_high > 1.25 * minimum else
                                               {d for d in sizes if minimum <= d <= 1.25 * minimum})
+
+
+# ------------------------------------------------------------------ fix round 2: hybrid energy pricing, ESC burst
+
+
+def test_energy_above_the_generator_share_is_priced_at_the_buffer_battery() -> None:
+    from src.tools.propulsion.match_search import priced_storage_kg
+
+    fuel, battery = 1e-7, 2e-6  # kg/J: battery ~20x fuel, as for LiPo vs BSFC x fuel system
+    cruise_only = priced_storage_kg((800.0,), (1000.0,), 1000.0, fuel, battery)
+    assert cruise_only == pytest.approx(800.0 * 1000.0 * fuel)
+    climb = priced_storage_kg((1500.0,), (100.0,), 1000.0, fuel, battery)
+    assert climb == pytest.approx(1000.0 * 100.0 * fuel + 500.0 * 100.0 * battery)
+    assert priced_storage_kg((1500.0,), (100.0,), math.inf, fuel, battery) == pytest.approx(1500.0 * 100.0 * fuel)
+
+
+def test_a_low_efficiency_climb_costs_buffer_battery_in_the_hybrid_objective() -> None:
+    from src.tools.propulsion.match_search import priced_storage_kg
+
+    fuel, battery, share = 1e-7, 2e-6, 1000.0
+    efficient = priced_storage_kg((1100.0,), (300.0,), share, fuel, battery)
+    wasteful = priced_storage_kg((1400.0,), (300.0,), share, fuel, battery)  # same thrust power at lower efficiency
+    fuel_priced_gap = (1400.0 - 1100.0) * 300.0 * fuel
+    assert wasteful - efficient == pytest.approx((1400.0 - 1100.0) * 300.0 * battery)
+    assert wasteful - efficient > 10 * fuel_priced_gap
+
+
+def test_hybrid_match_uses_the_sized_generator_rating() -> None:
+    hybrid = dict(is_hybrid=True, chemistry="lipo")
+    roomy = match_propulsion(_context(**hybrid, generator_w=5_000.0))
+    tight = match_propulsion(_context(**hybrid, generator_w=200.0))  # climb now runs on the buffer
+    roomy_kg = float(roomy.notes[0].split("estimated ")[1].split(" kg")[0].split()[-1])
+    tight_kg = float(tight.notes[0].split("estimated ")[1].split(" kg")[0].split()[-1])
+    assert tight_kg > roomy_kg
+
+
+def test_esc_burst_rating_covers_a_transient_peak() -> None:
+    from src.tools.propulsion.match_search import lightest_esc
+
+    escs = tuple(sorted(catalog_rows("escs"), key=lambda e: (e.mass_kg, e.name)))
+    esc = lightest_esc(escs, 10.0, 30.0, 16.8)
+    assert esc is not None and esc.continuous_current_a >= ESC_CURRENT_MARGIN * 10.0
+    assert esc.burst_current_a >= 30.0
+    strict = lightest_esc(escs, 30.0, 0.0, 16.8)  # the same 30 A sustained needs the continuous margin
+    assert strict is not None and strict.continuous_current_a >= ESC_CURRENT_MARGIN * 30.0
+    assert esc.mass_kg <= strict.mass_kg
+
+
+def test_only_short_points_count_as_transient() -> None:
+    from src.tools.propulsion.match_search import ESC_BURST_DURATION_S, is_transient
+
+    assert is_transient(_hover("Hover_Peak", 10.0, 0.0))
+    assert is_transient(_hover("Hover_Peak", 10.0, ESC_BURST_DURATION_S))
+    assert not is_transient(_hover("Hover", 10.0, 120.0))

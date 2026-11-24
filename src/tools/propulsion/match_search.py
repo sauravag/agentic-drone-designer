@@ -40,6 +40,9 @@ MOTOR_OVERSIZE_FACTOR: Final[float] = 6.0
 RULE_MODEL: Final[str] = "propeller model failed (no table)"
 RULE_OVERSIZE: Final[str] = "oversize prune"  # not a limit: a candidate skipped as rated above 6x ideal power
 RULE_TABLE: Final[str] = "thrust out of propeller range (tip Mach 0.80 or pitch speed)"
+# A point this short (e.g. Hover_Peak, 0 s) is a transient the ESC's burst rating covers; longer points need the
+# continuous rating with ESC_CURRENT_MARGIN. 10 s is the usual ESC burst rating window (ESTIMATE).
+ESC_BURST_DURATION_S: Final[float] = 10.0
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,7 @@ class Bus:
     series: int
     storage_kg_per_j: float  # battery (electric) or fuel + fuel system (hybrid) mass per joule of mission energy
     generator_cap_w: float = math.inf  # hybrid: the most a generator variant inside the bus window supplies
+    buffer_kg_per_j: Optional[float] = None  # hybrid: buffer-battery mass per joule above the generator share
 
     @property
     def key(self) -> tuple[str, float, float, int]:
@@ -103,6 +107,18 @@ class Drive:
         return max(m.current_a for m in self.motor_points)
 
     @cached_property
+    def sustained_current_a(self) -> float:
+        """Highest current at the points the ESC must carry continuously (0 without any)."""
+        return max((m.current_a for s, m in zip(self.shafts, self.motor_points) if not is_transient(s.point)),
+                   default=0.0)
+
+    @cached_property
+    def transient_current_a(self) -> float:
+        """Highest current at the transient points (within the ESC burst rating; 0 without any)."""
+        return max((m.current_a for s, m in zip(self.shafts, self.motor_points) if is_transient(s.point)),
+                   default=0.0)
+
+    @cached_property
     def need_nominal(self) -> tuple[float, str]:
         """(highest motor terminal voltage, its point) over every point."""
         return max((m.voltage_v, s.point.name) for s, m in zip(self.shafts, self.motor_points))
@@ -124,10 +140,11 @@ class Option:
     count: int  # propulsors of this role
     hardware_kg: float
     energy_j: float
+    storage_kg: float = 0.0  # the energy priced as sizing books it (`priced_storage_kg`)
 
     @property
     def objective_kg(self) -> float:
-        return self.hardware_kg + self.energy_j * self.bus.storage_kg_per_j
+        return self.hardware_kg + self.storage_kg
 
     @property
     def names(self) -> tuple[str, str, str]:
@@ -137,6 +154,21 @@ class Option:
         """Bus power of ALL propulsors of this role at one point, ESC loss included."""
         m: MotorPoint = self.drive.motor_points[shaft_index]
         return self.count * m.voltage_v * m.current_a / self.esc.efficiency
+
+
+def is_transient(point: FlightPoint) -> bool:
+    return point.duration_s <= ESC_BURST_DURATION_S
+
+
+def priced_storage_kg(powers_w: tuple[float, ...], durations_s: tuple[float, ...], generator_share_w: float,
+                      fuel_kg_per_j: float, buffer_kg_per_j: float) -> float:
+    """Energy-storage mass the way sizing books it: per point, the power up to the generator's share at the fuel
+    rate, the power above it (climb, hover, peaks) at the buffer-battery rate. Electric: an infinite share."""
+    total: float = 0.0
+    for power, seconds in zip(powers_w, durations_s):
+        from_generator: float = min(power, generator_share_w)
+        total += (from_generator * fuel_kg_per_j + (power - from_generator) * buffer_kg_per_j) * seconds
+    return total
 
 
 def ideal_power_w(thrust_n: float, airspeed_ms: float, rho: float, diameter_m: float) -> float:
@@ -209,11 +241,12 @@ def drive_for(propeller: Propeller, motor: Motor, shafts: tuple[Shaft, ...]) -> 
     return Drive(propeller, motor, shafts, tuple(points))
 
 
-def lightest_esc(escs: tuple[Esc, ...], current_a: float, charged_v: float) -> Optional[Esc]:
-    """Lightest ESC (escs sorted by mass) with continuous current >= margin x current and voltage >= charged."""
-    need_a: float = ESC_CURRENT_MARGIN * current_a
-    return next((e for e in escs if e.continuous_current_a >= need_a and e.max_voltage_v >= charged_v - VOLTAGE_EPS_V),
-                None)
+def lightest_esc(escs: tuple[Esc, ...], sustained_a: float, transient_a: float, charged_v: float) -> Optional[Esc]:
+    """Lightest ESC (escs sorted by mass) with continuous current >= margin x the sustained current, burst current
+    >= the transient current, and voltage >= the charged pack."""
+    need_a: float = ESC_CURRENT_MARGIN * sustained_a
+    return next((e for e in escs if e.continuous_current_a >= need_a and e.burst_current_a >= transient_a
+                 and e.max_voltage_v >= charged_v - VOLTAGE_EPS_V), None)
 
 
 def _bus_rejection(drive: Drive, bus: Bus) -> Optional[Rejection]:
@@ -229,13 +262,13 @@ def _bus_rejection(drive: Drive, bus: Bus) -> Optional[Rejection]:
     return None
 
 
-def option_at(drive: Drive, bus: Bus, escs: tuple[Esc, ...], count: int,
-              sustained_cap_w: float) -> Union[Option, Rejection]:
+def option_at(drive: Drive, bus: Bus, escs: tuple[Esc, ...], count: int, sustained_cap_w: float,
+              generator_share_w: float = math.inf) -> Union[Option, Rejection]:
     """The drive on this bus with its ESC, or the first bus, ESC or generator rule it breaks."""
     rejected: Optional[Rejection] = _bus_rejection(drive, bus)
     if rejected is not None:
         return rejected
-    esc: Optional[Esc] = lightest_esc(escs, drive.peak_current_a, bus.charged_v)
+    esc: Optional[Esc] = lightest_esc(escs, drive.sustained_current_a, drive.transient_current_a, bus.charged_v)
     if esc is None:
         return Rejection("no ESC", "")
     hardware: float = count * (drive.motor.mass_kg + drive.propeller.mass_kg + esc.mass_kg)
@@ -244,5 +277,8 @@ def option_at(drive: Drive, bus: Bus, escs: tuple[Esc, ...], count: int,
     for s, power in zip(drive.shafts, powers):
         if not s.point.check_sagged and power > sustained_cap_w:
             return Rejection("generator power", s.point.name)
-    energy: float = sum(power * s.point.duration_s for s, power in zip(drive.shafts, powers))
-    return Option(drive, esc, bus, count, hardware, energy)
+    durations: tuple[float, ...] = tuple(s.point.duration_s for s in drive.shafts)
+    energy: float = sum(power * seconds for power, seconds in zip(powers, durations))
+    buffer: float = bus.storage_kg_per_j if bus.buffer_kg_per_j is None else bus.buffer_kg_per_j
+    storage: float = priced_storage_kg(tuple(powers), durations, generator_share_w, bus.storage_kg_per_j, buffer)
+    return Option(drive, esc, bus, count, hardware, energy, storage)

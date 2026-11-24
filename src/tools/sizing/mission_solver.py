@@ -354,7 +354,7 @@ def _match_context(ev: _Evaluation) -> MatchContext:
         rotor_diameter_m=_disk_loading_rotor_diameter_m(ev.mtow_out) if is_quad else 0.0,
         fuselage_diameter_m=ev.aero.geom.fuselage_diameter_m, is_hand_launch=resolved_launch_method(req) == "hand",
         spec=layout_spec(req.airframe_layout), hotel_w=hotel_power_w(req, ev.mtow_out, design.assumptions),
-        assumptions=design.assumptions,
+        assumptions=design.assumptions, generator_w=ev.generator_power_w or None,
     )
 
 

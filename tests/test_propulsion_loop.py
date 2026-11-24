@@ -189,6 +189,10 @@ def test_context_builder_maps_the_design_rulings() -> None:
     assert context.max_cruise_prop_diameter_m == pytest.approx(loop.PROP_MAX_TO_FUSELAGE_DIAMETER_RATIO * 0.12)
     assert loop.PROP_MAX_TO_FUSELAGE_DIAMETER_RATIO == 3.0
     assert context.pusher_factor == pytest.approx(0.95)
+    with_gen = loop.match_context(points, is_hybrid=True, lift_rotor_count=0, rotor_diameter_m=0.0,
+                                  fuselage_diameter_m=0.12, is_hand_launch=False, spec=PUSHER, hotel_w=20.0,
+                                  assumptions=DEFAULT_ASSUMPTIONS, generator_w=900.0)
+    assert with_gen.generator_w == 900.0
 
     tractor = loop.match_context(points, is_hybrid=False, lift_rotor_count=0, rotor_diameter_m=0.0,
                                  fuselage_diameter_m=0.12, is_hand_launch=False, spec=TRACTOR, hotel_w=20.0,
@@ -275,7 +279,7 @@ def test_no_convergence_raises() -> None:
 
     with pytest.raises(PropulsionMatchError, match=f"{loop.MAX_PROPULSION_PASSES} passes"):
         loop.size_with_matching(sizing.size_pass, lambda ev: ev, seed_efficiencies(TRACTOR, 0.95), fake)
-    assert len(calls) == loop.MAX_PROPULSION_PASSES == 6
+    assert len(calls) == loop.MAX_PROPULSION_PASSES == 12
 
 
 def test_matching_failure_propagates_as_a_sizing_failure() -> None:

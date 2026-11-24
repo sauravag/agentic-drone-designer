@@ -33,6 +33,7 @@ from src.tools.propulsion.match_types import (  # noqa: F401  (re-exported: the 
     PropulsionMatchError,
 )
 from src.tools.sizing.mass_model import FUEL_SYSTEM_FRACTION
+from src.tools.sizing.mission_profile import HYBRID_BUFFER_SOC_FLOOR
 from src.units import KWH_TO_J, WH_TO_J
 
 DIAMETER_TOL_M: Final[float] = 1e-9
@@ -82,6 +83,14 @@ def _storage_kg_per_j(context: MatchContext, chemistry: str) -> float:
     return 1.0 / (a.specific_energy_wh_kg(chemistry) * WH_TO_J)  # type: ignore[arg-type]
 
 
+def _buffer_kg_per_j(context: MatchContext, chemistry: str) -> Optional[float]:
+    """Hybrid: the LiPo buffer's mass per joule above the generator (sizing keeps HYBRID_BUFFER_SOC_FLOOR unused)."""
+    if not context.is_hybrid:
+        return None
+    specific: float = context.assumptions.specific_energy_wh_kg(chemistry)  # type: ignore[arg-type]
+    return 1.0 / (specific * WH_TO_J * (1.0 - HYBRID_BUFFER_SOC_FLOOR))
+
+
 def _voltage_classes(context: MatchContext) -> dict[VoltageClass, tuple[Cell, ...]]:
     """Cells grouped by (chemistry, nominal, max voltage): a class fixes every bus voltage of a series count."""
     groups: dict[VoltageClass, tuple[Cell, ...]] = {}
@@ -115,7 +124,7 @@ def _buses(context: MatchContext, classes: dict[VoltageClass, tuple[Cell, ...]])
         for series in range(1, _max_series(top) + 1):
             cap: float = _generator_cap_w(cells[0], series, generators) if context.is_hybrid else math.inf
             if cap > 0.0:
-                buses.append(Bus(chem, nominal, top, series, storage, cap))
+                buses.append(Bus(chem, nominal, top, series, storage, cap, _buffer_kg_per_j(context, chem)))
     if not buses:
         raise PropulsionMatchError(_no_bus_message(classes, generators))
     return tuple(buses)
@@ -184,14 +193,15 @@ def _prop_drives(prop: Propeller, motors: tuple[Motor, ...], points: tuple[Fligh
 
 
 def _drive_options(drive: Drive, buses: tuple[Bus, ...], escs: tuple[Esc, ...], count: int,
-                   cap_w: Callable[[Bus], float]) -> tuple[tuple[Option, ...], Optional[Rejection]]:
+                   cap_w: Callable[[Bus], float],
+                   share_w: Callable[[Bus], float]) -> tuple[tuple[Option, ...], Optional[Rejection]]:
     """The drive on every bus (buses run by rising series count). Without any, one rejection for the drive: the
     LAST one that is not the winding's voltage rating (which only says S went too high), i.e. the limit at the
     highest S the winding allows; if every bus hit the voltage rating, the first of those."""
     options: list[Option] = []
     telling: Optional[Rejection] = None
     for bus in buses:
-        result: Union[Option, Rejection] = option_at(drive, bus, escs, count, cap_w(bus))
+        result: Union[Option, Rejection] = option_at(drive, bus, escs, count, cap_w(bus), share_w(bus))
         if isinstance(result, Option):
             options.append(result)
         elif telling is None or not result.rule.startswith("motor voltage"):
@@ -215,13 +225,19 @@ def _role(context: MatchContext, is_lift: bool, buses: tuple[Bus, ...]) -> _Role
     def cap_w(bus: Bus) -> float:  # a hybrid's generator carries the cruise propulsor and the hotel load
         return math.inf if is_lift else bus.generator_cap_w - context.hotel_w
 
+    def share_w(bus: Bus) -> float:  # what the generator gives this role at a point (the rest is buffer)
+        if not context.is_hybrid:
+            return math.inf
+        rating: float = bus.generator_cap_w if context.generator_w is None else context.generator_w
+        return max(rating - context.hotel_w, 0.0)
+
     best: dict[BusKey, Option] = {}
     rejections: list[Rejection] = []
     for prop in props:
         drives, rejected = _prop_drives(prop, motors, points, installation)
         rejections.extend(rejected)
         for drive in drives:
-            options, why = _drive_options(drive, buses, escs, count, cap_w)
+            options, why = _drive_options(drive, buses, escs, count, cap_w, share_w)
             rejections.extend([why] if why is not None else [])
             better = {o.bus.key: o for o in options if o.bus.key not in best or _rank(o) < _rank(best[o.bus.key])}
             best = {**best, **better}

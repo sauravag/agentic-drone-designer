@@ -30,7 +30,7 @@ from src.units import G0
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-MAX_PROPULSION_PASSES: Final[int] = 6
+MAX_PROPULSION_PASSES: Final[int] = 12  # fix round 2: G3 settles in 8
 # Largest cruise propeller the layout's clearance allows, as a multiple of the sized fuselage diameter (controller's
 # call D3; tunable per spec 6.8). The matched diameter then drives the gear, pusher gap and clearance checks.
 PROP_MAX_TO_FUSELAGE_DIAMETER_RATIO: Final[float] = 3.0
@@ -94,7 +94,8 @@ def flight_points(plan: Sequence[PhaseSpec], phases: Sequence[PhaseResult], effi
 
 def match_context(points: tuple[FlightPoint, ...], *, is_hybrid: bool, lift_rotor_count: int,
                   rotor_diameter_m: float, fuselage_diameter_m: float, is_hand_launch: bool, spec: LayoutSpec,
-                  hotel_w: float, assumptions: DesignAssumptions) -> MatchContext:
+                  hotel_w: float, assumptions: DesignAssumptions,
+                  generator_w: Optional[float] = None) -> MatchContext:
     """The matching inputs (controller's rulings D3): cruise D up to PROP_MAX_TO_FUSELAGE_DIAMETER_RATIO x the
     fuselage; folding propellers for a hand launch; lift rotors at least the disk-loading diameter; the pusher
     installation factor for any pusher layout; LiPo for a hybrid buffer, else the search picks the chemistry."""
@@ -104,7 +105,7 @@ def match_context(points: tuple[FlightPoint, ...], *, is_hybrid: bool, lift_roto
         max_cruise_prop_diameter_m=PROP_MAX_TO_FUSELAGE_DIAMETER_RATIO * fuselage_diameter_m,
         require_folding_prop=is_hand_launch,
         pusher_factor=1.0 if spec.propeller == "tractor_nose" else assumptions.pusher_efficiency_factor,
-        hotel_w=hotel_w, assumptions=assumptions,
+        hotel_w=hotel_w, assumptions=assumptions, generator_w=generator_w if is_hybrid else None,
     )
 
 
