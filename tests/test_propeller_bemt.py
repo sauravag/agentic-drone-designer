@@ -211,3 +211,9 @@ def test_raises_on_non_finite_loads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bemt, "_converged_state", nan_state)
     with pytest.raises(PropModelError, match="non-finite loads"):
         bemt_point(generic_blade(0.254, 0.178), 6000, 0.0, RHO, MU, SPEED_OF_SOUND)
+
+
+def test_raises_when_representative_section_reynolds_below_floor() -> None:
+    # A 9x6 at 800 rpm: Re ~8e3 at r/R 0.75, while every station stays inside the 1e3 grid floor.
+    with pytest.raises(PropModelError, match="r/R 0.75"):
+        bemt_point(generic_blade(9 * INCH_M, 6 * INCH_M), 800, 0.0, RHO, MU, SPEED_OF_SOUND)

@@ -38,6 +38,10 @@ CHORD_KNOT_VALUES: Final[tuple[float, ...]] = (0.154, 0.171, 0.209, 0.220, 0.215
 
 # Polar grid: one NeuralFoil alpha sweep per (Reynolds, Mach) node. A section outside the Reynolds or Mach range
 # raises PropModelError (no extrapolation, no clamping). The top Mach node sits above the tip-Mach limit (0.70).
+# NeuralFoil is credible from Re 1e4: the representative section (r/R 0.75) must reach it, while inner stations,
+# which carry ~1 % of the load, may use the 1e3 and 3e3 nodes (controller ruling, ledger Task 1, option A).
+REPRESENTATIVE_STATION: Final[float] = 0.75
+REPRESENTATIVE_RE_MIN: Final[float] = 1e4
 POLAR_RE_NODES: Final[tuple[float, ...]] = (1e3, 3e3, 1e4, 2e4, 4e4, 7e4, 1.2e5, 2e5, 4e5, 1e6, 3e6, 1e7, 3e7)
 POLAR_MACH_NODES: Final[tuple[float, ...]] = (0.0, 0.25, 0.5, 0.7, 0.85)
 POLAR_ALPHA_DEG: Final[np.ndarray] = np.linspace(-90.0, 90.0, 181)  # spans every alpha = beta - phi possible
@@ -257,6 +261,14 @@ def _validate_conditions(rpm: float, airspeed_ms: float, rho: float, mu: float, 
                          f"V={airspeed_ms}, rho={rho}, mu={mu}, a={speed_of_sound_ms}")
 
 
+def _check_representative_reynolds(stations: _Stations, reynolds: np.ndarray) -> None:
+    """Raise when the r/R 0.75 section is below the Reynolds number where NeuralFoil is credible."""
+    re_75: float = float(np.interp(REPRESENTATIVE_STATION, stations.r_frac, reynolds))
+    if re_75 < REPRESENTATIVE_RE_MIN:
+        raise PropModelError(f"Reynolds number at r/R {REPRESENTATIVE_STATION} is {re_75:.3g}, below "
+                             f"{REPRESENTATIVE_RE_MIN:.0e} where the airfoil polars are credible (raise rpm or size)")
+
+
 def _converged_state(blade: BladeGeometry, stations: _Stations, omega: float, airspeed_ms: float, rho: float,
                      mu: float, speed_of_sound_ms: float) -> tuple[_Section, np.ndarray]:
     """(section, W) with Reynolds and Mach taken from the converged W: start from the geometric speed, solve phi,
@@ -271,6 +283,7 @@ def _converged_state(blade: BladeGeometry, stations: _Stations, omega: float, ai
         section: _Section = _section(stations, blade.n_blades, phi, reynolds, mach, coefficients)
         new_speed: np.ndarray = _check_speed(_relative_speed(stations, omega, phi, section), stations)
         if np.max(np.abs(new_speed / speed - 1.0)) < SPEED_REL_TOLERANCE:
+            _check_representative_reynolds(stations, reynolds)
             return section, speed
         speed = new_speed
     raise PropModelError(f"BEMT relative speed did not converge in {MAX_SPEED_PASSES} Reynolds/Mach passes")
