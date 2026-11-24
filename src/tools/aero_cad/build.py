@@ -26,6 +26,7 @@ from src.tools.aero_cad.cad_packer import (
 from src.tools.aero_cad.components import required_fuselage_length_m
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_STATION_SCAN, AircraftLayout, layout_from_sizing
 from src.tools.fabrication.kit_pod import kit_fuselage_diameter_m
+from src.tools.sizing.layouts import PusherBoomClearanceError
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ class _Search:
         self.min_length: float = required_fuselage_length_m(sizing, bom, max(self.min_diameter, sizing.fuselage_diameter_m))
         self.evaluated: dict[float, BalancedDesign | None] = {}
         self.best: BalancedDesign | None = None
+        self.reasons: dict[str, str] = {}  # last infeasibility message per exception type
 
     @property
     def budget_left(self) -> bool:
@@ -86,20 +88,28 @@ class _Search:
     def done(self) -> bool:
         return self.best is not None and self.best.packing.is_balanced
 
+    def _infeasible(self, n: int, station: float, exc: Exception) -> None:
+        """Book `station` as infeasible (no packing slot, or no pusher boom clearance) and keep its reason."""
+        logger.info("[Tool] build_aero_cad evaluation %d: wing station %.3f -> %s", n, station, exc)
+        self.evaluated[station] = None
+        self.reasons[type(exc).__name__] = str(exc)
+        return None
+
     def evaluate(self, station: float) -> BalancedDesign | None:
         station = round(station, STATION_DECIMALS)
         if station in self.evaluated:
             return self.evaluated[station]
         n: int = len(self.evaluated) + 1
-        layout = layout_from_sizing(self.sizing, station, self.min_diameter, self.min_length,
-                                    propeller_diameter_m=self.bom.cruise_propeller.diameter_m)
+        try:
+            layout = layout_from_sizing(self.sizing, station, self.min_diameter, self.min_length,
+                                        propeller_diameter_m=self.bom.cruise_propeller.diameter_m)
+        except PusherBoomClearanceError as exc:  # floored pod, forward station: the boom cannot reach past its root
+            return self._infeasible(n, station, exc)
         analysis = self.analyse(layout)
         try:
             packing = pack_layout(self.sizing, self.bom, analysis.aero, layout, analysis.step_path, self.settings)
         except PackingSlotError as exc:
-            logger.info("[Tool] build_aero_cad evaluation %d: wing station %.3f -> %s", n, station, exc)
-            self.evaluated[station] = None
-            return None
+            return self._infeasible(n, station, exc)
         logger.info("[Tool] build_aero_cad evaluation %d: wing station %.3f -> SM %.3f, %d interferences",
                     n, station, packing.static_margin, packing.interference_count)
         design = BalancedDesign(layout, analysis, packing, n, n)
@@ -181,6 +191,16 @@ def _scan(search: _Search, wing_station: float) -> None:
     _refine(search, allow_jump=True)
 
 
+def _infeasibility(search: _Search) -> str:
+    """Why every station failed: no free battery/tray slot, and/or the pusher boom ending ahead of its root."""
+    causes: list[str] = []
+    if PackingSlotError.__name__ in search.reasons:
+        causes.append("no free battery/tray slot")
+    if PusherBoomClearanceError.__name__ in search.reasons:
+        causes.append(f"pusher boom clearance ({search.reasons[PusherBoomClearanceError.__name__]})")
+    return "; ".join(causes) or "no station evaluated"
+
+
 def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
                    wing_station: float = DEFAULT_WING_STATION,
                    settings: FabricationSettings = DEFAULT_FABRICATION) -> BalancedDesign:
@@ -195,7 +215,7 @@ def balance_design(sizing: SizingOutput, bom: SelectedBOM, analyse: Analyser,
     search = _Search(sizing, bom, analyse, settings)
     _scan(search, wing_station)
     if search.best is None:
-        raise CADPackingError("no wing station produced a packable layout (no free battery/tray slot)")
+        raise CADPackingError(f"no wing station produced a packable layout: {_infeasibility(search)}")
     total: int = len(search.evaluated)
     log_strike(search.best.packing.clearance, logging.WARNING)
     if not search.best.packing.is_balanced:

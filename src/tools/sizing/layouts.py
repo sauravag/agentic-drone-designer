@@ -37,6 +37,11 @@ class LayoutSpec:
     static_margin: StaticMarginBand
 
 
+class PusherBoomClearanceError(ValueError):
+    """A boom-end pusher's tail plus propeller gap ends ahead of the tail-boom root (a pod floored longer than its
+    sized length, at a forward wing station): a clearance failure of that arrangement, not a missing boom."""
+
+
 TAILED_BAND: Final[StaticMarginBand] = StaticMarginBand(0.08, 0.14, 0.11)
 TAIL_ARM_FRACTION: Final[float] = 0.6  # of fuselage length, centre boom
 HTAIL_ASPECT_RATIO: Final[float] = 4.0  # span^2 / area of the horizontal tail
@@ -100,12 +105,12 @@ def pusher_mount_length_m(propeller_diameter_m: float) -> float:
 
 def has_tail_boom(spec: LayoutSpec, boom_start_m: float, boom_end_m: float, fuselage_length_m: float) -> bool:
     """Whether the centre tail boom is built (sizing books it, the CAD layout places it): a boom-end pusher's always,
-    since it carries the motor (one ending ahead of its root is refused), otherwise only when the tail reaches past
+    since it carries the motor (one ending ahead of its root raises PusherBoomClearanceError), otherwise only when the tail reaches past
     the pod."""
     if spec.propeller != "pusher_boom_end":
         return boom_end_m > fuselage_length_m
     if boom_end_m <= boom_start_m:
-        raise ValueError(f"the boom-end pusher's boom would end at {boom_end_m:.3f} m, ahead of its root at "
+        raise PusherBoomClearanceError(f"the boom-end pusher's boom would end at {boom_end_m:.3f} m, ahead of its root at "
                          f"{boom_start_m:.3f} m")
     return True
 
