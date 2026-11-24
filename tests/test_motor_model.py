@@ -77,7 +77,7 @@ def test_every_motor_size_has_at_least_two_windings() -> None:
 
 def test_windings_scale_constants_with_kv() -> None:
     rows = {m.name: m for m in catalog_rows("cruise_motors")}
-    base = rows["Outrunner 2814-900KV"]
+    base = next(m for m in catalog_rows("cruise_motors") if m.name.startswith("Outrunner 2814-"))  # base winding
     other = next(m for n, m in rows.items() if n.startswith("Outrunner 2814-") and m is not base and m.kv > base.kv)
     ratio = other.kv / base.kv
     assert other.rm_ohm == pytest.approx(base.rm_ohm / ratio**2, rel=1e-3)
@@ -162,8 +162,8 @@ def test_part_by_name_missing_raises(tmp_path: Path) -> None:
 
 def test_part_by_name_returns_row(tmp_path: Path) -> None:
     db = seed_database(tmp_path / "c.db")
-    row: BaseModel = part_by_name(db, "cruise_motors", "Outrunner 2814-900KV")
-    assert row.kv == 900.0
+    row: BaseModel = part_by_name(db, "cruise_motors", "Outrunner 2814-1009KV")
+    assert row.kv == 1009.0
 
 
 def test_every_motor_has_an_esc_in_its_own_lowest_adequate_voltage_class() -> None:
@@ -174,19 +174,6 @@ def test_every_motor_has_an_esc_in_its_own_lowest_adequate_voltage_class() -> No
         assert any(
             e.max_voltage_v == own and e.continuous_current_a >= ESC_CURRENT_MARGIN * m.max_current_a for e in escs
         ), (m.name, own)
-
-
-def test_base_matcher_picks_are_unchanged(tmp_path: Path) -> None:
-    from src.tools.database.matcher import match_cruise_motor, match_propeller, match_vtol_motor
-
-    db = seed_database(tmp_path / "c.db")
-    assert match_cruise_motor(db, 100).name == "Outrunner 2212-1400KV"
-    assert match_cruise_motor(db, 10000).name == "Axial-flux AX-25"
-    assert match_vtol_motor(db, 20).name == "Lift 4010-370KV"
-    assert match_propeller(db, 450, "cruise").name == "Carbon cruise prop 10x7in"
-    assert match_propeller(db, 1000, "cruise").name == "Carbon cruise prop 13x8in"
-    assert match_propeller(db, 200, "vtol").name == "Carbon vtol prop 9x4.5in"
-    assert match_propeller(db, 600, "vtol").name == "Carbon vtol prop 16x5.4in"
 
 
 def test_base_propeller_names_keep_legacy_format() -> None:

@@ -13,7 +13,7 @@ import types
 from contextlib import closing
 import typing
 from pathlib import Path
-from typing import Final
+from typing import Final, Optional
 
 from pydantic import BaseModel
 
@@ -29,7 +29,8 @@ DEFAULT_DB_PATH: Final[Path] = Path(__file__).resolve().parents[3] / "data" / "c
 # 3: motor windings + equivalent-circuit constants, propeller pitch/folding variants, ESC table.
 # 4: cells table, battery cell columns, generator output voltage + regulated voltage variants.
 # 5: the fixed `batteries` pack table is gone: every pack is built from a cell (`packs.build_pack`).
-CATALOG_VERSION: Final[int] = 5
+# 6: motor frames' KV, max current and lift thrust derived from the propulsor model (motor_ratings).
+CATALOG_VERSION: Final[int] = 6
 
 CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "cruise_motors": CruiseMotor,
@@ -91,6 +92,75 @@ VTOL_MOTORS: Final[list[tuple]] = [
     ("Lift 20060-25KV",    9.000, 2400, 36000, 400.0, 0.210, 0.085),
     ("Lift 24070-20KV",   12.500, 3200, 48000, 400.0, 0.250, 0.095),
 ]
+
+# Frame ratings DERIVED from the propulsor model (fix ruling L1; `python -m src.tools.propulsion.motor_ratings`
+# regenerates them, tests/test_motor_ratings.py checks every row): frame -> (KV, max current A, lift max thrust N).
+# Each frame reaches its rating on its catalogue-paired propeller at MAX_MATCH_THROTTLE on its nominal voltage, at
+# sea level, static. Lift thrust is the listed thrust or, where that needs more than max power on the paired rotor,
+# what max power delivers. ESTIMATES. "Axial-flux AX-90" keeps its listed values: no catalogue propeller absorbs
+# 90 kW static below tip Mach 0.80.
+DERIVED_MOTOR_RATINGS: Final[dict[str, tuple[float, float, Optional[float]]]] = {
+    'Lift 2306': (512, 12.2, 8),  # Carbon vtol prop 12x4in 6027 rpm 74 W
+    'Lift 2807': (397, 16.9, 12),  # Carbon vtol prop 15x5in 4668 rpm 104 W
+    'Lift 3110': (301, 18.1, 20),  # Carbon vtol prop 16x5.4in 5220 rpm 203 W
+    'Lift 4010': (299, 22.6, 30),  # Carbon vtol prop 18x6in 5059 rpm 325 W
+    'Lift 4114': (249, 33.8, 45),  # Carbon vtol prop 22x7in 4222 rpm 481 W
+    'Lift 5010': (242, 41.5, 60),  # Carbon vtol prop 24x8in 4013 rpm 673 W
+    'Lift 6215': (111, 46.8, 120),  # Carbon vtol prop 30x10in 3619 rpm 1497 W
+    'Lift 7215': (96, 72.4, 180),  # Carbon vtol prop 36x12in 3075 rpm 2277 W
+    'Lift 8318': (113, 113.4, 240),  # Carbon vtol prop 36x12in 3532 rpm 3490 W
+    'Lift 10025': (69, 153.1, 400),  # Carbon vtol prop 48x16in 2566 rpm 5601 W
+    'Lift 12030': (81, 247.6, 549),  # Carbon vtol prop 48x16in 2986 rpm 8984 W
+    'Lift 13530': (38, 189.1, 779),  # Carbon vtol prop 56x18in 2647 rpm 12978 W
+    'Lift 15040': (36, 274.9, 1074),  # Carbon vtol prop 62x20in 2523 rpm 18986 W
+    'Lift 18050': (16, 200.8, 1501),  # Carbon vtol prop 72x24in 2181 rpm 26981 W
+    'Lift 20060': (9, 137.6, 1814),  # Carbon vtol prop 72x24in 2386 rpm 35983 W
+    'Lift 24070': (10, 187.4, 2154),  # Carbon vtol prop 72x24in 2596 rpm 47971 W
+    'Outrunner 1806': (2169, 29.5, None),  # Carbon cruise prop 8x6in 11188 rpm 150 W
+    'Outrunner 2212': (1288, 39.4, None),  # Carbon cruise prop 10x7in 9965 rpm 300 W
+    'Outrunner 2814': (1009, 53.0, None),  # Carbon cruise prop 11x7in 10643 rpm 550 W
+    'Outrunner 3520': (502, 70.7, None),  # Carbon cruise prop 15x10in 7933 rpm 1100 W
+    'Outrunner 4120': (557, 96.3, None),  # Carbon cruise prop 15x10in 8820 rpm 1500 W
+    'Outrunner 4325': (574, 141.2, None),  # Carbon cruise prop 16x10in 9082 rpm 2200 W
+    'Outrunner 5025': (271, 96.4, None),  # Carbon cruise prop 18x10in 8570 rpm 3000 W
+    'Outrunner 5330': (243, 128.0, None),  # Carbon cruise prop 20x12in 7717 rpm 4000 W
+    'Outrunner 6335': (257, 176.6, None),  # Carbon cruise prop 22x10in 8128 rpm 5500 W
+    'Outrunner 7050': (202, 216.1, None),  # Carbon cruise prop 24x12in 7606 rpm 8000 W
+    'Outrunner 8020': (175, 299.2, None),  # Carbon cruise prop 28x14in 6540 rpm 11000 W
+    'Axial-flux AX-15': (82, 215.5, None),  # Carbon cruise prop 32x16in 5797 rpm 15000 W
+    'Axial-flux AX-25': (34, 182.5, None),  # Carbon cruise prop 40x20in 4728 rpm 25000 W
+    'Axial-flux AX-40': (19, 199.2, None),  # Carbon cruise prop 50x24in 3874 rpm 40000 W
+    'Axial-flux AX-60': (12, 227.6, None),  # Carbon cruise prop 60x30in 3212 rpm 60000 W
+    # 'Axial-flux AX-90': listed values kept (no cruise propeller is rated for and absorbs 90000 W)
+}
+
+
+def _frame_key(name: str) -> str:
+    return name.rsplit("-", 1)[0] if name.endswith("KV") else name
+
+
+def _rated_cruise_motors(raw: list[tuple]) -> list[tuple]:
+    """Listed cruise frames with their derived KV (in the name when it carries one) and max current."""
+    out: list[tuple] = []
+    for name, mass, max_w, cont_w, kv, volts, dia, length in raw:
+        rating = DERIVED_MOTOR_RATINGS.get(_frame_key(name))
+        if rating is None:
+            out.append((name, mass, max_w, cont_w, kv, volts, dia, length))
+            continue
+        new_kv, imax, _ = rating
+        new_name: str = f"{_frame_key(name)}-{new_kv:g}KV" if name.endswith("KV") else name
+        out.append((new_name, mass, max_w, cont_w, new_kv, volts, dia, length, imax))
+    return out
+
+
+def _rated_vtol_motors(raw: list[tuple]) -> list[tuple]:
+    """Listed lift frames with their derived KV (in the name), max current and max thrust."""
+    out: list[tuple] = []
+    for name, mass, thrust, max_w, volts, dia, length in raw:
+        new_kv, imax, rated = DERIVED_MOTOR_RATINGS[_frame_key(name)]
+        out.append((f"{_frame_key(name)}-{new_kv:g}KV", mass, rated, max_w, volts, dia, length, imax))
+    return out
+
 
 # (name, mass_kg, continuous_power_w, bsfc_kg_kwh, fuel_type, length_m, width_m, height_m); the regulated
 # output-voltage variants are appended by catalog_variants.generator_rows.
@@ -176,6 +246,12 @@ def pack_envelope(
     )
 
 
+def base_propellers(application: str) -> list[Propeller]:
+    """The base (listed-pitch, non-folding) propellers of one application, in catalogue order."""
+    table: list[tuple] = CRUISE_PROPS_IN if application == "cruise" else VTOL_PROPS_IN
+    return [p for p in _propeller_rows() if p.application == application][:len(table)]
+
+
 def _propeller_rows() -> list[Propeller]:
     return propeller_rows({"cruise": CRUISE_PROPS_IN, "vtol": VTOL_PROPS_IN})
 
@@ -188,8 +264,8 @@ def _tuple_rows(model: type[BaseModel], raw: list[tuple], fields: list[str] | No
 
 def build_catalog() -> dict[str, list[BaseModel]]:
     """Return every catalog row, validated through its Pydantic schema."""
-    cruise_motors: list[CruiseMotor] = cruise_motor_rows(CRUISE_MOTORS)
-    vtol_motors: list[VtolMotor] = vtol_motor_rows(VTOL_MOTORS)
+    cruise_motors: list[CruiseMotor] = cruise_motor_rows(_rated_cruise_motors(CRUISE_MOTORS))
+    vtol_motors: list[VtolMotor] = vtol_motor_rows(_rated_vtol_motors(VTOL_MOTORS))
     return {
         "cruise_motors": cruise_motors,
         "vtol_motors": vtol_motors,

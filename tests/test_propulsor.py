@@ -16,8 +16,7 @@ from src.tools.propulsion.prop_tables import PropellerTable, propeller_table
 from src.tools.propulsion.propulsor import Propulsor, propulsor_from_parts
 
 SMALL_PROP: Final[tuple[float, float]] = (0.254, 0.1143)  # 10 x 4.5 inch
-MOTOR_NAME: Final[str] = "Outrunner 2814-900KV"
-LIFT_MOTOR_NAME: Final[str] = "Lift 3110-900KV"
+MOTOR_NAME: Final[str] = "Outrunner 2814-1009KV"
 RHO, MU, SOUND = 1.225, 1.81e-5, 340.3
 AIR: Final[tuple[float, float, float]] = (RHO, MU, SOUND)
 BUS_V: Final[float] = 14.8
@@ -209,7 +208,8 @@ def test_propulsor_from_parts_wires_catalogue_values(table: PropellerTable, monk
 def test_propulsor_from_parts_lift_role(table: PropellerTable, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prop_tables, "_build_table", lambda d, p: table)
     prop, esc, battery = _parts("vtol")
-    lift_motor: VtolMotor = next(m for m in catalog_rows("vtol_motors") if m.name == LIFT_MOTOR_NAME)
+    # the fast lift winding: the shared test table is a small propeller
+    lift_motor: VtolMotor = max(catalog_rows("vtol_motors"), key=lambda m: m.kv or 0.0)
     built = propulsor_from_parts(lift_motor, prop, esc, battery)
     assert built.role == "lift" and built.kv == lift_motor.kv
     point = built.point_for_thrust("hover", 3.0, 0.0, *AIR)

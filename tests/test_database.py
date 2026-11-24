@@ -76,7 +76,7 @@ def test_all_masses_and_lengths_are_si(db_path: Path) -> None:
 
 
 def test_fixed_battery_table_is_gone(db_path: Path) -> None:
-    assert "batteries" not in CATALOG_TABLES and CATALOG_VERSION == 5
+    assert "batteries" not in CATALOG_TABLES and CATALOG_VERSION >= 5
     with pytest.raises(ValueError, match="Unknown catalog table"):
         load_catalog(db_path, "batteries")
 

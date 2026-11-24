@@ -8,7 +8,7 @@ after, so the lightest-part matchers (ties -> first row) keep returning exactly 
 
 import math
 import re
-from typing import Final
+from typing import Final, Optional
 
 from src.schemas.components import CruiseMotor, Esc, IceGenerator, Propeller, VtolMotor
 from src.units import INCH_TO_M
@@ -38,7 +38,7 @@ FOLDING_SUFFIX: Final[str] = " folding"
 # ESC classes (ESTIMATES): small packs by cell count, high-voltage classes above 60 V.
 ESC_SMALL_CELLS: Final[tuple[int, ...]] = (2, 3, 4, 6, 12, 14)
 ESC_HV_CLASSES_V: Final[tuple[float, ...]] = (125.0, 250.0, 500.0, 750.0)
-ESC_CURRENT_LADDER_A: Final[tuple[float, ...]] = (10, 20, 30, 40, 60, 80, 120, 160, 200, 300, 400)
+ESC_CURRENT_LADDER_A: Final[tuple[float, ...]] = (10, 20, 30, 40, 60, 80, 120, 160, 200, 300, 400, 500, 600)
 ESC_CURRENT_MARGIN: Final[float] = 1.2  # continuous rating >= 1.2 x the motor's max current
 ESC_BURST_FACTOR: Final[float] = 1.5
 ESC_EFFICIENCY_SMALL: Final[float] = 0.95
@@ -65,13 +65,21 @@ def rated_max_voltage(nominal_v: float) -> float:
     return max(1, round(nominal_v / NOMINAL_CELL_V)) * MAX_CELL_V
 
 
-def _constants(continuous_w: float, max_w: float, nominal_v: float) -> dict[str, float]:
+def motor_constants(continuous_w: float, max_w: float, nominal_v: float,
+                    max_current_a: Optional[float] = None) -> dict[str, float]:
+    """Equivalent-circuit ESTIMATES (rm, i0, max current) from the power ratings and the listed nominal voltage.
+    `max_current_a` (a derived frame rating, motor_ratings) replaces max power / nominal voltage when given."""
     i_cont: float = continuous_w / nominal_v
     return {
         "rm_ohm": round(COPPER_LOSS_FRACTION * continuous_w / i_cont**2, _CONSTANT_DIGITS),
         "i0_a": round(IRON_LOSS_FRACTION * continuous_w / nominal_v, _CONSTANT_DIGITS),
-        "max_current_a": round(max_w / nominal_v, _CONSTANT_DIGITS),
+        "max_current_a": round(max_w / nominal_v if max_current_a is None else max_current_a, _CONSTANT_DIGITS),
     }
+
+
+def _winding_current(base_current_a: Optional[float], base_v: float, winding_v: float) -> Optional[float]:
+    """A winding variant carries the base winding's derived max current scaled by voltage (same power)."""
+    return None if base_current_a is None else base_current_a * base_v / winding_v
 
 
 def _winding_name(name: str, kv: int) -> str:
@@ -99,30 +107,34 @@ def _windings(name: str, kv: float, nominal_v: float) -> list[tuple[str, float, 
 
 
 def cruise_motor_rows(raw: list[tuple]) -> list[CruiseMotor]:
-    """(name, mass_kg, max_power_w, continuous_power_w, kv, nominal_v, diameter_m, length_m) -> base + windings."""
+    """(name, mass_kg, max_power_w, continuous_power_w, kv, nominal_v, diameter_m, length_m[, max_current_a])
+    -> base + windings."""
     bases: list[CruiseMotor] = []
     variants: list[CruiseMotor] = []
-    for name, mass, max_w, cont_w, kv, volts, dia, length in raw:
+    for name, mass, max_w, cont_w, kv, volts, dia, length, *derived in raw:
+        imax: Optional[float] = derived[0] if derived else None
         for i, (w_name, w_kv, w_v) in enumerate(_windings(name, kv, volts)):
             row = CruiseMotor(
                 name=w_name, mass_kg=mass, max_power_w=max_w, continuous_power_w=cont_w, kv=w_kv,
                 voltage_v=rated_max_voltage(w_v), diameter_m=dia, length_m=length,
-                **_constants(cont_w, max_w, w_v),
+                **motor_constants(cont_w, max_w, w_v, _winding_current(imax, volts, w_v)),
             )
             (bases if i == 0 else variants).append(row)
     return bases + variants
 
 
 def vtol_motor_rows(raw: list[tuple]) -> list[VtolMotor]:
-    """(name, mass_kg, max_thrust_n, max_power_w, nominal_v, diameter_m, length_m) -> base + windings."""
+    """(name, mass_kg, max_thrust_n, max_power_w, nominal_v, diameter_m, length_m[, max_current_a])
+    -> base + windings."""
     bases: list[VtolMotor] = []
     variants: list[VtolMotor] = []
-    for name, mass, thrust, max_w, volts, dia, length in raw:
+    for name, mass, thrust, max_w, volts, dia, length, *derived in raw:
+        imax: Optional[float] = derived[0] if derived else None
         for i, (w_name, w_kv, w_v) in enumerate(_windings(name, _kv_from_name(name), volts)):
             row = VtolMotor(
                 name=w_name, mass_kg=mass, max_thrust_n=thrust, max_power_w=max_w,
                 voltage_v=rated_max_voltage(w_v), diameter_m=dia, length_m=length, kv=w_kv,
-                **_constants(max_w * VTOL_CONTINUOUS_FRACTION, max_w, w_v),
+                **motor_constants(max_w * VTOL_CONTINUOUS_FRACTION, max_w, w_v, _winding_current(imax, volts, w_v)),
             )
             (bases if i == 0 else variants).append(row)
     return bases + variants
