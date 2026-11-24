@@ -152,8 +152,9 @@ fails with a clear error rather than returning free text.
 
 - `pod_boom_tractor` — pod, centre tail boom, conventional tail (H-stab + fin), propeller on the nose.
 - `single_boom_vtail_pusher` — the same pod and centre boom with a V-tail (one mirrored ruddervator pair sized from
-  the H and V tail volumes, aspect ratio 4, dihedral atan √(S_V/S_H)) and the propeller at the boom end, a 10 %
-  tail-arm gap behind the tail. Cruise efficiency takes `pusher_efficiency_factor` (0.95). VSPAERO models each
+  the H and V tail volumes, aspect ratio 4, dihedral atan √(S_V/S_H)) and the propeller behind the boom end: the
+  boom runs 0.10 × the propeller diameter past the tail trailing edge, and the hub sits a further 0.15 × the
+  diameter aft (the motor and its mount). Cruise efficiency takes `pusher_efficiency_factor` (0.95). VSPAERO models each
   ruddervator panel; ArduPilot mixes the pair as a V-tail (`SERVOn_FUNCTION` 79/80, mixing gain 0.5); the JSBSim
   model applies the pusher thrust at the propeller. The kit adds the V-tail root block `VR-1`, per-panel spars and
   ribs, and the boom-end motor plate and clamp (`MP-B`/`MC-B`), with a wiring note for the motor run along the boom.
