@@ -32,6 +32,16 @@ class PropClearance:
         """The propeller hits the tail or the ground: a collision-class failure."""
         return self.tail_gap_m < 0 or (self.ground_m is not None and self.ground_m < 0)
 
+    @property
+    def strike_description(self) -> Optional[str]:
+        """What the propeller strikes and by how much, for the critic and the run warnings; None when it clears."""
+        hits: list[str] = []
+        if self.tail_gap_m < 0:
+            hits.append(f"tail (disc {-self.tail_gap_m:.3f} m into the airframe ahead of it)")
+        if self.ground_m is not None and self.ground_m < 0:
+            hits.append(f"ground (tip {-self.ground_m:.3f} m below the ground on the gear)")
+        return "propeller strikes the " + " and the ".join(hits) if hits else None
+
 
 def _tail_gap_m(layout: AircraftLayout) -> float:
     prop: PropellerStation = layout.propeller

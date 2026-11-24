@@ -82,9 +82,14 @@ def evaluate_gates(req: OperationalRequirements, sizing: SizingOutput, bom: Sele
         _ld_gate(sizing, aero),
         GateResult("collisions_and_group", cad.collision_count == 0 and cad.as_built_mass_kg < limit,
                    f"{cad.collision_count} collision(s); as-built mass {cad.as_built_mass_kg:.2f} kg vs Group {group} "
-                   f"limit {limit} kg" + _missing_kit_chain(cad, group, limit)),
+                   f"limit {limit} kg" + _prop_strike_note(cad) + _missing_kit_chain(cad, group, limit)),
         GateResult("reserve", reserve >= RESERVE_MIN, f"energy reserve {reserve:.0%} (min {RESERVE_MIN:.0%})"),
     ]
+
+
+def _prop_strike_note(cad: CADArtifacts) -> str:
+    """What the propeller strikes, when one of the collisions is a propeller strike (tail or ground)."""
+    return f"; {cad.prop_strike}" if cad.prop_strike else ""
 
 
 def _missing_kit_chain(cad: CADArtifacts, group: int, limit: float) -> str:

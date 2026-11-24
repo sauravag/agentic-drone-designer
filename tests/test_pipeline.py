@@ -101,6 +101,17 @@ def test_warnings_flag_mass_growth_margin_and_collisions(sizing_only_run: pipeli
     assert "27%" in text and "static margin" in text and "2 interference" in text
 
 
+def test_warnings_carry_the_folding_prop_and_the_propeller_strike(sizing_only_run: pipeline.DesignRun) -> None:
+    """Shown with or without a kit: the kit build sheet is not the only place the user learns either."""
+    sizing = sizing_only_run.sizing
+    folding = _cad(sizing.mtow_kg).model_copy(update={"needs_folding_prop": True})
+    assert any("folding propeller" in w for w in pipeline.design_warnings(sizing, None, folding))
+    struck = _cad(sizing.mtow_kg, collisions=1).model_copy(
+        update={"prop_strike": "propeller strikes the tail (disc 0.010 m into the airframe ahead of it)"})
+    text = " ".join(pipeline.design_warnings(sizing, None, struck))
+    assert "1 interference(s)" in text and "propeller strikes the tail" in text
+
+
 def test_full_run_with_openvsp_writes_cad_and_flies_sitl(tmp_path: Path) -> None:
     pytest.importorskip("openvsp")
     run = pipeline.run_design(G1_ELECTRIC_FW, outputs_root=tmp_path / "o", db_path=tmp_path / "c.db", with_aero_cad=True)

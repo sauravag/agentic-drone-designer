@@ -191,6 +191,23 @@ def test_group_gate_explains_a_missing_kit_that_puts_the_design_over_its_group()
     assert "shell mass model" not in within.detail + heavy_kit.detail
 
 
+GROUND_STRIKE = "propeller strikes the ground (tip 0.012 m below the ground on the gear)"
+
+
+def test_group_gate_names_a_propeller_strike() -> None:
+    """A strike is a collision-class failure: the gate says what the propeller hits, not just 'N collision(s)'."""
+    gate = _group_gate(collision_count=1, prop_strike=GROUND_STRIKE)
+    assert not gate.passed and gate.detail.endswith(f"; {GROUND_STRIKE}")
+    assert "propeller strikes" not in _group_gate(collision_count=1).detail
+
+
+def test_old_cad_record_without_strike_or_fold_fields_loads() -> None:
+    _, _, _, _, cad = load_design("g2")
+    legacy = cad.model_dump(exclude={"prop_strike", "needs_folding_prop"})
+    loaded = CADArtifacts.model_validate(legacy)
+    assert loaded.prop_strike is None and loaded.needs_folding_prop is False
+
+
 def test_ld_gate_compares_both_models_at_the_sizing_cruise_and_loiter_lift_coefficients() -> None:
     _, sizing, _, aero, _ = load_design("g2")
     points = {p.name: p for p in stability.ld_deviations(sizing, aero)}

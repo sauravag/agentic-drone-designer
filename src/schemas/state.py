@@ -182,6 +182,10 @@ class CADArtifacts(_Frozen):
     # all nose tractors with the hub at the origin.
     propeller_x_m: Optional[Finite] = None
     propeller_z_m: Optional[Finite] = None
+    # What the propeller strikes (tail or ground, with the gap), counted in collision_count; None when it clears and in
+    # records saved before it existed. needs_folding_prop: shown with or without a kit (False in older records).
+    prop_strike: Optional[str] = None
+    needs_folding_prop: bool = False
 
 
 class PlantCaseResult(_Frozen):

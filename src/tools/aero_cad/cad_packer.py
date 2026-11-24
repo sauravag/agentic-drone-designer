@@ -533,11 +533,15 @@ def export_artifacts(result: PackingResult, oml_vsp3: Path, oml_step: Path, out_
         kit_mass_kg=sum(i.mass_kg for i in result.kit_items) if result.kit is not None else None,
         kit_warning=_kit_warning(result.kit_warning, files_warning, solids_warning),
         propeller_x_m=result.propeller.x_m, propeller_z_m=result.propeller.z_m,
+        prop_strike=result.clearance.strike_description, needs_folding_prop=result.clearance.needs_folding_prop,
     )
 
 
 def pack_aircraft(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, layout: AircraftLayout,
                   oml_vsp3: Path, oml_step: Path, out_dir: Path,
                   settings: FabricationSettings = DEFAULT_FABRICATION) -> CADArtifacts:
-    """Pack for a fixed layout and export the assembly."""
-    return export_artifacts(pack_layout(sizing, bom, aero, layout, oml_step, settings), oml_vsp3, oml_step, out_dir)
+    """Pack for a fixed layout and export the assembly (a propeller strike is warned about once, as for the balanced
+    design)."""
+    result: PackingResult = pack_layout(sizing, bom, aero, layout, oml_step, settings)
+    log_strike(result.clearance, logging.WARNING)
+    return export_artifacts(result, oml_vsp3, oml_step, out_dir)

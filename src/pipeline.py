@@ -21,6 +21,7 @@ from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import AeroStabilityOutput, CADArtifacts, FCSArtifacts, SizingOutput
 from src.tools.aero_cad.cad_packer import CADPackingError
+from src.tools.fabrication.kit import FOLDING_PROP_NOTE
 from src.tools.sizing import layouts
 from src.tools.aero_cad.stability import LD_DEVIATION_TOLERANCE, AeroAnalysisError, ld_deviations
 from src.tools.database.matcher import ComponentNotFoundError, select_bom
@@ -38,6 +39,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_OUTPUTS_ROOT: Final[Path] = Path(__file__).resolve().parents[1] / "outputs"
 MAX_SLUG_LENGTH: Final[int] = 30  # leaves room for a de-duplication suffix within 40 chars
 MASS_CONVERGENCE_TOLERANCE: Final[float] = 0.03  # SRS 4.2: as-built vs sized MTOW within +/- 3 %
+# Shown with or without a kit (the kit build sheet carries FOLDING_PROP_NOTE too)
+FOLDING_PROP_WARNING: Final[str] = (f"{FOLDING_PROP_NOTE}: the propeller tip would touch down on a belly landing, so "
+                                    "fit a folding propeller.")
 PAYLOAD_TOLERANCE: Final[float] = 0.05  # catalog sensor vs the mass/power the sizing budgeted
 
 # OpenVSP is a process-wide singleton: serialise runs from concurrent web sessions. The catalog is
@@ -144,7 +148,10 @@ def design_warnings(sizing: SizingOutput, aero: Optional[AeroStabilityOutput],
         if not band.minimum <= cad.static_margin <= band.maximum:
             notes.append(f"Final static margin {cad.static_margin:.3f} is outside {band.minimum}-{band.maximum}.")
         if cad.collision_count:
-            notes.append(f"{cad.collision_count} interference(s) between parts, booms or the skin.")
+            strike: str = f" ({cad.prop_strike})" if cad.prop_strike else ""
+            notes.append(f"{cad.collision_count} interference(s) between parts, booms or the skin{strike}.")
+        if cad.needs_folding_prop:
+            notes.append(FOLDING_PROP_WARNING)
         if cad.viewer_model_path is None:
             notes.append("The 3D viewer mesh could not be exported; the run has no 3D viewer.")
     return tuple(notes)
