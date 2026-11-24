@@ -9,7 +9,9 @@ from typing import Final
 import numpy as np
 import pytest
 
-from src.tools.propulsion.bemt import PropPoint, bemt_point, generic_blade
+import src.tools.propulsion.bemt as bemt
+from src.tools.propulsion.bemt import (BladeGeometry, PropModelError, PropPoint, bemt_point,
+                                         generic_blade)
 
 INCH_M: Final[float] = 0.0254
 RHO: Final[float] = 1.225
@@ -20,11 +22,11 @@ UIUC_DIR: Final[Path] = Path(__file__).parent / "data" / "uiuc"
 PEAK_TOLERANCE: Final[float] = 0.10  # peak efficiency and J at peak (spec 6.1)
 STATIC_CT_TOLERANCE: Final[float] = 0.15  # CT0 (spec 6.1)
 NEAR_PITCH_SPEED_FRACTION: Final[float] = 0.95
-# The brief asked for < 0.10, but the UIUC data in tests/data/uiuc have T/T0 = 0.26-0.29 at 0.95 x pitch speed
-# (APC E: zero thrust near 1.2 x pitch speed), so a model that passes the validation gate cannot meet 0.10.
-# 0.30 is the data's upper bound; the 0.10 -> 0.30 change awaits a ruling (spec 6.8).
+# UIUC data show 26-29 % at 0.95 x pitch speed (APC E: zero thrust near 1.2 x pitch speed), so the plan's 0.10
+# is unreachable for a model that passes the validation gate; 0.30 per controller ruling, ledger Task 1.
 NEAR_PITCH_THRUST_RATIO_MAX: Final[float] = 0.30
 J_SWEEP: Final[np.ndarray] = np.arange(0.30, 0.95, 0.01)
+LIFT_ROTOR_TIP_MACH: Final[float] = 0.6
 
 
 @dataclass(frozen=True)
@@ -127,3 +129,70 @@ def test_rejects_non_physical_inputs() -> None:
         bemt_point(generic_blade(0.254, 0.178), 6000, -1.0, RHO, MU, SPEED_OF_SOUND)
     with pytest.raises(ValueError, match="diameter"):
         generic_blade(0.0, 0.178)
+
+
+def test_rejects_non_finite_inputs() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        bemt_point(generic_blade(0.254, 0.178), math.nan, 0.0, RHO, MU, SPEED_OF_SOUND)
+    with pytest.raises(ValueError, match="finite"):
+        bemt_point(generic_blade(0.254, 0.178), 6000, math.inf, RHO, MU, SPEED_OF_SOUND)
+
+
+def _constant_polar(cl: float, cd: float) -> bemt.SectionCoefficients:
+    def coefficients(reynolds: np.ndarray, mach: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return np.full_like(alpha, cl), np.full_like(alpha, cd)
+    return coefficients
+
+
+def test_raises_when_inflow_has_no_sign_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Negative lift everywhere at zero airspeed: the residual is positive on the whole bracket.
+    monkeypatch.setattr(bemt, "_section_coefficients", lambda airfoil: _constant_polar(-1.0, 0.0))
+    with pytest.raises(PropModelError, match="no sign change"):
+        bemt_point(generic_blade(0.254, 0.178), 6000, 0.0, RHO, MU, SPEED_OF_SOUND)
+
+
+def test_raises_on_non_physical_relative_speed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bemt, "_relative_speed", lambda stations, omega, phi, section: -np.ones_like(phi))
+    with pytest.raises(PropModelError, match="relative speed"):
+        bemt_point(generic_blade(0.254, 0.178), 6000, 0.0, RHO, MU, SPEED_OF_SOUND)
+
+
+def test_raises_outside_polar_grid() -> None:
+    blade = generic_blade(0.254, 0.178)
+    supersonic_tip_rpm: float = 0.9 * SPEED_OF_SOUND / (math.pi * blade.diameter_m) * 60.0
+    with pytest.raises(PropModelError, match="Mach"):
+        bemt_point(blade, supersonic_tip_rpm, 0.0, RHO, MU, SPEED_OF_SOUND)
+    with pytest.raises(PropModelError, match="Reynolds"):
+        bemt_point(blade, 6000, 0.0, RHO, 1.0, SPEED_OF_SOUND)  # viscous enough to drop Re below the grid
+
+
+def test_windmilling_point_is_flagged() -> None:
+    blade = generic_blade(0.254, 0.178)
+    rpm: float = 5000.0
+    cruise = bemt_point(blade, rpm, 0.6 * rpm / 60.0 * blade.diameter_m, RHO, MU, SPEED_OF_SOUND)
+    windmill = bemt_point(blade, rpm, 1.1 * rpm / 60.0 * blade.diameter_m, RHO, MU, SPEED_OF_SOUND)
+    assert not cruise.is_windmilling and cruise.efficiency > 0.0
+    assert windmill.is_windmilling and windmill.shaft_power_w <= 0.0 and windmill.efficiency == 0.0
+
+
+@pytest.mark.parametrize(("stations", "chords", "message"), [
+    ((0.5,), (0.1,), "stations"),
+    ((0.3, 0.6, 0.9), (0.1, 0.1), "one chord per station"),
+    ((0.6, 0.3, 0.9), (0.1, 0.1, 0.1), "increase"),
+    ((0.3, 0.6, 0.98), (0.1, 0.1, 0.1), "increase"),
+    ((0.3, 0.6, 0.9), (0.1, -0.1, 0.1), "chords"),
+])
+def test_blade_geometry_rejects_inconsistent_stations(stations: tuple[float, ...], chords: tuple[float, ...],
+                                                      message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        BladeGeometry(diameter_m=0.254, pitch_m=0.178, n_blades=2, stations=stations, chord_over_radius=chords)
+
+
+def test_lift_rotor_hover_is_finite_with_figure_of_merit_below_one() -> None:
+    diameter: float = 2.0
+    rpm: float = LIFT_ROTOR_TIP_MACH * SPEED_OF_SOUND / (math.pi * diameter) * 60.0
+    p = bemt_point(generic_blade(diameter, 0.8), rpm, 0.0, RHO, MU, SPEED_OF_SOUND)
+    disk_area: float = math.pi * diameter ** 2 / 4.0
+    figure_of_merit: float = p.thrust_n ** 1.5 / (p.shaft_power_w * math.sqrt(2.0 * RHO * disk_area))
+    assert math.isfinite(p.thrust_n) and p.thrust_n > 0.0 and not p.is_windmilling
+    assert 0.0 < figure_of_merit < 1.0
