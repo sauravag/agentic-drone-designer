@@ -555,3 +555,52 @@ def test_hand_launched_g1_stalls_below_the_throw_speed_with_margin() -> None:
     assert sized.v_stall_takeoff_ms <= limit + 1e-6 and sized.v_stall_ms <= limit * 1.05
     assert runway.v_stall_ms > limit  # the runway G1 is unchanged (it stalls at max_stall_speed_ms)
     assert sized.wing_area_m2 > runway.wing_area_m2
+
+
+# --------------------------------------- hand launch assumes 30 % laminar flow (phase 2, Task 9 fix round 2) ---
+from src.tools.sizing.aero_model import profile_drag_cd  # noqa: E402
+from src.tools.sizing.topology import HAND_LAUNCH_LAMINAR_FRACTION, surface_laminar_fraction  # noqa: E402
+
+
+def test_only_a_hand_launch_assumes_a_laminar_fraction() -> None:
+    assert HAND_LAUNCH_LAMINAR_FRACTION == 0.30
+    assert surface_laminar_fraction("hand") == HAND_LAUNCH_LAMINAR_FRACTION
+    assert surface_laminar_fraction("runway") is None and surface_laminar_fraction("vertical") is None
+
+
+def test_profile_drag_is_free_transition_unless_a_laminar_fraction_is_given() -> None:
+    free = airfoil_polar("mh32", 3.8e5).cd_min
+    assert profile_drag_cd("mh32", 3.8e5, None) == free
+    tripped = profile_drag_cd("mh32", 3.8e5, HAND_LAUNCH_LAMINAR_FRACTION)
+    assert tripped > 1.4 * free  # transition forced at 30 % chord: most of the laminar bucket is gone
+
+
+def _profile_cd_used(case: str, monkeypatch: pytest.MonkeyPatch) -> tuple[SizingOutput, float]:
+    seen: list[float] = []
+    real = mission_solver.parasite_drag_coefficient
+
+    def spy(*args):  # (wing area, tail area, profile cd, ...)
+        seen.append(args[2])
+        return real(*args)
+
+    monkeypatch.setattr(mission_solver, "parasite_drag_coefficient", spy)
+    return mission_solver.size_aircraft(CASES[case]), seen[-1]
+
+
+def test_hand_launched_sizing_uses_the_30_percent_laminar_profile_drag(monkeypatch: pytest.MonkeyPatch) -> None:
+    sizing, used = _profile_cd_used("g1_hand", monkeypatch)
+    rho, mu = air_properties(CASES["g1_hand"].service_ceiling_m)
+    re = float(f"{reynolds_number(rho, CASES['g1_hand'].cruise_speed_ms, sizing.mean_chord_m, mu):.2g}")
+    assert used == pytest.approx(profile_drag_cd(sizing.airfoil, re, HAND_LAUNCH_LAMINAR_FRACTION), rel=0.05)
+    assert used > airfoil_polar(sizing.airfoil, re).cd_min
+
+
+@pytest.mark.parametrize("case", ["g1", "g1_vtail", "g2", "g2_vtail"])
+def test_runway_and_vertical_designs_keep_free_transition_profile_drag(case: str,
+                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tripped-profile path is never consulted: these designs size exactly as before (goldens unchanged)."""
+    def tripped(*args):
+        raise AssertionError(f"{case} must keep NeuralFoil's free-transition cd_min")
+
+    monkeypatch.setattr(mission_solver, "profile_drag_cd", tripped)
+    assert mission_solver.size_aircraft(CASES[case]).launch_method != "hand"

@@ -21,6 +21,7 @@ from src.schemas.state import SizingOutput
 from src.tools.sizing.aero_model import (
     AirfoilPolar,
     air_properties,
+    profile_drag_cd,
     airfoil_polar,
     induced_drag_factor,
     lift_to_drag,
@@ -57,7 +58,7 @@ from src.tools.sizing.mission_profile import (
 )
 from src.tools.sizing.topology import (HAND_LAUNCH_MAX_MTOW_KG, Airframe, LaunchMethod, Propulsion, classify_group,
                                        effective_max_stall_speed_ms, resolved_launch_method, select_airframe,
-                                       select_propulsion)
+                                       select_propulsion, surface_laminar_fraction)
 from src.units import G0, KWH_TO_J
 
 logger = logging.getLogger(__name__)
@@ -165,8 +166,11 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float, tuple[B
     disk: float = mtow * G0 / disk_loading_n_m2(mtow) if is_quad else 0.0
     rotor_d: float = _rotor_diameter_m(disk)
     booms = sizing_booms(geom, spec, rotor_d)
+    laminar = surface_laminar_fraction(resolved_launch_method(req))
+    profile_cd: float = (design.cruise_polar.cd_min if laminar is None
+                         else profile_drag_cd(design.cruise_polar.name, design.cruise_polar.reynolds, laminar))
     cd0: float = parasite_drag_coefficient(
-        geom.wing_area_m2, geom.tail_area_m2, design.cruise_polar.cd_min, geom.fuselage_length_m,
+        geom.wing_area_m2, geom.tail_area_m2, profile_cd, geom.fuselage_length_m,
         geom.fuselage_diameter_m, reynolds_number(rho_c, req.cruise_speed_ms, geom.fuselage_length_m, mu_c),
         booms, VTOL_ROTOR_COUNT if is_quad else 0, rotor_d,
     )

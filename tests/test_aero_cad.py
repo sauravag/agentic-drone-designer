@@ -1205,3 +1205,40 @@ def test_hand_launched_g1_closes(designs: dict, tmp_path: Path) -> None:
     assert packing.clearance.ground_m is None and packing.clearance.belly_m is not None
     assert packing.kit is not None, packing.kit_warning
     assert (FOLDING_PROP_NOTE in packing.kit.notes) == packing.clearance.needs_folding_prop
+
+
+# --------------------------------------- hand launch assumes 30 % laminar flow (phase 2, Task 9 fix round 2) ---
+SIZING_VSPAERO_CD0_TOLERANCE: float = 0.05  # same laminar assumption on both sides: the build-ups agree to 5 %
+
+
+def _parasite(case: str, designs: dict, tmp_path: Path, laminar_fraction):
+    from src.tools.aero_cad import openvsp_builder as ob
+
+    sizing, bom = designs[case]
+    layout = _fitted_layout(sizing, bom)
+    model = ob.build_model(layout, tmp_path)
+    cond = ob.flight_condition(layout, sizing, CASES[case].service_ceiling_m)
+    return sizing, ob.parasite_cd0(model, cond, laminar_fraction)
+
+
+def test_hand_launched_vspaero_cd0_takes_the_30_percent_laminar_surfaces_and_matches_sizing(
+        designs: dict, tmp_path: Path) -> None:
+    pytest.importorskip("openvsp")
+    from src.tools.sizing.topology import surface_laminar_fraction
+
+    sizing, laminar = _parasite("g1_hand", designs, tmp_path / "lam", surface_laminar_fraction("hand"))
+    _, turbulent = _parasite("g1_hand", designs, tmp_path / "turb", None)
+    assert laminar < turbulent
+    assert laminar == pytest.approx(sizing.cd0, rel=SIZING_VSPAERO_CD0_TOLERANCE)
+
+
+def test_runway_design_keeps_the_fully_turbulent_parasite_build_up(designs: dict, tmp_path: Path) -> None:
+    pytest.importorskip("openvsp")
+    from src.tools.sizing.topology import surface_laminar_fraction
+
+    sizing, _ = designs["g1"]
+    assert surface_laminar_fraction(sizing.launch_method) is None
+    _, default = _parasite("g1", designs, tmp_path / "a", None)
+    import openvsp as vsp
+    assert all(vsp.GetParmVal(vsp.GetParm(g, "PercLam", "ParasiteDragProps")) == 0.0 for g in vsp.FindGeoms())
+    assert default > 0.0

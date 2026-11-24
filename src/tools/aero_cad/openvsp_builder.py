@@ -43,6 +43,7 @@ from src.tools.aero_cad.stability import (
     VspaeroCases,
     derive_stability,
 )
+from src.tools.sizing.topology import surface_laminar_fraction
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ DEFAULT_GAIN: Final[float] = 1.0  # OpenVSP's auto-grouped gain, restored after 
 
 ROTOR_AXIS_ROTATION_DEG: Final[float] = -90.0  # PROP disc normal from +x to +z (lift rotor)
 MAX_PLAUSIBLE_CD0: Final[float] = 0.2
+PERCENT: Final[float] = 100.0  # OpenVSP's PercLam is a percentage
 
 LIFT_SET: Final[int] = vsp.SET_FIRST_USER
 OML_SET: Final[int] = vsp.SET_FIRST_USER + 1
@@ -334,8 +336,21 @@ def run_vspaero(model: VspModel, cond: FlightCondition, work_dir: Path) -> tuple
     return cases, ref
 
 
-def parasite_cd0(model: VspModel, cond: FlightCondition) -> float:
-    """Component build-up zero-lift drag of the OML set, referenced to the wing area."""
+def _set_surface_laminar_fraction(model: VspModel, laminar_fraction: Optional[float]) -> None:
+    """ParasiteDrag's laminar share on the wing and tail surfaces (bodies and booms stay fully turbulent); None
+    leaves OpenVSP's default (fully turbulent)."""
+    if laminar_fraction is None:
+        return
+    surfaces = [model.wing, *(vsp.FindGeomsWithName(name)[0] for _, name in model.tail_controls)]
+    for geom in surfaces:
+        vsp.SetParmVal(vsp.GetParm(geom, "PercLam", "ParasiteDragProps"), PERCENT * laminar_fraction)
+    vsp.Update()
+
+
+def parasite_cd0(model: VspModel, cond: FlightCondition, laminar_fraction: Optional[float] = None) -> float:
+    """Component build-up zero-lift drag of the OML set, referenced to the wing area, with `laminar_fraction` of
+    the lifting surfaces' boundary layer laminar (`topology.surface_laminar_fraction`)."""
+    _set_surface_laminar_fraction(model, laminar_fraction)
     pd = "ParasiteDrag"
     vsp.SetAnalysisInputDefaults(pd)
     for key, value in (("GeomSet", OML_SET), ("RefFlag", vsp.COMPONENT_REF), ("LengthUnit", vsp.LEN_M),
@@ -363,7 +378,7 @@ def analyse_layout(layout: AircraftLayout, sizing: SizingOutput, cruise_altitude
     vsp3, step = export_oml(out_dir)
     cond: FlightCondition = flight_condition(layout, sizing, cruise_altitude_m, temperature_offset_c)
     cases, ref = run_vspaero(model, cond, out_dir / "vspaero")
-    cd0: float = parasite_cd0(model, cond)
+    cd0: float = parasite_cd0(model, cond, surface_laminar_fraction(sizing.launch_method))
     if sizing.cl_cruise is None:
         raise AeroAnalysisError("the sizing record predates the same-CL L/D check; re-run the sizing")
     return derive_stability(cases, ref, layout, cd0, sizing.cl_cruise), vsp3, step  # L/D at the sizing CL

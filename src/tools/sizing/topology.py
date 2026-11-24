@@ -1,7 +1,7 @@
 """DoD group classification and airframe / powertrain selection rules (SRS §4.1.1)."""
 
 import math
-from typing import Final, Literal
+from typing import Final, Literal, Optional
 
 from src.schemas.requirements import OperationalRequirements
 
@@ -18,6 +18,10 @@ HAND_LAUNCH_SPEED_MS: Final[float] = 10.0  # throw speed along the body x axis
 HAND_LAUNCH_HEIGHT_M: Final[float] = 2.0  # release height above the ground
 HAND_LAUNCH_PITCH_DEG: Final[float] = 10.0  # nose-up attitude at release
 HAND_LAUNCH_STALL_MARGIN: Final[float] = 1.2  # take-off safety convention: throw speed >= 1.2 x stall speed
+# Laminar share of the wing and tail boundary layers a hand-launched design is drag-sized for (the user's ruling,
+# 2026-11-24): sizing trips NeuralFoil at this chord fraction and VSPAERO's ParasiteDrag runs this laminar fraction,
+# so both models describe the same aircraft. Runway and VTOL designs keep their models' defaults.
+HAND_LAUNCH_LAMINAR_FRACTION: Final[float] = 0.30
 ELECTRIC_MAX_MTOW_KG: Final[float] = 15.0
 ELECTRIC_MAX_ENDURANCE_H: Final[float] = 3.0
 
@@ -68,3 +72,9 @@ def effective_max_stall_speed_ms(req: OperationalRequirements) -> float:
     if resolved_launch_method(req) == "hand":
         return min(req.max_stall_speed_ms, HAND_LAUNCH_SPEED_MS / HAND_LAUNCH_STALL_MARGIN)
     return req.max_stall_speed_ms
+
+
+def surface_laminar_fraction(launch: str) -> Optional[float]:
+    """Laminar boundary-layer fraction (of chord) assumed on the lifting surfaces for a resolved launch method:
+    HAND_LAUNCH_LAMINAR_FRACTION for a hand launch, None (each model's own transition) otherwise."""
+    return HAND_LAUNCH_LAMINAR_FRACTION if launch == "hand" else None

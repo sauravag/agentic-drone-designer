@@ -5,7 +5,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Final
+from typing import Final, Optional
 
 import aerosandbox as asb
 import numpy as np
@@ -61,6 +61,17 @@ def airfoil_polar(name: str, reynolds: float) -> AirfoilPolar:
     aero: dict = asb.Airfoil(name).get_aero_from_neuralfoil(alpha=ALPHA_SWEEP_DEG, Re=reynolds, mach=POLAR_MACH)
     return AirfoilPolar(name=name, reynolds=reynolds,
                         cl_max_2d=float(np.max(aero["CL"])), cd_min=float(np.min(aero["CD"])))
+
+
+@lru_cache(maxsize=64)
+def profile_drag_cd(name: str, reynolds: float, laminar_fraction: Optional[float]) -> float:
+    """Minimum 2D profile drag at `reynolds`: free transition (the polar's cd_min) when `laminar_fraction` is None,
+    else NeuralFoil with transition forced at that chord fraction on both surfaces (a tripped boundary layer)."""
+    if laminar_fraction is None:
+        return airfoil_polar(name, reynolds).cd_min
+    aero: dict = asb.Airfoil(name).get_aero_from_neuralfoil(alpha=ALPHA_SWEEP_DEG, Re=reynolds, mach=POLAR_MACH,
+                                                           xtr_upper=laminar_fraction, xtr_lower=laminar_fraction)
+    return float(np.min(aero["CD"]))
 
 
 def air_properties(altitude_m: float, temperature_offset_c: float = 0.0) -> tuple[float, float]:
