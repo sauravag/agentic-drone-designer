@@ -74,6 +74,14 @@ def load_catalog(db_path: Path, table: str) -> list:
     return [model(**dict(row)) for row in rows]
 
 
+def part_by_name(db_path: Path, table: str, name: str) -> BaseModel:
+    """The catalog row called `name`; ComponentNotFoundError names the table and the part."""
+    for row in load_catalog(db_path, table):
+        if row.name == name:
+            return row
+    raise ComponentNotFoundError(f"No part in {table} named {name!r}")
+
+
 def _lightest(db_path: Path, table: str, predicate: Callable[[T], bool], requirement: str) -> T:
     candidates: list[T] = [item for item in load_catalog(db_path, table) if predicate(item)]
     if not candidates:

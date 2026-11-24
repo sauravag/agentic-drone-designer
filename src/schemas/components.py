@@ -30,9 +30,13 @@ class CruiseMotor(_Component):
     max_power_w: Power
     continuous_power_w: Power
     kv: float = Field(..., gt=0, le=5_000.0)
-    voltage_v: Voltage
+    voltage_v: Voltage  # the winding's MAX rated voltage (rated cells x 4.2 V)
     diameter_m: Length
     length_m: Length
+    # Equivalent-circuit constants (catalogue estimates); None on legacy rows, which matching skips.
+    rm_ohm: Optional[float] = Field(None, gt=0, le=10.0)
+    i0_a: Optional[float] = Field(None, gt=0, le=500.0)
+    max_current_a: Optional[float] = Field(None, gt=0, le=2_000.0)
 
     @model_validator(mode="after")
     def _continuous_within_max(self) -> "CruiseMotor":
@@ -44,9 +48,24 @@ class CruiseMotor(_Component):
 class VtolMotor(_Component):
     max_thrust_n: float = Field(..., gt=0, le=20_000.0)
     max_power_w: Power
-    voltage_v: Voltage
+    voltage_v: Voltage  # the winding's MAX rated voltage (rated cells x 4.2 V)
     diameter_m: Length
     length_m: Length
+    # Winding KV (catalogue estimate) and equivalent-circuit constants; None on legacy rows.
+    kv: Optional[float] = Field(None, gt=0, le=5_000.0)
+    rm_ohm: Optional[float] = Field(None, gt=0, le=10.0)
+    i0_a: Optional[float] = Field(None, gt=0, le=500.0)
+    max_current_a: Optional[float] = Field(None, gt=0, le=2_000.0)
+
+
+class Esc(_Component):
+    continuous_current_a: float = Field(..., gt=0, le=2_000.0)
+    burst_current_a: float = Field(..., gt=0, le=3_000.0)
+    max_voltage_v: Voltage
+    efficiency: float = Field(..., ge=0.5, le=1.0)
+    length_m: Length
+    width_m: Length
+    height_m: Length
 
 
 class IceGenerator(_Component):
@@ -97,6 +116,7 @@ class Propeller(_Component):
     pitch_m: float = Field(..., gt=0, le=2.0)
     max_power_w: Power
     application: Literal["cruise", "vtol"]
+    is_folding: bool = False
 
 
 SensorType = Literal["eo", "eo_ir", "sar", "lidar", "multispectral", "hyperspectral", "sigint", "comms_relay"]

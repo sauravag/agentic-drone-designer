@@ -6,6 +6,7 @@ datasheets, not quotes for a specific SKU. Verify against real datasheets before
 Run directly: `python -m src.tools.database.seed_data`
 """
 
+import functools
 import sqlite3
 import types
 from contextlib import closing
@@ -16,14 +17,15 @@ from typing import Final
 from pydantic import BaseModel
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
-from src.schemas.components import Battery, CruiseMotor, IceGenerator, Payload, Propeller, VtolMotor
+from src.schemas.components import Battery, CruiseMotor, Esc, IceGenerator, Payload, Propeller, VtolMotor
 from src.schemas.payload_catalog import PAYLOADS
-from src.units import INCH_TO_M
+from src.tools.database.catalog_variants import cruise_motor_rows, esc_rows, propeller_rows, vtol_motor_rows
 
 DEFAULT_DB_PATH: Final[Path] = Path(__file__).resolve().parents[3] / "data" / "cots_catalog.db"
 # Bump whenever a table's columns or seeded rows change: ensure_catalog reseeds a file with another version.
 # 2: researched NextVision/SIYI gimbals and the payload vendor / reference-price columns.
-CATALOG_VERSION: Final[int] = 2
+# 3: motor windings + equivalent-circuit constants, propeller pitch/folding variants, ESC table.
+CATALOG_VERSION: Final[int] = 3
 
 CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "cruise_motors": CruiseMotor,
@@ -31,6 +33,7 @@ CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "ice_generators": IceGenerator,
     "batteries": Battery,
     "propellers": Propeller,
+    "escs": Esc,
     "payloads": Payload,
 }
 
@@ -182,19 +185,7 @@ def _battery_rows() -> list[Battery]:
 
 
 def _propeller_rows() -> list[Propeller]:
-    rows: list[Propeller] = []
-    for application, table in (("cruise", CRUISE_PROPS_IN), ("vtol", VTOL_PROPS_IN)):
-        for dia_in, pitch_in, mass, power in table:
-            rows.append(
-                Propeller(
-                    name=f"Carbon {application} prop {dia_in}x{pitch_in}in",
-                    diameter_m=round(dia_in * INCH_TO_M, 4), pitch_m=round(pitch_in * INCH_TO_M, 4),
-                    mass_kg=mass, max_power_w=power, application=application,
-                )
-            )
-    return rows
-
-
+    return propeller_rows({"cruise": CRUISE_PROPS_IN, "vtol": VTOL_PROPS_IN})
 
 
 def _tuple_rows(model: type[BaseModel], raw: list[tuple], fields: list[str] | None = None) -> list[BaseModel]:
@@ -205,14 +196,29 @@ def _tuple_rows(model: type[BaseModel], raw: list[tuple], fields: list[str] | No
 
 def build_catalog() -> dict[str, list[BaseModel]]:
     """Return every catalog row, validated through its Pydantic schema."""
+    cruise_motors: list[CruiseMotor] = cruise_motor_rows(CRUISE_MOTORS)
+    vtol_motors: list[VtolMotor] = vtol_motor_rows(VTOL_MOTORS)
     return {
-        "cruise_motors": _tuple_rows(CruiseMotor, CRUISE_MOTORS),
-        "vtol_motors": _tuple_rows(VtolMotor, VTOL_MOTORS),
+        "cruise_motors": cruise_motors,
+        "vtol_motors": vtol_motors,
         "ice_generators": _tuple_rows(IceGenerator, ICE_GENERATORS),
         "batteries": _battery_rows(),
         "propellers": _propeller_rows(),
+        "escs": esc_rows([*cruise_motors, *vtol_motors]),
         "payloads": list(PAYLOADS),
     }
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_catalog() -> dict[str, tuple[BaseModel, ...]]:
+    return {table: tuple(rows) for table, rows in build_catalog().items()}
+
+
+def catalog_rows(table: str) -> list:
+    """The validated rows `seed_database` inserts for `table` (built once; rows are frozen)."""
+    if table not in CATALOG_TABLES:
+        raise ValueError(f"Unknown catalog table {table!r}; expected one of {sorted(CATALOG_TABLES)}")
+    return list(_cached_catalog()[table])
 
 
 def _is_optional(annotation: object) -> bool:
