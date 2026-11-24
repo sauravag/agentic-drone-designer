@@ -25,8 +25,8 @@ from src.tools.database.packs import LOADED_MIN_V_CELL, bus_window_v
 from src.tools.database.seed_data import catalog_rows
 from src.tools.propulsion.match_result import assemble_match
 from src.tools.propulsion.match_search import (
-    MOTOR_OVERSIZE_FACTOR, PROP_OVERSIZE_FACTOR, Bus, Drive, Motor, Option, Rejection, drive_for, hardest_ideal_w,
-    option_at, propeller_shafts,
+    MOTOR_OVERSIZE_FACTOR, PROP_OVERSIZE_FACTOR, RULE_MODEL, RULE_OVERSIZE, Bus, Drive, Motor, Option, Rejection,
+    drive_for, hardest_ideal_w, option_at, propeller_shafts,
 )
 from src.tools.propulsion.match_types import (  # noqa: F401  (re-exported: the matching API lives here)
     ESC_CURRENT_MARGIN, MAX_MATCH_THROTTLE, MAX_SAGGED_THROTTLE, PROP_TIP_MACH_MAX, FlightPoint, MatchContext,
@@ -60,7 +60,15 @@ def match_propulsion(context: MatchContext) -> PropulsionMatch:
         raise _failure(context, cruise, lift)
     cruise_option, lift_option = chosen
     cells = classes[cruise_option.bus.key[:3]]
-    return assemble_match(context, cruise_option, lift_option, cells, _hotel_kg(context, cruise_option.bus))
+    return assemble_match(context, cruise_option, lift_option, cells, _hotel_kg(context, cruise_option.bus),
+                          _skipped_propellers(cruise, lift))
+
+
+def _skipped_propellers(cruise: _RoleResult, lift: Optional[_RoleResult]) -> tuple[str, ...]:
+    """Catalogue propellers left out because their table could not be built (kept loud in the match notes)."""
+    prefix: str = f"{RULE_MODEL}: "
+    rejections = cruise.rejections + (lift.rejections if lift is not None else ())
+    return tuple(sorted({r.rule[len(prefix):] for r in rejections if r.rule.startswith(prefix)}))
 
 
 # ---------------------------------------------------------------- buses
@@ -81,7 +89,8 @@ def _voltage_classes(context: MatchContext) -> dict[VoltageClass, tuple[Cell, ..
             key: VoltageClass = (cell.chemistry, cell.nominal_voltage_v, cell.max_voltage_v)
             groups = {**groups, key: groups.get(key, ()) + (cell,)}
     if not groups:
-        raise PropulsionMatchError(f"no {context.chemistry} cells in the catalogue to build the pack from")
+        wanted: str = f"{context.chemistry} " if context.chemistry is not None else ""
+        raise PropulsionMatchError(f"no {wanted}cells in the catalogue to build the pack from")
     return groups
 
 
@@ -156,12 +165,12 @@ def _prop_drives(prop: Propeller, motors: tuple[Motor, ...], points: tuple[Fligh
     if prop.max_power_w < ideal_w:
         return (), (Rejection("power (propeller rating)", hardest),)
     if prop.max_power_w > PROP_OVERSIZE_FACTOR * ideal_w:
-        return (), ()  # oversized: skipped, not a limit
+        return (), (Rejection(RULE_OVERSIZE, ""),)  # skipped, not a limit (reported only if nothing else is left)
     sized = [m for m in motors if m.max_power_w <= MOTOR_OVERSIZE_FACTOR * ideal_w]
     weak = tuple(Rejection("power (motor rating)", hardest) for m in sized if m.max_power_w < ideal_w)
     usable = [m for m in sized if m.max_power_w >= ideal_w]
     if not usable:
-        return (), weak
+        return (), weak or (Rejection(RULE_OVERSIZE, ""),)
     shafts = propeller_shafts(prop, points, installation)
     if isinstance(shafts, Rejection):
         return (), weak + (shafts,)
@@ -172,8 +181,9 @@ def _prop_drives(prop: Propeller, motors: tuple[Motor, ...], points: tuple[Fligh
 
 def _drive_options(drive: Drive, buses: tuple[Bus, ...], escs: tuple[Esc, ...], count: int,
                    cap_w: Callable[[Bus], float]) -> tuple[tuple[Option, ...], Optional[Rejection]]:
-    """The drive on every bus. Without any, the most telling rejection: the one nearest a working bus (a rule
-    other than the winding's voltage rating, which only says the series count went too high)."""
+    """The drive on every bus (buses run by rising series count). Without any, one rejection for the drive: the
+    LAST one that is not the winding's voltage rating (which only says S went too high), i.e. the limit at the
+    highest S the winding allows; if every bus hit the voltage rating, the first of those."""
     options: list[Option] = []
     telling: Optional[Rejection] = None
     for bus in buses:
@@ -239,10 +249,14 @@ def _best_set(context: MatchContext, buses: tuple[Bus, ...], cruise: _RoleResult
 
 
 def _limits(rejections: tuple[Rejection, ...]) -> str:
-    if not rejections:
+    limits = tuple(r for r in rejections if r.rule != RULE_OVERSIZE)
+    if not limits and rejections:
+        return (f"all candidates rated above {PROP_OVERSIZE_FACTOR:g}x ideal power (oversize prune): the thrust is "
+                f"below what the catalogue's smallest propellers and motors are meant for")
+    if not limits:
         return "no catalogue motor with matching constants or propeller survived pruning"
-    counted = Counter((r.rule, r.point) for r in rejections).most_common(TOP_LIMITS_REPORTED)
-    return "; ".join(f"{rule}{' at ' + point if point else ''} ({n} of {len(rejections)} candidates)"
+    counted = Counter((r.rule, r.point) for r in limits).most_common(TOP_LIMITS_REPORTED)
+    return "; ".join(f"{rule}{' at ' + point if point else ''} ({n} of {len(limits)} candidates)"
                      for (rule, point), n in counted)
 
 

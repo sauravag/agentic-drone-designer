@@ -1,8 +1,10 @@
 """Propulsion operating points produced by the propulsor model (spec 6.4)."""
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 PropulsorRole = Literal["cruise", "lift"]
 
@@ -46,9 +48,18 @@ class PropulsionMatch(BaseModel):
     lift_rotor: Optional[str] = Field(None, min_length=1, max_length=120)
     lift_esc: Optional[str] = Field(None, min_length=1, max_length=120)
     operating_points: tuple[OperatingPoint, ...] = Field(..., min_length=1)
-    efficiencies: dict[str, float]
+    efficiencies: Mapping[str, float]  # read-only view (a frozen model must not hand out a mutable dict)
     propulsion_mass_kg: float = Field(..., gt=0)
     notes: tuple[str, ...] = ()
+
+    @field_validator("efficiencies", mode="after")
+    @classmethod
+    def _read_only(cls, value: Mapping[str, float]) -> Mapping[str, float]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("efficiencies")
+    def _plain(self, value: Mapping[str, float]) -> dict[str, float]:
+        return dict(value)
 
     @property
     def set_key(self) -> SetKey:

@@ -85,17 +85,19 @@ def _cell(context: MatchContext, options: tuple[Option, ...], cells: tuple[Cell,
     return cell, pack
 
 
-def _notes(context: MatchContext, options: tuple[Option, ...], hotel_kg: float, pack: Battery) -> tuple[str, ...]:
+def _notes(context: MatchContext, options: tuple[Option, ...], hotel_kg: float, pack: Battery,
+           skipped: tuple[str, ...]) -> tuple[str, ...]:
     storage_kg: float = sum(o.energy_j * o.bus.storage_kg_per_j for o in options) + hotel_kg
     energy_wh: float = (sum(o.energy_j for o in options) + context.hotel_w * context.mission_duration_s) / WH_TO_J
     kind: str = "fuel (with fuel system)" if context.is_hybrid else "battery"
     return (f"objective: hardware + estimated {kind} {storage_kg:.3f} kg for {energy_wh:.1f} Wh of mission energy",
             f"pack estimate {pack.name}: {pack.capacity_wh:.0f} Wh, {pack.mass_kg:.3f} kg",
-            ESTIMATE_NOTE)
+            ESTIMATE_NOTE) + ((f"catalogue propellers skipped (their table cannot be built): {', '.join(skipped)}",)
+                              if skipped else ())
 
 
 def assemble_match(context: MatchContext, cruise: Option, lift: Optional[Option], cells: tuple[Cell, ...],
-                   hotel_kg: float) -> PropulsionMatch:
+                   hotel_kg: float, skipped: tuple[str, ...] = ()) -> PropulsionMatch:
     options: tuple[Option, ...] = (cruise,) if lift is None else (cruise, lift)
     ops: tuple[OperatingPoint, ...] = _operating_points(cruise, context.pusher_factor, is_lift=False) + (
         _operating_points(lift, 1.0, is_lift=True) if lift is not None else ())
@@ -108,5 +110,5 @@ def assemble_match(context: MatchContext, cruise: Option, lift: Optional[Option]
         cruise_propeller=cruise.drive.propeller.name, cruise_esc=cruise.esc.name,
         lift_motor=lift.drive.motor.name if lift else None, lift_rotor=lift.drive.propeller.name if lift else None,
         lift_esc=lift.esc.name if lift else None, operating_points=ops, efficiencies=_efficiencies(options, ops),
-        propulsion_mass_kg=hardware, notes=_notes(context, options, hotel_kg, pack),
+        propulsion_mass_kg=hardware, notes=_notes(context, options, hotel_kg, pack, skipped),
     )

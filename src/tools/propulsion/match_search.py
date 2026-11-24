@@ -38,6 +38,7 @@ VOLTAGE_EPS_V: Final[float] = 1e-6  # catalogue ratings are n x 4.2 V with float
 PROP_OVERSIZE_FACTOR: Final[float] = 6.0
 MOTOR_OVERSIZE_FACTOR: Final[float] = 6.0
 RULE_MODEL: Final[str] = "propeller model failed (no table)"
+RULE_OVERSIZE: Final[str] = "oversize prune"  # not a limit: a candidate skipped as rated above 6x ideal power
 RULE_TABLE: Final[str] = "thrust out of propeller range (tip Mach 0.80 or pitch speed)"
 
 
@@ -170,7 +171,7 @@ def propeller_shafts(propeller: Propeller, points: tuple[FlightPoint, ...],
                      installation_factor: float) -> Union[tuple[Shaft, ...], Rejection]:
     """The propeller's rpm and torque at each point from its table, or the first rule it breaks."""
     if _table_failure(propeller.diameter_m, propeller.pitch_m) is not None:
-        return Rejection(RULE_MODEL, "")
+        return Rejection(f"{RULE_MODEL}: {propeller.name}", "")
     table = propeller_table(propeller.diameter_m, propeller.pitch_m)
     shafts: list[Shaft] = []
     for p in points:

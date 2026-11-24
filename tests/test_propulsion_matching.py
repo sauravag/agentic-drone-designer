@@ -14,7 +14,7 @@ from src.schemas.components import Cell, CruiseMotor, Esc, Propeller, VtolMotor
 from src.schemas.propulsion import OperatingPoint, PropulsionMatch
 from src.tools.database.packs import charged_voltage_v
 from src.tools.database.seed_data import catalog_rows
-from src.tools.propulsion import matching
+from src.tools.propulsion import match_search, matching
 from src.tools.propulsion.matching import (
     ESC_CURRENT_MARGIN, MAX_MATCH_THROTTLE, PROP_TIP_MACH_MAX, FlightPoint, MatchContext, PropulsionMatchError,
     match_propulsion,
@@ -147,7 +147,9 @@ def test_more_thrust_never_picks_a_lighter_set(g1_match: PropulsionMatch) -> Non
 
 def test_thrust_beyond_catalogue_names_the_constraint() -> None:
     huge = tuple(replace(p, thrust_n=2_000.0) for p in G1_POINTS)
-    with pytest.raises(PropulsionMatchError, match="current|power|tip Mach|throttle|diameter"):
+    # the limiting rule after the scope's colon (the scope text itself always mentions "diameter")
+    limit = r"diameter\): (current|power|tip Mach|throttle|sagged throttle)\b[^;|]* at (Climb|Ingress|Loiter|Egress) \("
+    with pytest.raises(PropulsionMatchError, match=limit):
         match_propulsion(_context(points=huge))
 
 
@@ -156,7 +158,7 @@ def test_failure_names_the_flight_point_and_the_diameter_scope() -> None:
     with pytest.raises(PropulsionMatchError) as failure:
         match_propulsion(_context(points=heavy))
     message: str = str(failure.value)
-    assert any(f"at {name}" for name in FORWARD_PHASES if f"at {name}" in message)
+    assert any(f"at {name}" in message for name in FORWARD_PHASES)
     assert f"{G1_MAX_CRUISE_D_M:.3f} m" in message
 
 
@@ -243,3 +245,72 @@ def test_g1_match_is_fast_with_a_warm_cache(g1_match: PropulsionMatch) -> None:
     match_propulsion(_context())
     assert time.perf_counter() - start < G1_MATCH_SECONDS_MAX
     assert math.isfinite(g1_match.propulsion_mass_kg)
+
+
+def _patched_rows(monkeypatch: pytest.MonkeyPatch, table: str, edit) -> None:  # type: ignore[no-untyped-def]
+    real = matching.catalog_rows
+    monkeypatch.setattr(matching, "catalog_rows", lambda name: edit(real(name)) if name == table else real(name))
+
+
+def test_hybrid_generator_power_rule_limits_the_cruise_propulsor(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patched_rows(monkeypatch, "ice_generators",
+                  lambda rows: [g.model_copy(update={"continuous_power_w": 20.0}) for g in rows])
+    context = _context(is_hybrid=True, chemistry="lipo")
+    buses = matching._buses(context, matching._voltage_classes(context))
+    cruise = matching._role(context, False, buses)
+    assert not cruise.best  # 20 W generators cannot carry ~100 W of cruise plus the 15 W hotel load
+    assert any(r.rule == "generator power" and r.point in FORWARD_PHASES for r in cruise.rejections)
+    with pytest.raises(PropulsionMatchError):
+        match_propulsion(context)
+
+
+def test_no_common_bus_voltage_is_named() -> None:
+    bus = ("lipo", 3.7, 4.2)
+    cruise = matching._RoleResult(best={(*bus, 4): object()}, rejections=())  # type: ignore[dict-item]
+    lift = matching._RoleResult(best={(*bus, 12): object()}, rejections=())  # type: ignore[dict-item]
+    error = matching._failure(_quad_context(), cruise, lift)
+    assert "no common bus voltage" in str(error) and "S=[4]" in str(error) and "S=[12]" in str(error)
+
+
+def test_unbuildable_propeller_is_skipped_loudly(monkeypatch: pytest.MonkeyPatch, g1_match: PropulsionMatch) -> None:
+    chosen: Propeller = _row("propellers", g1_match.cruise_propeller)  # type: ignore[assignment]
+    monkeypatch.setattr(match_search, "_table_failure",
+                        lambda d, p: "boom" if (d, p) == (chosen.diameter_m, chosen.pitch_m) else None)
+    match = match_propulsion(_context())
+    assert match.cruise_propeller != chosen.name
+    assert any("skipped" in note and chosen.name in note for note in match.notes)
+
+
+def test_every_propeller_unbuildable_names_the_model_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(match_search, "_table_failure", lambda d, p: "boom")
+    with pytest.raises(PropulsionMatchError, match="propeller model failed .no table.: Carbon cruise prop"):
+        match_propulsion(_context())
+
+
+def test_match_has_no_skip_note_when_every_table_builds(g1_match: PropulsionMatch) -> None:
+    assert not any("skipped" in note for note in g1_match.notes)
+
+
+def test_thrust_far_below_the_catalogue_names_the_oversize_prune() -> None:
+    tiny = tuple(replace(p, thrust_n=0.01) for p in G1_POINTS)
+    with pytest.raises(PropulsionMatchError, match=r"6x ideal power \(oversize prune\)"):
+        match_propulsion(_context(points=tiny))
+
+
+def test_folding_props_excluded_when_not_required(g1_match: PropulsionMatch) -> None:
+    candidates = matching._cruise_propellers(_context())
+    assert candidates and not any(p.is_folding for p in candidates)
+    assert not _row("propellers", g1_match.cruise_propeller).is_folding  # type: ignore[attr-defined]
+
+
+def test_efficiencies_are_read_only_and_round_trip(g1_match: PropulsionMatch) -> None:
+    with pytest.raises(TypeError):
+        g1_match.efficiencies["Loiter"] = 1.0  # type: ignore[index]
+    again = PropulsionMatch.model_validate_json(g1_match.model_dump_json())
+    assert again == g1_match and dict(again.efficiencies) == dict(g1_match.efficiencies)
+
+
+def test_missing_cells_message_without_a_chemistry(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patched_rows(monkeypatch, "cells", lambda rows: [])
+    with pytest.raises(PropulsionMatchError, match="no cells in the catalogue"):
+        match_propulsion(_context())
