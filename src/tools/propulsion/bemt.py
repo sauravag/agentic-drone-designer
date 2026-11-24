@@ -380,49 +380,78 @@ def _converged_state(blade: BladeGeometry, stations: _Stations, omega: np.ndarra
     count: int = len(omega)
     cond: _Conditions = _Conditions(omega[:, None], rho[:, None], mu[:, None], speed_of_sound_ms[:, None])
     speed: np.ndarray = np.hypot(airspeed_ms[:, None], cond.omega * stations.radius_m)
-    shape: tuple[int, int] = speed.shape
-    out: dict[str, np.ndarray] = {key: np.zeros(shape) for key in ("cn", "ct", "loss", "speed")}
+    stored: _Stored = _Stored(*(np.zeros(speed.shape) for _ in range(4)))
     done: np.ndarray = np.zeros(count, dtype=bool)
     for _ in range(MAX_SPEED_PASSES):
         rows: np.ndarray = np.flatnonzero(~(done | failures.mask))
         if len(rows) == 0:
             break
-        converged: np.ndarray = _speed_pass(blade, _subset(stations, rows), cond.rows(rows), speed, rows, coefficients,
-                                            failures, out)
-        done |= _scatter(count, rows, converged)
+        result: _PassResult = _speed_pass(blade, _subset(stations, rows), cond.rows(rows), speed[rows], rows,
+                                          coefficients, failures)
+        stored = _stored_with(stored, rows[result.converged], result)
+        speed = _rows_replaced(speed, rows, result.next_speed)
+        done = done | _scatter(count, rows, result.converged)
     failures.flag(~done, lambda _p: f"BEMT relative speed did not converge in {MAX_SPEED_PASSES} Reynolds/Mach passes")
-    return _Section(cn=out["cn"], ct=out["ct"], loss=out["loss"]), out["speed"]
+    return _Section(cn=stored.cn, ct=stored.ct, loss=stored.loss), stored.speed
+
+
+@dataclass(frozen=True)
+class _Stored:
+    """Section and relative speed of each point at the pass where it converged, (points, stations)."""
+    cn: np.ndarray
+    ct: np.ndarray
+    loss: np.ndarray
+    speed: np.ndarray
+
+
+@dataclass(frozen=True)
+class _PassResult:
+    """Outcome of one pass over the active rows: which converged, the speed to start the next pass from, and the
+    section and speed the pass was evaluated at."""
+    converged: np.ndarray
+    next_speed: np.ndarray
+    evaluated: _Stored
+
+
+def _rows_replaced(full: np.ndarray, rows: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Copy of `full` with `rows` set to `values`."""
+    updated: np.ndarray = full.copy()
+    updated[rows] = values
+    return updated
+
+
+def _stored_with(stored: _Stored, points: np.ndarray, result: _PassResult) -> _Stored:
+    """Copy of `stored` with the converged `points` taken from this pass (`points` index the batch)."""
+    keep: np.ndarray = result.converged
+    return _Stored(*(_rows_replaced(old, points, new[keep])
+                     for old, new in zip((stored.cn, stored.ct, stored.loss, stored.speed),
+                                         (result.evaluated.cn, result.evaluated.ct, result.evaluated.loss,
+                                          result.evaluated.speed))))
 
 
 def _speed_pass(blade: BladeGeometry, stations: _Stations, cond: _Conditions, speed: np.ndarray, rows: np.ndarray,
-                coefficients: SectionCoefficients, failures: _Failures, out: dict[str, np.ndarray]) -> np.ndarray:
-    """One Reynolds/Mach pass for the points `rows`: updates `speed` in place for them, stores converged results in
-    `out`, flags failures; returns which of `rows` converged this pass."""
-    count: int = len(speed)
-    reynolds: np.ndarray = cond.rho * speed[rows] * stations.chord_m / cond.mu
-    mach: np.ndarray = speed[rows] / cond.sound
+                coefficients: SectionCoefficients, failures: _Failures) -> _PassResult:
+    """One Reynolds/Mach pass for the points `rows` starting at their `speed`; flags failures in `failures`."""
+    count: int = len(failures.reasons)
+    reynolds: np.ndarray = cond.rho * speed * stations.chord_m / cond.mu
+    mach: np.ndarray = speed / cond.sound
     in_grid: np.ndarray = (np.all(reynolds >= POLAR_RE_NODES[0], axis=1) & np.all(reynolds <= POLAR_RE_NODES[-1], axis=1)
                            & np.all(mach <= POLAR_MACH_NODES[-1], axis=1))
     failures.flag(_scatter(count, rows, ~in_grid), lambda p: _grid_reason(reynolds[_at(rows, p)], mach[_at(rows, p)]))
     safe_re: np.ndarray = np.clip(np.nan_to_num(reynolds, nan=POLAR_RE_NODES[0]), POLAR_RE_NODES[0], POLAR_RE_NODES[-1])
     safe_mach: np.ndarray = np.clip(np.nan_to_num(mach), 0.0, POLAR_MACH_NODES[-1])
     phi, bracketed = _solve_inflow(stations, blade.n_blades, safe_re, safe_mach, coefficients)
-    all_bracketed: np.ndarray = np.all(bracketed, axis=1)
-    failures.flag(_scatter(count, rows, ~all_bracketed),
+    failures.flag(_scatter(count, rows, ~np.all(bracketed, axis=1)),
                   lambda p: _bracket_reason(stations, bracketed[_at(rows, p)]))
     section: _Section = _section(stations, blade.n_blades, phi, safe_re, safe_mach, coefficients)
     new_speed: np.ndarray = _relative_speed(stations, cond.omega, phi, section)
     valid: np.ndarray = np.all(np.isfinite(new_speed) & (new_speed > 0.0), axis=1)
     failures.flag(_scatter(count, rows, ~valid), lambda p: _speed_reason(stations, new_speed[_at(rows, p)]))
-    alive: np.ndarray = ~failures.mask[rows]
-    change: np.ndarray = np.abs(new_speed / speed[rows] - 1.0)
-    converged: np.ndarray = alive & np.all(change < SPEED_REL_TOLERANCE, axis=1)
-    _flag_low_reynolds(failures, stations, reynolds, rows, converged, count)
-    final: np.ndarray = converged & ~failures.mask[rows]
-    for key, value in (("cn", section.cn), ("ct", section.ct), ("loss", section.loss), ("speed", speed[rows])):
-        out[key][rows[final]] = value[final]
-    speed[rows[valid]] = new_speed[valid]
-    return final
+    close: np.ndarray = np.all(np.abs(new_speed / speed - 1.0) < SPEED_REL_TOLERANCE, axis=1)
+    _flag_low_reynolds(failures, stations, reynolds, rows, ~failures.mask[rows] & close, count)
+    converged: np.ndarray = ~failures.mask[rows] & close
+    return _PassResult(converged=converged, next_speed=np.where(valid[:, None], new_speed, speed),
+                       evaluated=_Stored(section.cn, section.ct, section.loss, speed))
 
 
 def _at(rows: np.ndarray, point: int) -> int:

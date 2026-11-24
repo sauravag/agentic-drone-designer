@@ -380,3 +380,19 @@ def test_extreme_props_build_and_match(size: tuple[float, float]) -> None:
     rho, mu, sound = FOUR_KM_HOT
     for rpm, airspeed, point in list(_sample_envelope(table, FOUR_KM_HOT))[:5]:
         assert table.thrust_n(rpm, airspeed, rho, mu, sound) == pytest.approx(point.thrust_n, rel=ACCURACY)
+
+
+def test_mach_axis_always_ends_at_the_limit_with_two_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
+    mach, _ = prop_tables._axes(*SMALL_PROP)
+    assert mach[-1] == prop_tables.TABLE_MAX_TIP_MACH and mach[0] < mach[1]
+    # a prop whose Reynolds floor already sits at tip Mach 0.7: single fixed nodes would leave one node
+    monkeypatch.setattr(prop_tables, "FIXED_MACH_NODES", (0.15, 0.30, 0.45, 0.60, 0.70))
+    monkeypatch.setattr(prop_tables, "_chord75_m", lambda d, p: 0.0038 * d)  # thin chord: floor at tip Mach ~0.66
+    high, _ = prop_tables._axes(*SMALL_PROP)
+    assert high[0] > 0.64 and len(high) >= 2 and high[-1] == prop_tables.TABLE_MAX_TIP_MACH and np.all(np.diff(high) > 0.0)
+
+
+def test_axes_raise_when_the_reynolds_floor_reaches_the_tip_mach_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prop_tables, "_chord75_m", lambda d, p: 1e-9 * d)
+    with pytest.raises(ValueError, match="no Mach range"):
+        prop_tables._axes(*SMALL_PROP)

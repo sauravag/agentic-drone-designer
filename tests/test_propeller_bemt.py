@@ -27,6 +27,7 @@ NEAR_PITCH_SPEED_FRACTION: Final[float] = 0.95
 NEAR_PITCH_THRUST_RATIO_MAX: Final[float] = 0.30
 J_SWEEP: Final[np.ndarray] = np.arange(0.30, 0.95, 0.01)
 LIFT_ROTOR_TIP_MACH: Final[float] = 0.6
+SECONDS_PER_MINUTE: Final[float] = 60.0
 
 
 @dataclass(frozen=True)
@@ -234,7 +235,7 @@ def test_batch_matches_single_points() -> None:
 
 def test_batch_reports_failed_points_without_touching_the_others() -> None:
     blade = generic_blade(0.254, 0.178)
-    supersonic_tip_rpm: float = 0.9 * SPEED_OF_SOUND / (math.pi * blade.diameter_m) * 60.0
+    supersonic_tip_rpm: float = 0.9 * SPEED_OF_SOUND / (math.pi * blade.diameter_m) * SECONDS_PER_MINUTE
     rpm = np.array([6000.0, supersonic_tip_rpm, 6000.0, 800.0])
     batch = bemt_points(blade, rpm, np.zeros(4), RHO, MU, SPEED_OF_SOUND)
     expected = bemt_point(blade, 6000.0, 0.0, RHO, MU, SPEED_OF_SOUND)

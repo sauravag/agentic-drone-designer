@@ -191,10 +191,11 @@ def _axes(diameter_m: float, pitch_m: float) -> tuple[np.ndarray, np.ndarray]:
     rpm_low: float = rpm_for_reynolds75(diameter_m, pitch_m, re_low, TABLE_SEA_LEVEL_RHO, TABLE_MU)
     rpm_high: float = _rpm_for_tip_mach(diameter_m, TABLE_MAX_TIP_MACH)
     if rpm_high <= rpm_low:
-        raise ValueError(f"{diameter_m} m propeller cannot span Re75 >= {REPRESENTATIVE_RE_MIN:.0e} to tip Mach "
-                         f"{TABLE_MAX_TIP_MACH}")
+        raise ValueError(f"{diameter_m} m propeller: tip Mach at Re75 {re_low:.3g} already reaches "
+                         f"{TABLE_MAX_TIP_MACH}; no Mach range to tabulate")
     mach_low: float = math.pi * diameter_m * rpm_low / SECONDS_PER_MINUTE / TABLE_SPEED_OF_SOUND
-    mach: list[float] = [mach_low] + [m for m in FIXED_MACH_NODES if m > mach_low * MACH_NODE_MIN_RATIO]
+    inner: list[float] = [m for m in FIXED_MACH_NODES if mach_low * MACH_NODE_MIN_RATIO < m < TABLE_MAX_TIP_MACH]
+    mach: list[float] = [mach_low, *inner, TABLE_MAX_TIP_MACH]  # always >= 2 nodes, top node exactly the limit
     re_high: float = reynolds75_at(diameter_m, pitch_m, rpm_high, TABLE_SEA_LEVEL_RHO, TABLE_MU)
     return np.asarray(mach), np.geomspace(re_low, re_high, N_RE_NODES)
 
