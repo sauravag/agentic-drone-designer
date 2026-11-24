@@ -1217,6 +1217,7 @@ def _parasite(case: str, designs: dict, tmp_path: Path, laminar_fraction):
     sizing, bom = designs[case]
     layout = _fitted_layout(sizing, bom)
     model = ob.build_model(layout, tmp_path)
+    ob.vsp.SetVSP3FileName(str(tmp_path / "model.vsp3"))  # ParasiteDrag writes its tables next to this file
     cond = ob.flight_condition(layout, sizing, CASES[case].service_ceiling_m)
     return sizing, ob.parasite_cd0(model, cond, laminar_fraction)
 
