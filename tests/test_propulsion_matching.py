@@ -178,7 +178,8 @@ def test_quadplane_lift_rotor_not_smaller_than_disk_loading_diameter(quad_match:
     lift_diameters = sorted({p.diameter_m for p in catalog_rows("propellers") if p.application == "vtol"})
     assert rotor.application == "vtol"
     assert rotor.diameter_m >= G1_LIFT_MIN_D_M
-    assert rotor.diameter_m == min(d for d in lift_diameters if d >= G1_LIFT_MIN_D_M)
+    # ruling L2: any catalogue size from the disk-loading diameter up to 1.25 x it (the objective chooses)
+    assert rotor.diameter_m <= max(1.25 * G1_LIFT_MIN_D_M, min(d for d in lift_diameters if d >= G1_LIFT_MIN_D_M))
     assert quad_match.lift_motor is not None and quad_match.lift_esc is not None
 
 
@@ -326,3 +327,28 @@ def test_table_failures_are_one_limit_entry_and_never_crowd_out_physical_limits(
     text: str = matching._limits(model + physical)
     assert all(rule in text for rule in ("current at Climb", "tip Mach at Climb", "throttle at Loiter"))
     assert text.count(RULE_MODEL) == 1 and "Prop 0" in text and "Prop 9" in text
+
+
+def test_lift_rotor_candidates_span_the_disk_loading_minimum_to_the_oversize_limit() -> None:
+    from src.tools.propulsion import matching as mt
+
+    assert mt.LIFT_ROTOR_MAX_OVERSIZE == 1.25
+    context = _quad_context(min_lift_rotor_diameter_m=1.0)
+    rotors = mt._lift_rotors(context)
+    diameters = {p.diameter_m for p in rotors}
+    assert diameters and all(1.0 - 1e-9 <= d <= 1.25 + 1e-9 for d in diameters)
+    catalogue = {p.diameter_m for p in catalog_rows("propellers") if p.application == "vtol"}
+    assert diameters == {d for d in catalogue if 1.0 - 1e-9 <= d <= 1.25 + 1e-9}
+    pitches = {p.pitch_m for p in rotors if p.diameter_m == min(diameters)}
+    assert len(pitches) >= 2  # every pitch of each diameter
+
+
+def test_lift_rotor_candidates_keep_the_next_size_up_across_a_catalogue_gap() -> None:
+    from src.tools.propulsion import matching as mt
+
+    sizes = sorted({p.diameter_m for p in catalog_rows("propellers") if p.application == "vtol"})
+    gap_low, gap_high = max(zip(sizes, sizes[1:]), key=lambda pair: pair[1] / pair[0])
+    minimum = gap_low * 1.0001  # just past a size: the next one up is more than 1.25 x away only across a gap
+    rotors = mt._lift_rotors(_quad_context(min_lift_rotor_diameter_m=minimum))
+    assert {p.diameter_m for p in rotors} == ({gap_high} if gap_high > 1.25 * minimum else
+                                              {d for d in sizes if minimum <= d <= 1.25 * minimum})

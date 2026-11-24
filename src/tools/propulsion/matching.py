@@ -36,6 +36,7 @@ from src.tools.sizing.mass_model import FUEL_SYSTEM_FRACTION
 from src.units import KWH_TO_J, WH_TO_J
 
 DIAMETER_TOL_M: Final[float] = 1e-9
+LIFT_ROTOR_MAX_OVERSIZE: Final[float] = 1.25  # largest lift rotor considered, x the disk-loading diameter (L2)
 SERIES_EPS: Final[float] = 1e-6  # floor(rated voltage / 4.2 V) must not lose a cell to float noise
 TOP_LIMITS_REPORTED: Final[int] = 3
 MOTOR_CONSTANTS: Final[tuple[str, ...]] = ("kv", "rm_ohm", "i0_a", "max_current_a")
@@ -144,13 +145,16 @@ def _cruise_propellers(context: MatchContext) -> tuple[Propeller, ...]:
 
 
 def _lift_rotors(context: MatchContext) -> tuple[Propeller, ...]:
+    """Every catalogue lift rotor (all pitches) from the disk-loading diameter up to LIFT_ROTOR_MAX_OVERSIZE x it
+    (fix ruling L2); across a catalogue gap wider than that, the next size up. The objective picks among them."""
+    minimum: float = context.min_lift_rotor_diameter_m
     rotors = [p for p in catalog_rows("propellers") if p.application == "vtol"
-              and p.diameter_m >= context.min_lift_rotor_diameter_m - DIAMETER_TOL_M]
+              and p.diameter_m >= minimum - DIAMETER_TOL_M]
     if not rotors:
         raise PropulsionMatchError(f"diameter: no lift rotor in the catalogue reaches the disk-loading diameter "
-                                   f"{context.min_lift_rotor_diameter_m:.3f} m")
-    smallest: float = min(p.diameter_m for p in rotors)
-    return tuple(p for p in rotors if p.diameter_m <= smallest + DIAMETER_TOL_M)
+                                   f"{minimum:.3f} m")
+    limit: float = max(LIFT_ROTOR_MAX_OVERSIZE * minimum, min(p.diameter_m for p in rotors))
+    return tuple(p for p in rotors if p.diameter_m <= limit + DIAMETER_TOL_M)
 
 
 def _matchable(motor: Motor) -> bool:
