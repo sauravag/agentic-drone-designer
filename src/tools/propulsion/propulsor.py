@@ -128,9 +128,9 @@ class Propulsor:
             if rpm is None:
                 return None
             torque: float = self.table.torque_nm(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-        except (ValueError, PropModelError):  # a table limit (range or past the computed J): not achievable
+            motor: MotorPoint = motor_point(self.kv, self.rm_ohm, self.i0_a, rpm, torque)  # torque < 0 raises
+        except (ValueError, PropModelError):  # a table limit (range, past the computed J, CP < 0): not achievable
             return None
-        motor: MotorPoint = motor_point(self.kv, self.rm_ohm, self.i0_a, rpm, torque)
         if motor.current_a > self.max_current_a or motor.voltage_v > bus or motor.shaft_power_w <= 0.0:
             return None
         return OperatingPoint(
