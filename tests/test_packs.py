@@ -113,3 +113,15 @@ def test_legacy_battery_without_cells_loads(tmp_path: Path) -> None:
     assert (legacy.cell_name, legacy.series, legacy.parallel) == (None, None, None)
     with pytest.raises(ValueError, match="Unknown catalog table"):  # the fixed packs are gone (Task 6)
         load_catalog(seed_database(tmp_path / "c.db"), "batteries")
+
+
+def test_pack_at_the_specific_energy_ceiling_still_validates() -> None:
+    # Mass rounding must never push the pack above the 500 Wh/kg physical limit (explorer lever top).
+    from src.schemas.assumptions import DesignAssumptions
+
+    cell = next(c for c in catalog_rows("cells") if c.name == "Li-ion 18650 power 3.0Ah")
+    cells = (cell, next(c for c in catalog_rows("cells") if c.name == "Li-ion 21700 energy 5.0Ah"))
+    for cell, parallel_energy_wh in ((c, e) for c in cells for e in (500.0, 1_234.5, 4_000.0, 4_662.0, 5_544.0)):
+        pack = build_pack(cell, 14, parallel_energy_wh * 3600.0, 1_000.0,
+                          DesignAssumptions(liion_specific_energy_wh_kg=500.0))
+        assert pack.specific_energy_wh_kg <= 500.0

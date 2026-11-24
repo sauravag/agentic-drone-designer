@@ -7,6 +7,7 @@ Run directly: `python -m src.tools.database.seed_data`
 """
 
 import functools
+import math
 import sqlite3
 import types
 from contextlib import closing
@@ -40,6 +41,7 @@ CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "payloads": Payload,
 }
 
+MASS_DECIMALS_SCALE: Final[float] = 1_000.0  # pack masses are reported to the gram
 # Pack-level properties used to derive battery mass and volume from capacity.
 PACK_SPECIFIC_ENERGY_WH_KG: Final[dict[str, float]] = {
     chem: DEFAULT_ASSUMPTIONS.specific_energy_wh_kg(chem) for chem in ("li_ion", "lipo")
@@ -165,7 +167,9 @@ def pack_envelope(
     volume_m3: float = capacity_wh / (energy_density_wh_l * 1000.0)
     unit: float = (volume_m3 / (PACK_ASPECT[0] * PACK_ASPECT[1] * PACK_ASPECT[2])) ** (1.0 / 3.0)
     return (
-        round(capacity_wh / specific_energy_wh_kg, 3),
+        # strictly above the exact mass (next whole gram), so float rounding never lifts a pack past its specific
+        # energy or the 500 Wh/kg physical limit
+        (math.floor(capacity_wh / specific_energy_wh_kg * MASS_DECIMALS_SCALE) + 1) / MASS_DECIMALS_SCALE,
         round(PACK_ASPECT[0] * unit, 4),
         round(PACK_ASPECT[1] * unit, 4),
         round(PACK_ASPECT[2] * unit, 4),
