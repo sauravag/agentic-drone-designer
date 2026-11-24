@@ -68,6 +68,7 @@ from src.tools.fabrication.fuselage_parts import (
     former_stations,
     fuselage_parts,
     socket_axis_m,
+    wing_box_plate_gap_m,
 )
 from src.tools.fabrication.kit import (
     BOOM_MOTOR_WIRING_NOTE,
@@ -90,6 +91,7 @@ from src.tools.fabrication.rib_outline import camber_point, keeps_web, notched_p
 from src.tools.fabrication.tubes import (
     FIT_EPS_M,
     BoomTipMass,
+    PlateLoads,
     SparPlan,
     SparTorsion,
     aero_torque_nm,
@@ -103,7 +105,6 @@ from src.tools.fabrication.tubes import (
     plate_loads,
     tail_boom_check,
 )
-from src.tools.fabrication.wing_box_bosses import BOSS_LABELS
 from src.tools.fabrication.wing_parts import (
     PIN_CHORD_FRACTION,
     has_root_block,
@@ -442,14 +443,10 @@ def stiffened_spar_plan(sizing: SizingOutput, layout: AircraftLayout, airfoil: A
     return dataclasses.replace(spar, rib_stations_m=clear_rib_stations(nominal, keep_out, layout.wing.semi_span_m))
 
 
-def _plate_gap_m(fuselage: Sequence[KitPart], settings: FabricationSettings) -> float:
-    """Clear width between the wing-box plates' innermost faces (the socket bosses' when fitted)."""
-    t = settings.sheet_for("plate").thickness_m  # plates and bosses extrude toward -y from their origin
-    return 2.0 * min(p.location.position.Y - t for p in fuselage if p.label in ("WM-R", BOSS_LABELS[1]))
-
-
-def _overwrap(spar: SparPlan, fuselage: Sequence[KitPart], settings: FabricationSettings) -> Overwrap:
-    return size_overwrap(spar.centre_moment_nm, spar.socket, _plate_gap_m(fuselage, settings), settings)
+def _overwrap(layout: AircraftLayout, spar: SparPlan, loads: PlateLoads, settings: FabricationSettings) -> Overwrap:
+    """R24 between the wing-box plates (or socket bosses) as `fuselage_parts` builds them for the same loads."""
+    return size_overwrap(spar.centre_moment_nm, spar.socket, wing_box_plate_gap_m(layout, spar, settings, loads),
+                         settings)
 
 
 def _wing_bolt(layout: AircraftLayout, spar: SparPlan, fuselage: Sequence[KitPart],
@@ -551,8 +548,9 @@ def build_kit(sizing: SizingOutput, layout: AircraftLayout, airfoil: AirfoilShap
     tail = load_airfoil(TAIL_AIRFOIL_NAME)
     tails = tail_spar_tubes(sizing, layout, tail, settings)
     ribs = (*wing_ribs(layout, airfoil, spar, settings), *tail_ribs(layout, tail, tails, settings))
-    fuselage = fuselage_parts(layout, spar, components, settings, loads=plate_loads(sizing, settings))
-    overwrap = _overwrap(spar, fuselage, settings)
+    loads = plate_loads(sizing, settings)
+    fuselage = fuselage_parts(layout, spar, components, settings, loads=loads)
+    overwrap = _overwrap(layout, spar, loads, settings)
     trays = component_plates(components, layout, settings, spar=spar)
     booms, boom_tubes = boom_parts(layout, spar, settings, components=components,
                                    lift_thrust_n=sizing.vtol_thrust_per_motor_n)

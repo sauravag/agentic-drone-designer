@@ -273,12 +273,31 @@ def derive_stability(cases: VspaeroCases, ref: ReferenceGeometry, layout: Aircra
 
 
 @dataclass(frozen=True)
+class DragTerms:
+    """One polar's drag at a lift coefficient: zero-lift CD0 and the induced k CL^2."""
+    cd0: float
+    induced: float
+
+    @property
+    def total(self) -> float:
+        return self.cd0 + self.induced
+
+
+@dataclass(frozen=True)
 class LDPoint:
-    """Sizing and VSPAERO L/D at one lift coefficient; deviation = VSPAERO / sizing - 1."""
+    """Sizing and VSPAERO drag and L/D at one lift coefficient; deviation = VSPAERO / sizing - 1."""
     name: Literal["cruise", "loiter"]
     cl: float
-    sizing_ld: float
-    vspaero_ld: float
+    sizing: DragTerms
+    vspaero: DragTerms
+
+    @property
+    def sizing_ld(self) -> float:
+        return self.cl / self.sizing.total
+
+    @property
+    def vspaero_ld(self) -> float:
+        return self.cl / self.vspaero.total
 
     @property
     def deviation(self) -> float:
@@ -293,6 +312,6 @@ def ld_deviations(sizing: SizingOutput, aero: AeroStabilityOutput) -> tuple[LDPo
     k_vspaero: float = aero.induced_drag_factor
 
     def point(name: Literal["cruise", "loiter"], cl: float) -> LDPoint:
-        return LDPoint(name, cl, lift_to_drag(cl, sizing.cd0, k_sizing), lift_to_drag(cl, aero.cd0, k_vspaero))
+        return LDPoint(name, cl, DragTerms(sizing.cd0, k_sizing * cl**2), DragTerms(aero.cd0, k_vspaero * cl**2))
 
     return point("cruise", sizing.cl_cruise), point("loiter", sizing.cl_loiter)

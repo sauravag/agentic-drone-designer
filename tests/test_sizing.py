@@ -588,11 +588,19 @@ def _profile_cd_used(case: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Sizing
 
 
 def test_hand_launched_sizing_uses_the_30_percent_laminar_profile_drag(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, float, float]] = []
+    real = mission_solver.profile_drag_cd
+
+    def spy(name: str, reynolds: float, laminar_fraction: float) -> float:
+        calls.append((name, reynolds, laminar_fraction))
+        return real(name, reynolds, laminar_fraction)
+
+    monkeypatch.setattr(mission_solver, "profile_drag_cd", spy)
     sizing, used = _profile_cd_used("g1_hand", monkeypatch)
-    rho, mu = air_properties(CASES["g1_hand"].service_ceiling_m)
-    re = float(f"{reynolds_number(rho, CASES['g1_hand'].cruise_speed_ms, sizing.mean_chord_m, mu):.2g}")
-    assert used == pytest.approx(profile_drag_cd(sizing.airfoil, re, HAND_LAUNCH_LAMINAR_FRACTION), rel=0.05)
-    assert used > airfoil_polar(sizing.airfoil, re).cd_min
+    name, reynolds, fraction = calls[-1]  # the solver's own airfoil and Reynolds number on the final pass
+    assert (name, fraction) == (sizing.airfoil, HAND_LAUNCH_LAMINAR_FRACTION)
+    assert used == profile_drag_cd(name, reynolds, HAND_LAUNCH_LAMINAR_FRACTION)
+    assert used > airfoil_polar(name, reynolds).cd_min
 
 
 @pytest.mark.parametrize("case", ["g1", "g1_vtail", "g2", "g2_vtail"])

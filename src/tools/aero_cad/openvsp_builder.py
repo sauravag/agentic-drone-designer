@@ -171,8 +171,18 @@ def _add_rotor(index: int, hub: tuple[float, float, float], diameter: float) -> 
     return rid
 
 
-def build_model(layout: AircraftLayout, out_dir: Path) -> VspModel:
-    """Fresh OpenVSP model of `layout`, with lifting surfaces in LIFT_SET and the OML in OML_SET."""
+def _set_laminar_fraction(surfaces: tuple[str, ...], laminar_fraction: Optional[float]) -> None:
+    """ParasiteDrag's laminar share on the lifting surfaces (bodies and booms stay fully turbulent)."""
+    if laminar_fraction is None:
+        return
+    for geom in surfaces:
+        vsp.SetParmVal(vsp.GetParm(geom, "PercLam", "ParasiteDragProps"), PERCENT * laminar_fraction)
+
+
+def build_model(layout: AircraftLayout, out_dir: Path, laminar_fraction: Optional[float] = None) -> VspModel:
+    """Fresh OpenVSP model of `layout`, with lifting surfaces in LIFT_SET and the OML in OML_SET. The lifting
+    surfaces carry `laminar_fraction` for ParasiteDrag (`topology.surface_laminar_fraction`; None keeps OpenVSP's
+    fully turbulent default), so the exported .vsp3 reproduces the analysis."""
     vsp.VSPRenew()
     dat: Path = write_selig_dat(load_airfoil(layout.airfoil), out_dir / "airfoils" / f"{layout.airfoil}.dat")
     fuselage = _add_fuselage(layout)
@@ -196,6 +206,7 @@ def build_model(layout: AircraftLayout, out_dir: Path) -> VspModel:
         vsp.SetSetFlag(gid, LIFT_SET, True)
     for gid in (fuselage, wing, *tail.values(), *booms):
         vsp.SetSetFlag(gid, OML_SET, True)
+    _set_laminar_fraction((wing, *tail.values()), laminar_fraction)
     vsp.Update()
     vsp.AutoGroupVSPAEROControlSurfaces()
     return VspModel(wing=wing, tail_controls=tuple((t.control, VSP_TAIL_NAMES.get(t.name, t.name))
@@ -336,21 +347,9 @@ def run_vspaero(model: VspModel, cond: FlightCondition, work_dir: Path) -> tuple
     return cases, ref
 
 
-def _set_surface_laminar_fraction(model: VspModel, laminar_fraction: Optional[float]) -> None:
-    """ParasiteDrag's laminar share on the wing and tail surfaces (bodies and booms stay fully turbulent); None
-    leaves OpenVSP's default (fully turbulent)."""
-    if laminar_fraction is None:
-        return
-    surfaces = [model.wing, *(vsp.FindGeomsWithName(name)[0] for _, name in model.tail_controls)]
-    for geom in surfaces:
-        vsp.SetParmVal(vsp.GetParm(geom, "PercLam", "ParasiteDragProps"), PERCENT * laminar_fraction)
-    vsp.Update()
-
-
-def parasite_cd0(model: VspModel, cond: FlightCondition, laminar_fraction: Optional[float] = None) -> float:
-    """Component build-up zero-lift drag of the OML set, referenced to the wing area, with `laminar_fraction` of
-    the lifting surfaces' boundary layer laminar (`topology.surface_laminar_fraction`)."""
-    _set_surface_laminar_fraction(model, laminar_fraction)
+def parasite_cd0(model: VspModel, cond: FlightCondition) -> float:
+    """Component build-up zero-lift drag of the OML set, referenced to the wing area (with the laminar fraction the
+    model was built with)."""
     pd = "ParasiteDrag"
     vsp.SetAnalysisInputDefaults(pd)
     for key, value in (("GeomSet", OML_SET), ("RefFlag", vsp.COMPONENT_REF), ("LengthUnit", vsp.LEN_M),
@@ -374,11 +373,11 @@ def analyse_layout(layout: AircraftLayout, sizing: SizingOutput, cruise_altitude
     """Build the OML, export vsp3/STEP, run VSPAERO + ParasiteDrag and derive the stability set."""
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[Tool] openvsp_builder: wing station %.3f", layout.wing_station)
-    model: VspModel = build_model(layout, out_dir)
+    model: VspModel = build_model(layout, out_dir, surface_laminar_fraction(sizing.launch_method))
     vsp3, step = export_oml(out_dir)
     cond: FlightCondition = flight_condition(layout, sizing, cruise_altitude_m, temperature_offset_c)
     cases, ref = run_vspaero(model, cond, out_dir / "vspaero")
-    cd0: float = parasite_cd0(model, cond, surface_laminar_fraction(sizing.launch_method))
+    cd0: float = parasite_cd0(model, cond)
     if sizing.cl_cruise is None:
         raise AeroAnalysisError("the sizing record predates the same-CL L/D check; re-run the sizing")
     return derive_stability(cases, ref, layout, cd0, sizing.cl_cruise), vsp3, step  # L/D at the sizing CL

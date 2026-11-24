@@ -165,11 +165,15 @@ the critic, the CAD packer, the pipeline and the SITL perturbation corners; the 
 The examples include the G1 and G2 missions on the V-tail pusher and a hand-launched G1.
 
 **Launch method.** `launch_method` is `auto` (a runway fixed-wing if there is a runway, else a VTOL quadplane),
-`runway`, or `hand` (a thrown fixed-wing: no runway, no VTOL, Group 1 only, MTOW ≤ 9.07 kg). A hand launch is
-flown in SITL as a 10 m/s throw from 2 m at 10° nose-up, the aircraft held at rest until the throttle opens. So the
-throw stays 1.2 × above stall, a hand-launched design is sized with its stall speed capped at 10 / 1.2 = 8.33 m/s
-(the hand-launched G1 therefore gets a larger wing: about 5.9 kg, 1.25 m²). A hand-launched design is also drag-sized for a 30 % laminar boundary layer on its wing and tails (`HAND_LAUNCH_LAMINAR_FRACTION`): sizing takes NeuralFoil's profile drag with transition forced at 30 % chord, and VSPAERO's ParasiteDrag runs 30 % laminar on the same surfaces, so the L/D gate compares like with like. Runway and VTOL designs keep NeuralFoil's free transition and OpenVSP's fully turbulent build-up. Records saved before launch methods
-existed that hold a fixed-wing with no runway load as hand launches.
+`runway`, or `hand` (a thrown fixed-wing: no runway, no VTOL, Group 1 only, MTOW ≤ 9.07 kg). A hand launch is flown
+in SITL as a 10 m/s throw from 2 m at 10° nose-up, the aircraft held at rest until the throttle opens. So the throw
+stays 1.2 × above stall, a hand-launched design is sized with its stall speed capped at 10 / 1.2 = 8.33 m/s (the
+hand-launched G1 therefore gets a larger wing: about 5.9 kg, 1.25 m²). A hand-launched design is also drag-sized for
+a 30 % laminar boundary layer on its wing and tails (`HAND_LAUNCH_LAMINAR_FRACTION`): sizing takes NeuralFoil's
+profile drag with transition forced at 30 % chord, and VSPAERO's ParasiteDrag runs 30 % laminar on the same
+surfaces, so the L/D gate compares like with like. Runway and VTOL designs keep NeuralFoil's free transition and
+OpenVSP's fully turbulent build-up. Records saved before launch methods existed that hold a fixed-wing with no
+runway load as hand launches.
 
 **Landing gear.** One rule (`src/tools/gear.py`) serves sizing, the kit and the JSBSim model. Runway and VTOL
 aircraft get a tricycle whose leg is the tallest of the fuselage/propeller ground clearance and the propeller-tip

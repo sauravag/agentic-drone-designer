@@ -12,7 +12,6 @@ from src.tools.aero_cad.components import COMPONENT_GAP_M, PlacedComponent
 from src.tools.aero_cad.layout import DEFAULT_WING_STATION, WING_STATION_SCAN, fuselage_radius_at, layout_from_sizing
 from src.tools.fabrication.build_kit import kit_spar_plan
 from src.tools.fabrication.fittings import split_to_bed
-from src.tools.fabrication.build_kit import _plate_gap_m
 from src.tools.fabrication.fuselage_parts import fuselage_parts, wing_box_floor_m, wing_box_plate_gap_m
 from src.tools.fabrication.kit import KitPart, KitUnavailable
 from src.tools.fabrication.kit_pod import (
@@ -23,6 +22,7 @@ from src.tools.fabrication.kit_pod import (
     seat_low,
 )
 from src.tools.fabrication.rib_outline import rect_face
+from src.tools.fabrication.wing_box_bosses import BOSS_LABELS
 from src.tools.fabrication.tubes import MIN_WEB_M, NO_PLATE_LOADS, plate_loads, size_overwrap
 
 SETTINGS = DEFAULT_FABRICATION
@@ -89,12 +89,17 @@ def _plan_and_loads(designs, case: str, diameter_m: float, station: float = DEFA
 
 
 @pytest.mark.parametrize("case", ["g1", "g1_hand"])
-def test_plate_gap_matches_the_built_plates(case, designs):
-    """Pod sizing's plate gap is the one the kit measures on its built plates (and socket bosses when fitted)."""
+@pytest.mark.parametrize("bossed", [True, False])
+def test_plate_gap_matches_the_built_plates(case, bossed, designs):
+    """The overwrap's plate gap is the clear width between the built plates, or their socket bosses when the plate
+    loads need them (both reference designs do; unloaded plates have none)."""
     d = kit_fuselage_diameter_m(*designs[case], SETTINGS)
-    layout, plan, loads = _plan_and_loads(designs, case, d)
+    layout, plan, design_loads = _plan_and_loads(designs, case, d)
+    loads = design_loads if bossed else NO_PLATE_LOADS
     built = fuselage_parts(layout, plan, (), SETTINGS, loads=loads)
-    assert wing_box_plate_gap_m(layout, plan, SETTINGS, loads) == pytest.approx(_plate_gap_m(built, SETTINGS))
+    t = SETTINGS.sheet_for("plate").thickness_m  # plates and bosses extrude toward -y from their origin
+    measured = 2.0 * min(p.location.position.Y - t for p in built if p.label in ("WM-R", BOSS_LABELS[1]))
+    assert wing_box_plate_gap_m(layout, plan, SETTINGS, loads) == pytest.approx(measured)
 
 
 def test_wing_box_floor_refuses_an_overwrap_longer_than_the_plate_gap(designs):

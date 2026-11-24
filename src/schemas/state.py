@@ -2,7 +2,7 @@
 
 import math
 from collections.abc import Sequence
-from typing import Annotated, Literal, Optional, TypedDict
+from typing import Annotated, Final, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -17,7 +17,8 @@ NonNegative = Annotated[float, Field(ge=0)]
 Finite = Annotated[float, Field(allow_inf_nan=False)]
 
 
-NO_KIT_PREFIX: str = "No laser kit: "  # CADArtifacts.kit_warning when the packer could not build a kit
+NO_KIT_PREFIX: Final[str] = "No laser kit: "  # CADArtifacts.kit_warning when the packer could not build a kit
+
 
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")

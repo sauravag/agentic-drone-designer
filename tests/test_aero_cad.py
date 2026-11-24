@@ -8,6 +8,7 @@ import math
 import re
 from types import SimpleNamespace
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pytest
@@ -16,6 +17,7 @@ build123d = pytest.importorskip("build123d")
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS  # noqa: E402
 from src.schemas.fabrication import DEFAULT_FABRICATION  # noqa: E402
+from src.schemas.state import NO_KIT_PREFIX  # noqa: E402
 from src.tools.aero_cad import build, cad_packer, components, mass_properties, stability, structure  # noqa: E402
 from src.tools.aero_cad.airfoil_geometry import camber_at, load_airfoil, write_selig_dat  # noqa: E402
 from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing  # noqa: E402
@@ -26,6 +28,7 @@ from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, re
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
 from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
 from src.tools.sizing.mass_model import sizing_output_gear  # noqa: E402
+from src.tools.sizing.topology import surface_laminar_fraction  # noqa: E402
 from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml, part_solid, tube_solid  # noqa: E402
 from tests.reference_designs import CASES  # noqa: E402
 
@@ -579,7 +582,7 @@ def test_group_3_fallback_is_logged_at_info_not_warning(designs: dict, tmp_path:
                                                        caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO", logger=cad_packer.__name__)
     r = _pack(designs, "g3", tmp_path)
-    no_kit = [rec for rec in caplog.records if cad_packer.NO_KIT_PREFIX in rec.getMessage()]
+    no_kit = [rec for rec in caplog.records if NO_KIT_PREFIX in rec.getMessage()]
     assert r.kit is None and no_kit and all(rec.levelname == "INFO" for rec in no_kit)
 
 
@@ -1165,7 +1168,6 @@ def test_live_tractor_thrust_station_matches_the_legacy_path(designs: dict, tmp_
 
 
 # ------------------------------------- reference V-tail pushers and hand launch close (phase 2, Task 9) ---
-NO_KIT_PREFIX: str = "No laser kit"
 
 
 def _close(case: str, designs: dict, tmp_path: Path) -> build.BalancedDesign:
@@ -1211,35 +1213,54 @@ def test_hand_launched_g1_closes(designs: dict, tmp_path: Path) -> None:
 SIZING_VSPAERO_CD0_TOLERANCE: float = 0.05  # same laminar assumption on both sides: the build-ups agree to 5 %
 
 
-def _parasite(case: str, designs: dict, tmp_path: Path, laminar_fraction):
-    from src.tools.aero_cad import openvsp_builder as ob
+@pytest.fixture()
+def openvsp():
+    """The OpenVSP module (Docker toolchain); the test is skipped where it is not installed."""
+    return pytest.importorskip("openvsp")
+
+
+def _parasite(case: str, designs: dict, tmp_path: Path, laminar_fraction: Optional[float]) -> tuple[object, float]:
+    from src.tools.aero_cad import openvsp_builder as ob  # imports openvsp: only after the fixture's skip check
 
     sizing, bom = designs[case]
     layout = _fitted_layout(sizing, bom)
-    model = ob.build_model(layout, tmp_path)
+    model = ob.build_model(layout, tmp_path, laminar_fraction)
     ob.vsp.SetVSP3FileName(str(tmp_path / "model.vsp3"))  # ParasiteDrag writes its tables next to this file
     cond = ob.flight_condition(layout, sizing, CASES[case].service_ceiling_m)
-    return sizing, ob.parasite_cd0(model, cond, laminar_fraction)
+    return sizing, ob.parasite_cd0(model, cond)
+
+
+def _surface_laminar_percent(vsp) -> dict[str, float]:
+    return {vsp.GetGeomName(g): vsp.GetParmVal(vsp.GetParm(g, "PercLam", "ParasiteDragProps"))
+            for g in vsp.FindGeoms()}
 
 
 def test_hand_launched_vspaero_cd0_takes_the_30_percent_laminar_surfaces_and_matches_sizing(
-        designs: dict, tmp_path: Path) -> None:
-    pytest.importorskip("openvsp")
-    from src.tools.sizing.topology import surface_laminar_fraction
-
+        openvsp, designs: dict, tmp_path: Path) -> None:
     sizing, laminar = _parasite("g1_hand", designs, tmp_path / "lam", surface_laminar_fraction("hand"))
     _, turbulent = _parasite("g1_hand", designs, tmp_path / "turb", None)
     assert laminar < turbulent
     assert laminar == pytest.approx(sizing.cd0, rel=SIZING_VSPAERO_CD0_TOLERANCE)
 
 
-def test_runway_design_keeps_the_fully_turbulent_parasite_build_up(designs: dict, tmp_path: Path) -> None:
-    pytest.importorskip("openvsp")
-    from src.tools.sizing.topology import surface_laminar_fraction
-
+def test_runway_design_keeps_the_fully_turbulent_parasite_build_up(openvsp, designs: dict, tmp_path: Path) -> None:
     sizing, _ = designs["g1"]
     assert surface_laminar_fraction(sizing.launch_method) is None
-    _, default = _parasite("g1", designs, tmp_path / "a", None)
-    import openvsp as vsp
-    assert all(vsp.GetParmVal(vsp.GetParm(g, "PercLam", "ParasiteDragProps")) == 0.0 for g in vsp.FindGeoms())
-    assert default > 0.0
+    _, cd0 = _parasite("g1", designs, tmp_path, None)
+    assert cd0 > 0.0 and set(_surface_laminar_percent(openvsp).values()) == {0.0}
+
+
+def test_exported_vsp3_of_a_hand_launched_design_carries_its_laminar_fraction(openvsp, designs: dict,
+                                                                              tmp_path: Path) -> None:
+    """The saved oml.vsp3 reproduces the ParasiteDrag analysis: 30 % laminar on the wing and tails only."""
+    from src.tools.aero_cad import openvsp_builder as ob
+
+    sizing, bom = designs["g1_hand"]
+    ob.build_model(_fitted_layout(sizing, bom), tmp_path, surface_laminar_fraction(sizing.launch_method))
+    vsp3, _ = ob.export_oml(tmp_path)
+    openvsp.VSPRenew()
+    openvsp.ReadVSPFile(str(vsp3))
+    percent = _surface_laminar_percent(openvsp)
+    assert {name: percent[name] for name in ("Wing", "HTail", "VTail")} == pytest.approx(
+        {"Wing": 30.0, "HTail": 30.0, "VTail": 30.0})
+    assert percent["Fuselage"] == 0.0 and percent["TailBoom"] == 0.0

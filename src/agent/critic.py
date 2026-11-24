@@ -11,7 +11,6 @@ override bounds, and adds the rule-table fix for every failed gate so each itera
 even if the LLM's choice is poor (SRS Zero-LLM-Math: the model never picks a number).
 """
 
-import math
 from dataclasses import asdict, dataclass
 from typing import Final, Literal, Optional
 
@@ -112,9 +111,8 @@ def _ld_gate(sizing: SizingOutput, aero: AeroStabilityOutput) -> GateResult:
     if not any(p.deviation < 0 for p in failed):
         return GateResult("lift_to_drag", False, detail, "high")
     worst = min(failed, key=lambda p: p.deviation)
-    k_sizing: float = 1.0 / (math.pi * sizing.oswald_e * sizing.aspect_ratio)
-    extra_parasite: float = aero.cd0 - sizing.cd0
-    extra_induced: float = (aero.induced_drag_factor - k_sizing) * worst.cl**2  # type: ignore[operator]
+    extra_parasite: float = worst.vspaero.cd0 - worst.sizing.cd0
+    extra_induced: float = worst.vspaero.induced - worst.sizing.induced
     if extra_parasite < extra_induced:
         return GateResult("lift_to_drag", False, detail, "low", "induced")
     detail += (f"; the extra drag is mostly parasite (CD0 VSPAERO {aero.cd0:.4f} vs sizing {sizing.cd0:.4f}): "
