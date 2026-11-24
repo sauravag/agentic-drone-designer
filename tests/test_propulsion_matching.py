@@ -47,7 +47,8 @@ G1_POINTS: Final[tuple[FlightPoint, ...]] = (
     _forward("Egress", 18.0, 3.6, 1200.0),
 )
 # G1 quadplane (~5 kg, 4 lift rotors): hover at weight, hover peak at the VTOL thrust-to-weight.
-QUAD_HOVER: Final[tuple[FlightPoint, ...]] = (_hover("Hover", 49.0 / 4, 90.0), _hover("Hover_Peak", 1.3 * 49.0 / 4, 10.0))
+QUAD_HOVER: Final[tuple[FlightPoint, ...]] = (_hover("Hover", 49.0 / 4, 90.0),
+                                              _hover("Hover_Peak", 1.3 * 49.0 / 4, 10.0))
 
 
 def _context(points: tuple[FlightPoint, ...] = G1_POINTS, **changes: object) -> MatchContext:
@@ -283,7 +284,7 @@ def test_unbuildable_propeller_is_skipped_loudly(monkeypatch: pytest.MonkeyPatch
 
 def test_every_propeller_unbuildable_names_the_model_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(match_search, "_table_failure", lambda d, p: "boom")
-    with pytest.raises(PropulsionMatchError, match="propeller model failed .no table.: Carbon cruise prop"):
+    with pytest.raises(PropulsionMatchError, match="propeller model failed .no table. for Carbon cruise prop"):
         match_propulsion(_context())
 
 
@@ -314,3 +315,14 @@ def test_missing_cells_message_without_a_chemistry(monkeypatch: pytest.MonkeyPat
     _patched_rows(monkeypatch, "cells", lambda rows: [])
     with pytest.raises(PropulsionMatchError, match="no cells in the catalogue"):
         match_propulsion(_context())
+
+
+def test_table_failures_are_one_limit_entry_and_never_crowd_out_physical_limits() -> None:
+    from src.tools.propulsion.match_search import RULE_MODEL, Rejection
+
+    model = tuple(Rejection(f"{RULE_MODEL}: Prop {i}", "") for i in range(10))
+    physical = (Rejection("current", "Climb"),) * 3 + (Rejection("tip Mach", "Climb"),) * 2 + (
+        Rejection("throttle", "Loiter"),)
+    text: str = matching._limits(model + physical)
+    assert all(rule in text for rule in ("current at Climb", "tip Mach at Climb", "throttle at Loiter"))
+    assert text.count(RULE_MODEL) == 1 and "Prop 0" in text and "Prop 9" in text

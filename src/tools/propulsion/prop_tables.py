@@ -1,18 +1,20 @@
 """Cached propeller CT/CP tables built from the BEMT model (spec 6.1).
 
-A table holds CT = T / (rho n^2 D^4) and CP = P / (rho n^3 D^5) for one diameter and pitch, indexed by advance
-ratio J = V / (n D), tip Mach number M = pi D n / a, and the equivalent density rho_eq = rho x TABLE_MU / mu (the
-density that gives the same Reynolds numbers at the table's reference viscosity). The sizing loop and the motor
+A table holds CT = T / (rho n^2 D^4) and CP = P / (rho n^3 D^5) for one diameter and pitch, indexed by advance ratio
+J = V / (n D), tip Mach number M = pi D n / a, and the equivalent density rho_eq = rho x (TABLE_MU / mu) x (a /
+TABLE_SPEED_OF_SOUND): the density that gives the same Reynolds numbers at the table's reference viscosity and speed
+of sound (at fixed M and J every section speed scales with a, so Re ~ rho M a / mu). The sizing loop and the motor
 search evaluate it thousands of times, so one table is built once per prop (a few thousand BEMT points, solved as
 one vectorised batch), kept in memory and written to disk as JSON.
 
 Grid. Tip Mach and equivalent density are independent axes, so altitude and temperature are free, and EVERY cell is
 a physical operating state: rpm from M (at the reference speed of sound 340.3 m/s, which fixes the section Mach
-numbers exactly) and a real density between TABLE_THIN_RHO_EQ (thin, hot air: about 5 km ISA+20) and the cold-day
-value (sea level at -30 C: rho 1.46, mu 1.55e-5). An earlier (M, Re75) grid implied rho = Re75 / (k rpm), so its
-corners asked BEMT for densities of 0.1 or 45 kg/m^3 and failed there. M runs from the tip Mach where Re75 at the
-thinnest density sits just above the BEMT floor of 1e4 up to 0.80; J runs from 0 up to where CT <= 0 in every
-(M, rho_eq) row, so thrust rolls off to zero. Interpolation is trilinear in (J, M, log rho_eq).
+numbers exactly) and a real equivalent density between TABLE_THIN_RHO_EQ (thin, hot air: about 5 km ISA+20) and the
+cold-day value (sea level at -30 C: rho 1.46, mu 1.55e-5, a 312.6 m/s) with a margin. An earlier (M, Re75) grid
+implied rho = Re75 / (k rpm), so its corners asked BEMT for densities of 0.1 or 45 kg/m^3 and failed there. M runs
+from the tip Mach where Re75 at the thinnest density sits just above the BEMT floor of 1e4 up to 0.80; J runs from 0
+up to where CT <= 0 in every (M, rho_eq) row, so thrust rolls off to zero. Interpolation is trilinear in (J, log M,
+log rho_eq).
 
 Out of range is an error, not a clamp: `coefficients` (and so `thrust_n` and `torque_nm`) raise ValueError for J, M
 or density outside the table. Thrust never goes below zero (CT is clamped at 0 in `thrust_n`). Past the J where BEMT
@@ -49,7 +51,11 @@ TABLE_THIN_RHO_EQ: Final[float] = 0.6
 # Cold dense air (sea level at -30 C) sets the top of the density axis.
 TABLE_COLD_RHO: Final[float] = 1.46
 TABLE_COLD_MU: Final[float] = 1.55e-5
-TABLE_DENSE_RHO_EQ: Final[float] = TABLE_COLD_RHO * TABLE_MU / TABLE_COLD_MU
+TABLE_COLD_SPEED_OF_SOUND: Final[float] = 312.6
+DENSE_AXIS_MARGIN: Final[float] = 1.05  # the density axis reaches this far past the cold day
+# Equivalent density of the cold day (about 1.566) with the margin: the top of the density axis.
+TABLE_DENSE_RHO_EQ: Final[float] = (DENSE_AXIS_MARGIN * TABLE_COLD_RHO * TABLE_MU / TABLE_COLD_MU
+                                    * TABLE_COLD_SPEED_OF_SOUND / TABLE_SPEED_OF_SOUND)
 TABLE_MAX_TIP_MACH: Final[float] = 0.80
 RE_FLOOR_MARGIN: Final[float] = 1.1  # lowest table Re75 sits this far above the BEMT floor
 N_RHO_NODES: Final[int] = 8  # geometric in equivalent density (about 15 % apart)
@@ -71,7 +77,8 @@ AXIS_TOLERANCE: Final[float] = 1e-9
 
 # Everything that shapes the grid: a change to any of these changes the hash in the cache key and payload.
 GRID_SPEC: Final[str] = hashlib.sha1(repr((
-    TABLE_MU, TABLE_SPEED_OF_SOUND, TABLE_THIN_RHO_EQ, TABLE_COLD_RHO, TABLE_COLD_MU, TABLE_MAX_TIP_MACH,
+    TABLE_MU, TABLE_SPEED_OF_SOUND, TABLE_THIN_RHO_EQ, TABLE_COLD_RHO, TABLE_COLD_MU, TABLE_COLD_SPEED_OF_SOUND,
+    DENSE_AXIS_MARGIN, TABLE_MAX_TIP_MACH,
     RE_FLOOR_MARGIN, N_RHO_NODES, N_J_NODES, MACH_NODE_RATIO, J_SCAN_STEP, J_SCAN_CHUNK,
     J_SCAN_MAX, J_TOP_MARGIN, J_EXTEND_FACTOR, MAX_J_EXTENSIONS, REPRESENTATIVE_RE_MIN,
     REPRESENTATIVE_STATION)).encode()).hexdigest()[:SPEC_HASH_LENGTH]
@@ -113,7 +120,8 @@ class PropellerTable:
             raise ValueError(f"equivalent density {rho_eq:.4g} kg/m^3 outside the table range "
                              f"[{self.rho_eq[0]:.4g}, {self.rho_eq[-1]:.4g}] {where}")
         log_rho: float = min(max(math.log(rho_eq), log_rho_axis[0]), log_rho_axis[-1])
-        return (_cell(mach_axis, tip_mach), _cell(log_rho_axis, log_rho), _cell(j_axis, j))
+        # log M: along a fixed-density row Re75 is proportional to M, and the Reynolds effect is ~linear in log Re
+        return (_cell(np.log(mach_axis), math.log(tip_mach)), _cell(log_rho_axis, log_rho), _cell(j_axis, j))
 
     def coefficients(self, j: float, tip_mach: float, rho_eq: float) -> tuple[float, float]:
         """(CT, CP) by trilinear interpolation; ValueError when J, tip Mach or density lies outside the table."""
@@ -138,7 +146,7 @@ class PropellerTable:
         n: float = rpm / SECONDS_PER_MINUTE
         j: float = airspeed_ms / (n * self.diameter_m)
         tip_mach: float = math.pi * self.diameter_m * n / speed_of_sound_ms
-        ct, cp = self.coefficients(j, tip_mach, equivalent_density(rho, mu))
+        ct, cp = self.coefficients(j, tip_mach, equivalent_density(rho, mu, speed_of_sound_ms))
         return n, j, tip_mach, ct, cp
 
     def thrust_n(self, rpm: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float) -> float:
@@ -151,12 +159,12 @@ class PropellerTable:
         """True where `torque_nm` would refuse the point for lying beyond the last J BEMT computed (past zero
         thrust); ValueError outside the table axes."""
         _, j, tip_mach, _, _ = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-        return j > self._computed_j_limit(tip_mach, equivalent_density(rho, mu))
+        return j > self._computed_j_limit(tip_mach, equivalent_density(rho, mu, speed_of_sound_ms))
 
     def torque_nm(self, rpm: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float) -> float:
         """Shaft torque in N m from CP as tabulated; ValueError outside the table or beyond the J BEMT computed."""
         n, j, tip_mach, _, cp = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-        limit: float = self._computed_j_limit(tip_mach, equivalent_density(rho, mu))
+        limit: float = self._computed_j_limit(tip_mach, equivalent_density(rho, mu, speed_of_sound_ms))
         if j > limit:
             raise ValueError(f"J={j:.4g} is beyond the last computed J {limit:.4g} (past zero thrust) for "
                              f"{self.diameter_m} x {self.pitch_m} m: torque is not tabulated there")
@@ -183,9 +191,10 @@ def _chord75_m(diameter_m: float, pitch_m: float) -> float:
     return float(np.interp(REPRESENTATIVE_STATION, blade.stations, blade.chord_over_radius)) * diameter_m / 2.0
 
 
-def equivalent_density(rho: float, mu: float) -> float:
-    """The density that gives the same Reynolds numbers at the table's reference viscosity: rho x TABLE_MU / mu."""
-    return rho * TABLE_MU / mu
+def equivalent_density(rho: float, mu: float, speed_of_sound_ms: float) -> float:
+    """The density that gives the same Reynolds numbers at the same tip Mach and J in the table's reference air
+    (TABLE_MU, TABLE_SPEED_OF_SOUND): rho x (TABLE_MU / mu) x (a / TABLE_SPEED_OF_SOUND)."""
+    return rho * TABLE_MU / mu * speed_of_sound_ms / TABLE_SPEED_OF_SOUND
 
 
 def reynolds75_at(diameter_m: float, pitch_m: float, rpm: float, rho: float, mu: float) -> float:

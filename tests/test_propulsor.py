@@ -222,3 +222,9 @@ def test_propulsor_from_parts_rejects_legacy_motor(table: PropellerTable, monkey
     legacy = _motor().model_copy(update={"rm_ohm": None})
     with pytest.raises(ValueError, match="rm_ohm"):
         propulsor_from_parts(legacy, prop, esc, battery)
+
+
+@pytest.mark.parametrize("rho", [0.05, 5.0], ids=["thinner_than_the_axis", "denser_than_the_axis"])
+def test_air_off_the_density_axis_has_no_rpm_window(propulsor: Propulsor, rho: float) -> None:
+    assert propulsor._rpm_window(0.0, rho, MU, SOUND) is None
+    assert propulsor.point_for_thrust("Off axis", 1.0, 0.0, rho, MU, SOUND) is None

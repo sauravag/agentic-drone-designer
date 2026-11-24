@@ -255,9 +255,15 @@ def _limits(rejections: tuple[Rejection, ...]) -> str:
                 f"below what the catalogue's smallest propellers and motors are meant for")
     if not limits:
         return "no catalogue motor with matching constants or propeller survived pruning"
-    counted = Counter((r.rule, r.point) for r in limits).most_common(TOP_LIMITS_REPORTED)
-    return "; ".join(f"{rule}{' at ' + point if point else ''} ({n} of {len(limits)} candidates)"
-                     for (rule, point), n in counted)
+    unmodelled = sorted({r.rule[len(RULE_MODEL) + 2:] for r in limits if r.rule.startswith(RULE_MODEL)})
+    others = [r for r in limits if not r.rule.startswith(RULE_MODEL)]
+    counted = Counter((r.rule, r.point) for r in others).most_common(TOP_LIMITS_REPORTED)
+    parts = [f"{rule}{' at ' + point if point else ''} ({n} of {len(limits)} candidates)"
+             for (rule, point), n in counted]
+    if unmodelled:  # one entry, so table failures never crowd the physical limits out of the report
+        model_count: int = len(limits) - len(others)
+        parts.append(f"{RULE_MODEL} for {', '.join(unmodelled)} ({model_count} of {len(limits)} candidates)")
+    return "; ".join(parts)
 
 
 def _failure(context: MatchContext, cruise: _RoleResult, lift: Optional[_RoleResult]) -> PropulsionMatchError:

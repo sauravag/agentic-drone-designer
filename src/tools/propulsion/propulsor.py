@@ -63,11 +63,12 @@ def rpm_window(table: PropellerTable, airspeed_ms: float, rho: float, mu: float,
                speed_of_sound_ms: float) -> Optional[tuple[float, float]]:
     """rpm range inside the table's tip Mach and J axes for this air and airspeed (None if empty or if the air's
     equivalent density lies outside the table)."""
-    rho_eq: float = equivalent_density(rho, mu)
+    rho_eq: float = equivalent_density(rho, mu, speed_of_sound_ms)
     if not table.rho_eq[0] <= rho_eq <= table.rho_eq[-1]:
         return None
     rpm_per_mach: float = speed_of_sound_ms * SECONDS_PER_MINUTE / (math.pi * table.diameter_m)
-    lo: float = max(table.tip_mach[0] * rpm_per_mach, airspeed_ms * SECONDS_PER_MINUTE / (table.diameter_m * table.j[-1]))
+    lo: float = max(table.tip_mach[0] * rpm_per_mach,
+                    airspeed_ms * SECONDS_PER_MINUTE / (table.diameter_m * table.j[-1]))
     hi: float = table.tip_mach[-1] * rpm_per_mach
     lo, hi = lo * (1.0 + AXIS_INSET), hi * (1.0 - AXIS_INSET)
     return (lo, hi) if lo < hi else None

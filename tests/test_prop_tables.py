@@ -39,6 +39,8 @@ def _atmosphere(altitude_m: float, offset_c: float) -> Atmosphere:
 
 SEA_LEVEL: Final[Atmosphere] = _atmosphere(0.0, 0.0)
 FOUR_KM_HOT: Final[Atmosphere] = _atmosphere(HIGH_ALTITUDE_M, ISA_PLUS_20)
+COLD_DAY_OFFSET_C: Final[float] = -45.0  # sea level at -30 C: rho 1.45 kg/m^3, a 312.6 m/s
+COLD_DAY: Final[Atmosphere] = _atmosphere(0.0, COLD_DAY_OFFSET_C)
 
 
 @pytest.fixture(scope="module")
@@ -113,7 +115,8 @@ def _sample_envelope(table: PropellerTable, atmosphere: Atmosphere) -> Iterator[
     raise AssertionError(f"only {found} envelope samples found")
 
 
-@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT], ids=["sea_level", "4000m_isa_plus_20"])
+@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT, COLD_DAY],
+                         ids=["sea_level", "4000m_isa_plus_20", "minus_30c_sea_level"])
 @pytest.mark.parametrize("which", ["small", "big"])
 def test_table_matches_bemt_within_two_percent(which: str, atmosphere: Atmosphere, small_table: PropellerTable,
                                                big_table: PropellerTable) -> None:
@@ -180,20 +183,29 @@ def test_j_axis_reaches_zero_thrust_in_every_row(which: str, small_table: Propel
     assert lowest_re > prop_tables.REPRESENTATIVE_RE_MIN  # the thinnest, slowest cell is above the BEMT floor
 
 
-COLD_DAY_OFFSET_C: Final[float] = -45.0  # sea level at -30 C: rho 1.45 kg/m^3
-
-
 def test_density_axis_covers_cold_dense_air_at_the_mach_limit(small_table: PropellerTable) -> None:
-    rho, mu = air_properties(0.0, COLD_DAY_OFFSET_C)
-    rho_cold = prop_tables.equivalent_density(rho, mu)
+    rho, mu, sound = COLD_DAY
+    rho_cold = prop_tables.equivalent_density(rho, mu, sound)
     assert small_table.rho_eq[-1] >= rho_cold * (1.0 - 1e-9)
     small_table.coefficients(0.1, prop_tables.TABLE_MAX_TIP_MACH * (1.0 - 1e-9), rho_cold)
 
 
-@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT], ids=["sea_level", "4000m_isa_plus_20"])
+@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT, COLD_DAY],
+                         ids=["sea_level", "4000m_isa_plus_20", "minus_30c_sea_level"])
 def test_density_axis_covers_hot_high_and_sea_level(atmosphere: Atmosphere, small_table: PropellerTable) -> None:
-    rho, mu, _ = atmosphere
-    assert small_table.rho_eq[0] <= prop_tables.equivalent_density(rho, mu) <= small_table.rho_eq[-1]
+    rho, mu, sound = atmosphere
+    assert small_table.rho_eq[0] <= prop_tables.equivalent_density(rho, mu, sound) <= small_table.rho_eq[-1]
+
+
+def test_equivalent_density_matches_reynolds_at_the_same_mach_and_j() -> None:
+    """Same tip Mach: the section speed scales with a, so Re ~ rho a / mu; rho_eq reproduces it in reference air."""
+    rho, mu, sound = COLD_DAY
+    rpm: float = 0.5 * sound / (math.pi * SMALL_PROP[0]) * SECONDS_PER_MINUTE
+    rpm_ref: float = rpm * prop_tables.TABLE_SPEED_OF_SOUND / sound
+    real = prop_tables.reynolds75_at(*SMALL_PROP, rpm, rho, mu)
+    reference = prop_tables.reynolds75_at(*SMALL_PROP, rpm_ref, prop_tables.equivalent_density(rho, mu, sound),
+                                          prop_tables.TABLE_MU)
+    assert reference == pytest.approx(real, rel=1e-12)
 
 
 def test_every_cell_is_a_physical_density(small_table: PropellerTable, big_table: PropellerTable) -> None:
@@ -414,7 +426,8 @@ def test_mach_axis_always_ends_at_the_limit_with_two_nodes(monkeypatch: pytest.M
     thin_chord: float = 0.0038 * 1.225 / prop_tables.TABLE_THIN_RHO_EQ
     monkeypatch.setattr(prop_tables, "_chord75_m", lambda d, p: thin_chord * d)
     high, _ = prop_tables._axes(*SMALL_PROP)
-    assert high[0] > 0.64 and len(high) >= 2 and high[-1] == prop_tables.TABLE_MAX_TIP_MACH and np.all(np.diff(high) > 0.0)
+    assert high[0] > 0.64 and len(high) >= 2 and high[-1] == prop_tables.TABLE_MAX_TIP_MACH
+    assert np.all(np.diff(high) > 0.0)
 
 
 def test_axes_raise_when_the_reynolds_floor_reaches_the_tip_mach_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -439,7 +452,8 @@ def _catalogue_sample() -> list[tuple[float, float]]:
     inch: float = 0.0254
     old_failures = [(8, 6.4), (15, 10), (20, 16), (32, 25.6), (36, 21.6)]
     chosen |= {(p.diameter_m, p.pitch_m) for p in props
-               if any(abs(p.diameter_m - d * inch) < 1e-3 and abs(p.pitch_m - q * inch) < 1e-3 for d, q in old_failures)}
+               if any(abs(p.diameter_m - d * inch) < 1e-3 and abs(p.pitch_m - q * inch) < 1e-3
+                      for d, q in old_failures)}
     return sorted(chosen)
 
 
