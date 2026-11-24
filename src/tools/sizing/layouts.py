@@ -105,13 +105,13 @@ def pusher_mount_length_m(propeller_diameter_m: float) -> float:
 
 def has_tail_boom(spec: LayoutSpec, boom_start_m: float, boom_end_m: float, fuselage_length_m: float) -> bool:
     """Whether the centre tail boom is built (sizing books it, the CAD layout places it): a boom-end pusher's always,
-    since it carries the motor (one ending ahead of its root raises PusherBoomClearanceError), otherwise only when the tail reaches past
-    the pod."""
+    since it carries the motor (one ending ahead of its root raises PusherBoomClearanceError), otherwise only when the
+    tail reaches past the pod."""
     if spec.propeller != "pusher_boom_end":
         return boom_end_m > fuselage_length_m
     if boom_end_m <= boom_start_m:
-        raise PusherBoomClearanceError(f"the boom-end pusher's boom would end at {boom_end_m:.3f} m, ahead of its root at "
-                         f"{boom_start_m:.3f} m")
+        raise PusherBoomClearanceError(f"the boom-end pusher's boom would end at {boom_end_m:.3f} m, "
+                                       f"ahead of its root at {boom_start_m:.3f} m")
     return True
 
 

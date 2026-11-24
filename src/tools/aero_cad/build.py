@@ -93,7 +93,6 @@ class _Search:
         logger.info("[Tool] build_aero_cad evaluation %d: wing station %.3f -> %s", n, station, exc)
         self.evaluated[station] = None
         self.reasons[type(exc).__name__] = str(exc)
-        return None
 
     def evaluate(self, station: float) -> BalancedDesign | None:
         station = round(station, STATION_DECIMALS)
