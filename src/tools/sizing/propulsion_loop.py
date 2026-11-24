@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Generic, Optional, TypeVar
 
-from src.schemas.assumptions import DesignAssumptions
+from src.schemas.assumptions import Chemistry, DesignAssumptions
 from src.schemas.propulsion import PropulsionMatch, SetKey
 from src.schemas.state import PhaseResult
 from src.tools.database.seed_data import catalog_rows
@@ -131,7 +131,7 @@ def _stored_or_catalogue(stored: Optional[float], table: str, name: str, field: 
     return stored if stored is not None else getattr(_part(table, name), field)
 
 
-def _cell_chemistry(match: PropulsionMatch) -> str:
+def _cell_chemistry(match: PropulsionMatch) -> Chemistry:
     return match.cell_chemistry or _part("cells", match.cell_name).chemistry
 
 

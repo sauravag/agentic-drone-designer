@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Optional
 
+from src.schemas.assumptions import Chemistry
 from src.schemas.state import SizingOutput, TailSurface
 from src.tools.gear import GearGeometry, GearInputs, PropellerDisc, gear_mass_kg, landing_gear
 from src.tools.sizing.aero_model import FUSELAGE_WETTED_FACTOR
@@ -95,7 +96,7 @@ class MatchedHardware:
     vtol_kg: float
     cruise_propeller_diameter_m: float
     lift_rotor_diameter_m: Optional[float] = None
-    cell_chemistry: str = "li_ion"  # the matched cell's: the energy store is sized with it
+    cell_chemistry: Chemistry = "li_ion"  # the matched cell's: the energy store is sized with it
 
 
 @dataclass(frozen=True)

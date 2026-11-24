@@ -135,7 +135,8 @@ DERIVED_MOTOR_RATINGS: Final[dict[str, tuple[float, float, Optional[float]]]] = 
 }
 
 
-def _frame_key(name: str) -> str:
+def frame_key(name: str) -> str:
+    """A frame's name without its KV suffix ("Lift 12030-60KV" -> "Lift 12030")."""
     return name.rsplit("-", 1)[0] if name.endswith("KV") else name
 
 
@@ -143,12 +144,12 @@ def _rated_cruise_motors(raw: list[tuple]) -> list[tuple]:
     """Listed cruise frames with their derived KV (in the name when it carries one) and max current."""
     out: list[tuple] = []
     for name, mass, max_w, cont_w, kv, volts, dia, length in raw:
-        rating = DERIVED_MOTOR_RATINGS.get(_frame_key(name))
+        rating = DERIVED_MOTOR_RATINGS.get(frame_key(name))
         if rating is None:
             out.append((name, mass, max_w, cont_w, kv, volts, dia, length))
             continue
         new_kv, imax, _ = rating
-        new_name: str = f"{_frame_key(name)}-{new_kv:g}KV" if name.endswith("KV") else name
+        new_name: str = f"{frame_key(name)}-{new_kv:g}KV" if name.endswith("KV") else name
         out.append((new_name, mass, max_w, cont_w, new_kv, volts, dia, length, imax))
     return out
 
@@ -157,8 +158,8 @@ def _rated_vtol_motors(raw: list[tuple]) -> list[tuple]:
     """Listed lift frames with their derived KV (in the name), max current and max thrust."""
     out: list[tuple] = []
     for name, mass, thrust, max_w, volts, dia, length in raw:
-        new_kv, imax, rated = DERIVED_MOTOR_RATINGS[_frame_key(name)]
-        out.append((f"{_frame_key(name)}-{new_kv:g}KV", mass, rated, max_w, volts, dia, length, imax))
+        new_kv, imax, rated = DERIVED_MOTOR_RATINGS[frame_key(name)]
+        out.append((f"{frame_key(name)}-{new_kv:g}KV", mass, rated, max_w, volts, dia, length, imax))
     return out
 
 

@@ -214,7 +214,7 @@ def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     plan: tuple[PhaseSpec, ...] = phase_plan(req, design.airframe, design.cruise_polar, aero, mtow)
     trace = simulate(plan, mtow, aero, hotel, gen_w, assumptions.bsfc_kg_per_kwh / KWH_TO_J, design.efficiencies)
     reserve: float = reserve_fraction(design.params, design.propulsion, assumptions)
-    chemistry: Chemistry = design.hardware.cell_chemistry if design.hardware else "li_ion"  # type: ignore[assignment]
+    chemistry: Chemistry = design.hardware.cell_chemistry if design.hardware else "li_ion"
     storage = (hybrid_storage(trace, gen_w, reserve, assumptions) if is_hybrid
                else electric_storage(trace, reserve, assumptions, chemistry))
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0

@@ -45,15 +45,26 @@ def test_every_cruise_frame_reaches_its_max_power_on_its_paired_propeller(motor:
     _check(motor, *mr.static_point_for_power(propeller_table(prop.diameter_m, prop.pitch_m), motor.max_power_w))
 
 
-def test_the_stored_ratings_are_what_the_model_derives() -> None:
+@pytest.mark.parametrize("row", [r for r in VTOL_MOTORS], ids=lambda r: r[0])
+def test_every_stored_lift_rating_is_what_the_model_derives(row: tuple) -> None:
     from src.tools.database.catalog_variants import VTOL_CONTINUOUS_FRACTION, motor_constants
 
-    name, _mass, thrust, max_w, volts, *_ = next(r for r in VTOL_MOTORS if r[0].startswith("Lift 12030"))
+    name, _mass, thrust, max_w, volts, *_ = row
     c = motor_constants(max_w * VTOL_CONTINUOUS_FRACTION, max_w, volts)
     rating = mr.lift_frame_rating(thrust, max_w, c["rm_ohm"], c["i0_a"], mr.nominal_voltage_v(volts),
                                   base_propellers("vtol"))
-    kv, imax, rated = DERIVED_MOTOR_RATINGS[mr.frame_key(name)]
-    assert (kv, imax, rated) == (round(rating.kv), round(rating.max_current_a, 1), round(rating.max_thrust_n))
+    assert DERIVED_MOTOR_RATINGS[mr.frame_key(name)] == (rating.kv, rating.max_current_a, rating.max_thrust_n)
+
+
+@pytest.mark.parametrize("row", [r for r in CRUISE_MOTORS if r[0] not in UNDERIVABLE], ids=lambda r: r[0])
+def test_every_stored_cruise_rating_is_what_the_model_derives(row: tuple) -> None:
+    from src.tools.database.catalog_variants import motor_constants
+
+    name, _mass, max_w, cont_w, _kv, volts, *_ = row
+    c = motor_constants(cont_w, max_w, volts)
+    rating = mr.cruise_frame_rating(max_w, c["rm_ohm"], c["i0_a"], mr.nominal_voltage_v(volts),
+                                    base_propellers("cruise"))
+    assert DERIVED_MOTOR_RATINGS[mr.frame_key(name)] == (rating.kv, rating.max_current_a, None)
 
 
 def test_ax90_keeps_its_listed_values_because_no_propeller_absorbs_it() -> None:

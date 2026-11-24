@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Final, Optional
 
 from src.schemas.components import Propeller
+from src.tools.database.seed_data import frame_key  # noqa: F401  (re-exported: one definition)
 from src.tools.propulsion.match_types import MAX_MATCH_THROTTLE
 from src.tools.propulsion.motor import MotorPoint, motor_point
 from src.tools.propulsion.prop_tables import PropellerTable, propeller_table
@@ -199,11 +200,6 @@ def _print_table() -> None:
             continue
         print(f"    {frame_key(name)!r}: ({r.kv:g}, {r.max_current_a:.1f}, None),"
               f"  # {r.propeller} {r.rpm:.0f} rpm {r.shaft_power_w:.0f} W")
-
-
-def frame_key(name: str) -> str:
-    """A frame's name without its KV suffix ("Lift 12030-60KV" -> "Lift 12030")."""
-    return name.rsplit("-", 1)[0] if name.endswith("KV") else name
 
 
 if __name__ == "__main__":
