@@ -201,6 +201,7 @@ def test_lift_rotor_hover_is_finite_with_figure_of_merit_below_one() -> None:
 
 def test_raises_when_relative_speed_does_not_converge(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bemt, "SPEED_REL_TOLERANCE", 0.0)  # no pass can change W by less than zero
+    monkeypatch.setattr(bemt, "SPEED_REL_TOLERANCE_LATE", 0.0)
     with pytest.raises(PropModelError, match="did not converge"):
         bemt_point(generic_blade(0.254, 0.178), 6000, 0.0, RHO, MU, SPEED_OF_SOUND)
 

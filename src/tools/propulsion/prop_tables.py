@@ -1,21 +1,21 @@
 """Cached propeller CT/CP tables built from the BEMT model (spec 6.1).
 
 A table holds CT = T / (rho n^2 D^4) and CP = P / (rho n^3 D^5) for one diameter and pitch, indexed by advance
-ratio J = V / (n D), tip Mach number M = pi D n / a, and the Reynolds number at r/R 0.75 (Re75 = rho U75 c75 / mu with
-U75 = 0.75 pi D n and c75 the chord there). The sizing loop and the motor search evaluate it thousands of times, so
-one table is built once per prop (a few thousand BEMT points, solved as one vectorised batch per tip-Mach slab),
-kept in memory and written to disk as JSON.
+ratio J = V / (n D), tip Mach number M = pi D n / a, and the equivalent density rho_eq = rho x TABLE_MU / mu (the
+density that gives the same Reynolds numbers at the table's reference viscosity). The sizing loop and the motor
+search evaluate it thousands of times, so one table is built once per prop (a few thousand BEMT points, solved as
+one vectorised batch), kept in memory and written to disk as JSON.
 
-Grid. Re75 and tip Mach are independent axes, so air density and temperature are free (altitude, ISA+20): each
-(M, Re75) cell is solved at the table's reference speed of sound (340.3 m/s) and viscosity with the density that
-gives that Re75, which fixes the section Mach numbers exactly. M runs from the lowest tip Mach of the rpm sweep (Re75
-just above the BEMT floor of 1e4 at sea level) up to 0.80; Re75 runs from just above 1e4 up to the cold-day value
-(sea level at -30 C: rho 1.46, mu 1.55e-5) at tip Mach 0.80, so any less dense or warmer point at the same tip Mach
-falls inside; J runs from 0 up to where CT <= 0 in every (M, Re75) row, so thrust rolls off to zero. Interpolation
-is trilinear in (J, M, log Re75).
+Grid. Tip Mach and equivalent density are independent axes, so altitude and temperature are free, and EVERY cell is
+a physical operating state: rpm from M (at the reference speed of sound 340.3 m/s, which fixes the section Mach
+numbers exactly) and a real density between TABLE_THIN_RHO_EQ (thin, hot air: about 5 km ISA+20) and the cold-day
+value (sea level at -30 C: rho 1.46, mu 1.55e-5). An earlier (M, Re75) grid implied rho = Re75 / (k rpm), so its
+corners asked BEMT for densities of 0.1 or 45 kg/m^3 and failed there. M runs from the tip Mach where Re75 at the
+thinnest density sits just above the BEMT floor of 1e4 up to 0.80; J runs from 0 up to where CT <= 0 in every
+(M, rho_eq) row, so thrust rolls off to zero. Interpolation is trilinear in (J, M, log rho_eq).
 
 Out of range is an error, not a clamp: `coefficients` (and so `thrust_n` and `torque_nm`) raise ValueError for J, M
-or Re75 outside the table. Thrust never goes below zero (CT is clamped at 0 in `thrust_n`). Past the J where BEMT
+or density outside the table. Thrust never goes below zero (CT is clamped at 0 in `thrust_n`). Past the J where BEMT
 stops converging (beyond zero thrust) a row repeats its last computed point with CT <= 0; that extent is recorded
 (`j_limit`) and `torque_nm` raises beyond it rather than return a made-up CP.
 """
@@ -44,16 +44,19 @@ logger: logging.Logger = logging.getLogger(__name__)
 # from Re75, so the result is valid for any atmosphere inside the axes.
 TABLE_MU: Final[float] = 1.81e-5
 TABLE_SPEED_OF_SOUND: Final[float] = 340.3
-TABLE_SEA_LEVEL_RHO: Final[float] = 1.225  # sea-level density that sets the bottom of the tip-Mach axis
-# Cold dense air (sea level at -30 C) that sets the top of the Re75 axis, so a cold day still reaches tip Mach 0.80.
+# Thinnest air tabulated (equivalent density): 4 km ISA+20 is about 0.85, 5 km ISA+20 about 0.72.
+TABLE_THIN_RHO_EQ: Final[float] = 0.6
+# Cold dense air (sea level at -30 C) sets the top of the density axis.
 TABLE_COLD_RHO: Final[float] = 1.46
 TABLE_COLD_MU: Final[float] = 1.55e-5
+TABLE_DENSE_RHO_EQ: Final[float] = TABLE_COLD_RHO * TABLE_MU / TABLE_COLD_MU
 TABLE_MAX_TIP_MACH: Final[float] = 0.80
 RE_FLOOR_MARGIN: Final[float] = 1.1  # lowest table Re75 sits this far above the BEMT floor
-N_RE_NODES: Final[int] = 22  # geometric in Re75
+N_RHO_NODES: Final[int] = 8  # geometric in equivalent density (about 15 % apart)
 N_J_NODES: Final[int] = 33
-FIXED_MACH_NODES: Final[tuple[float, ...]] = (0.15, 0.30, 0.45, 0.60, 0.70, TABLE_MAX_TIP_MACH)
-MACH_NODE_MIN_RATIO: Final[float] = 1.25  # a fixed Mach node must sit this far above the lowest
+# Geometric tip-Mach nodes about this far apart: along a fixed-density row Re75 is proportional to rpm, so this axis
+# also carries the Reynolds effect (strongest at low rpm) and needs the old Re75 axis's spacing.
+MACH_NODE_RATIO: Final[float] = 1.18
 J_SCAN_STEP: Final[float] = 0.05  # step of the search for the zero-thrust J
 J_SCAN_CHUNK: Final[int] = 30  # J values per scan batch
 J_SCAN_MAX: Final[float] = 6.0
@@ -68,58 +71,59 @@ AXIS_TOLERANCE: Final[float] = 1e-9
 
 # Everything that shapes the grid: a change to any of these changes the hash in the cache key and payload.
 GRID_SPEC: Final[str] = hashlib.sha1(repr((
-    TABLE_MU, TABLE_SPEED_OF_SOUND, TABLE_SEA_LEVEL_RHO, TABLE_COLD_RHO, TABLE_COLD_MU, TABLE_MAX_TIP_MACH,
-    RE_FLOOR_MARGIN, N_RE_NODES, N_J_NODES, FIXED_MACH_NODES, MACH_NODE_MIN_RATIO, J_SCAN_STEP, J_SCAN_CHUNK,
+    TABLE_MU, TABLE_SPEED_OF_SOUND, TABLE_THIN_RHO_EQ, TABLE_COLD_RHO, TABLE_COLD_MU, TABLE_MAX_TIP_MACH,
+    RE_FLOOR_MARGIN, N_RHO_NODES, N_J_NODES, MACH_NODE_RATIO, J_SCAN_STEP, J_SCAN_CHUNK,
     J_SCAN_MAX, J_TOP_MARGIN, J_EXTEND_FACTOR, MAX_J_EXTENSIONS, REPRESENTATIVE_RE_MIN,
     REPRESENTATIVE_STATION)).encode()).hexdigest()[:SPEC_HASH_LENGTH]
 
 
 @dataclass(frozen=True)
 class PropellerTable:
-    """CT and CP at `j[i]`, `tip_mach[m]` and `reynolds75[k]` stored as `ct[m][k][i]`. `j_limit[m][k]` is the last J
-    computed by BEMT in that (M, Re75) row; beyond it CT is held at <= 0 and CP at its last computed value."""
+    """CT and CP at `j[i]`, `tip_mach[m]` and `rho_eq[k]` stored as `ct[m][k][i]`. `j_limit[m][k]` is the last J
+    computed by BEMT in that (M, rho_eq) row; beyond it CT is held at <= 0 and CP at its last computed value."""
     diameter_m: float
     pitch_m: float
     j: tuple[float, ...]
     tip_mach: tuple[float, ...]
-    reynolds75: tuple[float, ...]
+    rho_eq: tuple[float, ...]  # equivalent density rho x TABLE_MU / mu, kg/m^3
     ct: tuple[tuple[tuple[float, ...], ...], ...]
     cp: tuple[tuple[tuple[float, ...], ...], ...]
     j_limit: tuple[tuple[float, ...], ...]
 
     @cached_property
     def _arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        return (np.asarray(self.j), np.asarray(self.tip_mach), np.log(np.asarray(self.reynolds75)),
+        return (np.asarray(self.j), np.asarray(self.tip_mach), np.log(np.asarray(self.rho_eq)),
                 np.asarray(self.ct), np.asarray(self.cp), np.asarray(self.j_limit))
 
     def pitch_speed_ms(self, rpm: float) -> float:
         """Airspeed at which the geometric pitch gives zero advance slip: P n."""
         return self.pitch_m * rpm / SECONDS_PER_MINUTE
 
-    def _locate(self, j: float, tip_mach: float, reynolds75: float) -> tuple[tuple[int, float], ...]:
-        """Cells and fractions along (M, Re75, J); ValueError when any coordinate lies outside its axis."""
-        j_axis, mach_axis, log_re_axis = self._arrays[:3]
+    def _locate(self, j: float, tip_mach: float, rho_eq: float) -> tuple[tuple[int, float], ...]:
+        """Cells and fractions along (M, rho_eq, J); ValueError when any coordinate lies outside its axis."""
+        j_axis, mach_axis, log_rho_axis = self._arrays[:3]
         where: str = f"for {self.diameter_m} x {self.pitch_m} m"
         if not (math.isfinite(j) and j_axis[0] <= j <= j_axis[-1]):
             raise ValueError(f"J={j:.4g} outside the table range [{j_axis[0]:.4g}, {j_axis[-1]:.4g}] {where}")
         if not (math.isfinite(tip_mach) and mach_axis[0] <= tip_mach <= mach_axis[-1]):
             raise ValueError(f"tip Mach {tip_mach:.4g} outside the table range [{mach_axis[0]:.4g}, "
                              f"{mach_axis[-1]:.4g}] {where}")
-        if not (math.isfinite(reynolds75) and reynolds75 > 0.0
-                and log_re_axis[0] <= math.log(reynolds75) <= log_re_axis[-1]):
-            raise ValueError(f"Re75={reynolds75:.4g} outside the table range [{self.reynolds75[0]:.4g}, "
-                             f"{self.reynolds75[-1]:.4g}] {where}")
-        return (_cell(mach_axis, tip_mach), _cell(log_re_axis, math.log(reynolds75)), _cell(j_axis, j))
+        if not (math.isfinite(rho_eq) and rho_eq > 0.0
+                and log_rho_axis[0] - AXIS_TOLERANCE <= math.log(rho_eq) <= log_rho_axis[-1] + AXIS_TOLERANCE):
+            raise ValueError(f"equivalent density {rho_eq:.4g} kg/m^3 outside the table range "
+                             f"[{self.rho_eq[0]:.4g}, {self.rho_eq[-1]:.4g}] {where}")
+        log_rho: float = min(max(math.log(rho_eq), log_rho_axis[0]), log_rho_axis[-1])
+        return (_cell(mach_axis, tip_mach), _cell(log_rho_axis, log_rho), _cell(j_axis, j))
 
-    def coefficients(self, j: float, tip_mach: float, reynolds75: float) -> tuple[float, float]:
-        """(CT, CP) by trilinear interpolation; ValueError when J, tip Mach or Re75 lies outside the table."""
-        (m, fm), (k, fr), (i, fj) = self._locate(j, tip_mach, reynolds75)
+    def coefficients(self, j: float, tip_mach: float, rho_eq: float) -> tuple[float, float]:
+        """(CT, CP) by trilinear interpolation; ValueError when J, tip Mach or density lies outside the table."""
+        (m, fm), (k, fr), (i, fj) = self._locate(j, tip_mach, rho_eq)
         ct, cp = self._arrays[3], self._arrays[4]
         return _trilinear(ct, m, k, i, fm, fr, fj), _trilinear(cp, m, k, i, fm, fr, fj)
 
-    def _computed_j_limit(self, tip_mach: float, reynolds75: float) -> float:
-        """The smallest last-computed J among the four (M, Re75) rows around the point."""
-        (m, _), (k, _), _ = self._locate(self.j[0], tip_mach, reynolds75)
+    def _computed_j_limit(self, tip_mach: float, rho_eq: float) -> float:
+        """The smallest last-computed J among the four (M, rho_eq) rows around the point."""
+        (m, _), (k, _), _ = self._locate(self.j[0], tip_mach, rho_eq)
         limits: np.ndarray = self._arrays[5]
         return float(limits[m:m + 2, k:k + 2].min())
 
@@ -134,8 +138,7 @@ class PropellerTable:
         n: float = rpm / SECONDS_PER_MINUTE
         j: float = airspeed_ms / (n * self.diameter_m)
         tip_mach: float = math.pi * self.diameter_m * n / speed_of_sound_ms
-        re75: float = reynolds75_at(self.diameter_m, self.pitch_m, rpm, rho, mu)
-        ct, cp = self.coefficients(j, tip_mach, re75)
+        ct, cp = self.coefficients(j, tip_mach, equivalent_density(rho, mu))
         return n, j, tip_mach, ct, cp
 
     def thrust_n(self, rpm: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float) -> float:
@@ -148,14 +151,12 @@ class PropellerTable:
         """True where `torque_nm` would refuse the point for lying beyond the last J BEMT computed (past zero
         thrust); ValueError outside the table axes."""
         _, j, tip_mach, _, _ = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-        re75: float = reynolds75_at(self.diameter_m, self.pitch_m, rpm, rho, mu)
-        return j > self._computed_j_limit(tip_mach, re75)
+        return j > self._computed_j_limit(tip_mach, equivalent_density(rho, mu))
 
     def torque_nm(self, rpm: float, airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: float) -> float:
         """Shaft torque in N m from CP as tabulated; ValueError outside the table or beyond the J BEMT computed."""
         n, j, tip_mach, _, cp = self._state(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-        re75: float = reynolds75_at(self.diameter_m, self.pitch_m, rpm, rho, mu)
-        limit: float = self._computed_j_limit(tip_mach, re75)
+        limit: float = self._computed_j_limit(tip_mach, equivalent_density(rho, mu))
         if j > limit:
             raise ValueError(f"J={j:.4g} is beyond the last computed J {limit:.4g} (past zero thrust) for "
                              f"{self.diameter_m} x {self.pitch_m} m: torque is not tabulated there")
@@ -182,6 +183,11 @@ def _chord75_m(diameter_m: float, pitch_m: float) -> float:
     return float(np.interp(REPRESENTATIVE_STATION, blade.stations, blade.chord_over_radius)) * diameter_m / 2.0
 
 
+def equivalent_density(rho: float, mu: float) -> float:
+    """The density that gives the same Reynolds numbers at the table's reference viscosity: rho x TABLE_MU / mu."""
+    return rho * TABLE_MU / mu
+
+
 def reynolds75_at(diameter_m: float, pitch_m: float, rpm: float, rho: float, mu: float) -> float:
     """Reynolds number of the 0.75 R section from blade speed alone (no inflow)."""
     blade_speed: float = REPRESENTATIVE_STATION * math.pi * diameter_m * rpm / SECONDS_PER_MINUTE
@@ -198,19 +204,18 @@ def _rpm_for_tip_mach(diameter_m: float, tip_mach: float) -> float:
 
 
 def _axes(diameter_m: float, pitch_m: float) -> tuple[np.ndarray, np.ndarray]:
-    """(tip Mach nodes, Re75 nodes): the lowest Mach and Re75 are the sea-level rpm sweep's floor, the top Re75 the
-    cold-day value at tip Mach TABLE_MAX_TIP_MACH."""
+    """(tip Mach nodes, equivalent-density nodes). The lowest Mach is where Re75 at the thinnest density sits just
+    above the BEMT floor, so every cell is inside the airfoil polars; density spans thin hot air to a cold day."""
     re_low: float = REPRESENTATIVE_RE_MIN * RE_FLOOR_MARGIN
-    rpm_low: float = rpm_for_reynolds75(diameter_m, pitch_m, re_low, TABLE_SEA_LEVEL_RHO, TABLE_MU)
+    rpm_low: float = rpm_for_reynolds75(diameter_m, pitch_m, re_low, TABLE_THIN_RHO_EQ, TABLE_MU)
     rpm_high: float = _rpm_for_tip_mach(diameter_m, TABLE_MAX_TIP_MACH)
     if rpm_high <= rpm_low:
         raise ValueError(f"{diameter_m} m propeller: tip Mach at Re75 {re_low:.3g} already reaches "
                          f"{TABLE_MAX_TIP_MACH}; no Mach range to tabulate")
     mach_low: float = math.pi * diameter_m * rpm_low / SECONDS_PER_MINUTE / TABLE_SPEED_OF_SOUND
-    inner: list[float] = [m for m in FIXED_MACH_NODES if mach_low * MACH_NODE_MIN_RATIO < m < TABLE_MAX_TIP_MACH]
-    mach: list[float] = [mach_low, *inner, TABLE_MAX_TIP_MACH]  # always >= 2 nodes, top node exactly the limit
-    re_high: float = reynolds75_at(diameter_m, pitch_m, rpm_high, TABLE_COLD_RHO, TABLE_COLD_MU)
-    return np.asarray(mach), np.geomspace(re_low, re_high, N_RE_NODES)
+    nodes: int = max(2, math.ceil(math.log(TABLE_MAX_TIP_MACH / mach_low) / math.log(MACH_NODE_RATIO)) + 1)
+    mach: np.ndarray = np.geomspace(mach_low, TABLE_MAX_TIP_MACH, nodes)  # >= 2 nodes, ends exactly at the limit
+    return mach, np.geomspace(TABLE_THIN_RHO_EQ, TABLE_DENSE_RHO_EQ, N_RHO_NODES)
 
 
 @dataclass(frozen=True)
@@ -220,12 +225,10 @@ class _Cells:
     rho: np.ndarray
 
 
-def _cells(diameter_m: float, pitch_m: float, mach: np.ndarray, reynolds: np.ndarray) -> _Cells:
-    """rpm and density for every (M, Re75) pair, flattened Mach-major: rpm from M, rho from Re75."""
-    rpm: np.ndarray = np.repeat(_rpm_for_tip_mach(diameter_m, mach), len(reynolds))
-    re: np.ndarray = np.tile(reynolds, len(mach))
-    rho: np.ndarray = re / (reynolds75_at(diameter_m, pitch_m, 1.0, 1.0, TABLE_MU) * rpm)
-    return _Cells(rpm=rpm, rho=rho)
+def _cells(diameter_m: float, mach: np.ndarray, densities: np.ndarray) -> _Cells:
+    """rpm and density for every (M, rho_eq) pair, flattened Mach-major (solved at TABLE_MU, so rho = rho_eq)."""
+    rpm: np.ndarray = np.repeat(_rpm_for_tip_mach(diameter_m, mach), len(densities))
+    return _Cells(rpm=rpm, rho=np.tile(densities, len(mach)))
 
 
 def _solve(blade: BladeGeometry, cells: _Cells, j_axis: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -295,9 +298,9 @@ def _probe_rows(n_mach: int, n_re: int) -> np.ndarray:
 def _build_table(diameter_m: float, pitch_m: float) -> PropellerTable:
     """Run BEMT over the (M, Re75, J) grid; widen the J axis until every row ends at CT <= 0."""
     blade: BladeGeometry = generic_blade(diameter_m, pitch_m)
-    mach, reynolds = _axes(diameter_m, pitch_m)
-    cells: _Cells = _cells(diameter_m, pitch_m, mach, reynolds)
-    probes: np.ndarray = _probe_rows(len(mach), len(reynolds))
+    mach, densities = _axes(diameter_m, pitch_m)
+    cells: _Cells = _cells(diameter_m, mach, densities)
+    probes: np.ndarray = _probe_rows(len(mach), len(densities))
     j_top: float = J_TOP_MARGIN * _zero_thrust_j(blade, _Cells(cells.rpm[probes], cells.rho[probes]))
     for _ in range(MAX_J_EXTENSIONS):
         j_axis: np.ndarray = np.linspace(0.0, j_top, N_J_NODES)
@@ -305,18 +308,18 @@ def _build_table(diameter_m: float, pitch_m: float) -> PropellerTable:
         rows = [_clamp_row(ct[r], cp[r], ok[r], j_axis, _label(diameter_m, pitch_m, cells, r))
                 for r in range(len(cells.rpm))]
         if all(row[0][-1] <= 0.0 for row in rows):
-            return _assemble(diameter_m, pitch_m, j_axis, mach, reynolds, rows)
+            return _assemble(diameter_m, pitch_m, j_axis, mach, densities, rows)
         j_top *= J_EXTEND_FACTOR
     raise PropModelError(f"{diameter_m} x {pitch_m} m propeller: CT still positive at J {j_top:.2f}")
 
 
-def _assemble(diameter_m: float, pitch_m: float, j_axis: np.ndarray, mach: np.ndarray, reynolds: np.ndarray,
+def _assemble(diameter_m: float, pitch_m: float, j_axis: np.ndarray, mach: np.ndarray, densities: np.ndarray,
               rows: list[tuple[np.ndarray, np.ndarray, float]]) -> PropellerTable:
-    shape: tuple[int, int, int] = (len(mach), len(reynolds), len(j_axis))
+    shape: tuple[int, int, int] = (len(mach), len(densities), len(j_axis))
     ct: np.ndarray = np.stack([r[0] for r in rows]).reshape(shape)
     cp: np.ndarray = np.stack([r[1] for r in rows]).reshape(shape)
     limit: np.ndarray = np.array([r[2] for r in rows]).reshape(shape[:2])
-    return PropellerTable(diameter_m, pitch_m, _floats(j_axis), _floats(mach), _floats(reynolds),
+    return PropellerTable(diameter_m, pitch_m, _floats(j_axis), _floats(mach), _floats(densities),
                           tuple(tuple(_floats(r) for r in plane) for plane in ct),
                           tuple(tuple(_floats(r) for r in plane) for plane in cp),
                           tuple(_floats(r) for r in limit))
@@ -341,19 +344,20 @@ def _cache_path(diameter_m: float, pitch_m: float) -> Path:
 def _to_payload(table: PropellerTable) -> dict[str, Any]:
     return {"version": PROP_MODEL_VERSION, "airfoil": PROP_AIRFOIL, "grid": GRID_SPEC,
             "diameter_m": table.diameter_m, "pitch_m": table.pitch_m, "j": list(table.j),
-            "tip_mach": list(table.tip_mach), "reynolds75": list(table.reynolds75),
+            "tip_mach": list(table.tip_mach), "rho_eq": list(table.rho_eq),
             "ct": [[list(r) for r in plane] for plane in table.ct],
             "cp": [[list(r) for r in plane] for plane in table.cp], "j_limit": [list(r) for r in table.j_limit]}
 
 
 def _check_axes(table: PropellerTable) -> None:
-    """ValueError unless the axes are finite and strictly increasing, J starts at 0, Re75 > 0 and Mach is in range."""
-    for name, axis in (("j", table.j), ("tip_mach", table.tip_mach), ("reynolds75", table.reynolds75)):
+    """ValueError unless the axes are finite and strictly increasing, J starts at 0, density > 0 and Mach is in
+    range."""
+    for name, axis in (("j", table.j), ("tip_mach", table.tip_mach), ("rho_eq", table.rho_eq)):
         values: np.ndarray = np.asarray(axis)
         if len(values) < 2 or not np.all(np.isfinite(values)) or not np.all(np.diff(values) > 0.0):
             raise ValueError(f"axis {name} must be finite and strictly increasing with >= 2 nodes")
-    if table.j[0] != 0.0 or table.reynolds75[0] <= 0.0:
-        raise ValueError("axis j must start at 0 and reynolds75 must be positive")
+    if table.j[0] != 0.0 or table.rho_eq[0] <= 0.0:
+        raise ValueError("axis j must start at 0 and rho_eq must be positive")
     if table.tip_mach[0] <= 0.0 or table.tip_mach[-1] > TABLE_MAX_TIP_MACH + AXIS_TOLERANCE:
         raise ValueError(f"axis tip_mach must lie in (0, {TABLE_MAX_TIP_MACH}]")
 
@@ -367,11 +371,11 @@ def _from_payload(payload: dict[str, Any], diameter_m: float, pitch_m: float) ->
         raise ValueError(f"stale table, mismatched {', '.join(stale)}")
     table = PropellerTable(
         float(diameter_m), float(pitch_m), _floats(payload["j"]), _floats(payload["tip_mach"]),
-        _floats(payload["reynolds75"]), tuple(tuple(_floats(r) for r in plane) for plane in payload["ct"]),
+        _floats(payload["rho_eq"]), tuple(tuple(_floats(r) for r in plane) for plane in payload["ct"]),
         tuple(tuple(_floats(r) for r in plane) for plane in payload["cp"]),
         tuple(_floats(r) for r in payload["j_limit"]))
     _check_axes(table)
-    shape: tuple[int, int, int] = (len(table.tip_mach), len(table.reynolds75), len(table.j))
+    shape: tuple[int, int, int] = (len(table.tip_mach), len(table.rho_eq), len(table.j))
     grids: tuple[np.ndarray, ...] = (np.asarray(table.ct), np.asarray(table.cp))
     limits: np.ndarray = np.asarray(table.j_limit)
     if any(g.shape != shape for g in grids) or limits.shape != shape[:2]:

@@ -49,7 +49,15 @@ PHI_MIN_RAD: Final[float] = 1e-6  # lower bisection bound (phi = 0 is singular i
 BISECTION_STEPS: Final[int] = 60  # halves (0, pi/2) to ~1e-18 rad
 # Reynolds/Mach use the relative speed W, which depends on the solution: iterate W to a fixed point.
 SPEED_REL_TOLERANCE: Final[float] = 1e-6
-MAX_SPEED_PASSES: Final[int] = 20
+MAX_SPEED_PASSES: Final[int] = 40
+# Points still unconverged after this many plain passes are under-relaxed (W += SPEED_RELAXATION x (f(W) - W)): near
+# section Mach 0.8 the polars can make the plain fixed point cycle. The converged W is the same fixed point.
+RELAX_AFTER_PASSES: Final[int] = 8
+SPEED_RELAXATION: Final[float] = 0.5
+# After RELAX_AFTER_PASSES, a point whose W moves by less than this is accepted: near inner-section stall the inflow
+# root can switch between passes, so W cycles by ~0.3 % at one station with no exact fixed point (thrust effect
+# well under 0.1 %).
+SPEED_REL_TOLERANCE_LATE: Final[float] = 5e-3
 LOSS_FACTOR_MIN: Final[float] = 1e-9  # keeps the residual finite where the Prandtl factor reaches zero
 SECONDS_PER_MINUTE: Final[float] = 60.0
 
@@ -382,14 +390,17 @@ def _converged_state(blade: BladeGeometry, stations: _Stations, omega: np.ndarra
     speed: np.ndarray = np.hypot(airspeed_ms[:, None], cond.omega * stations.radius_m)
     stored: _Stored = _Stored(*(np.zeros(speed.shape) for _ in range(4)))
     done: np.ndarray = np.zeros(count, dtype=bool)
-    for _ in range(MAX_SPEED_PASSES):
+    for pass_index in range(MAX_SPEED_PASSES):
         rows: np.ndarray = np.flatnonzero(~(done | failures.mask))
         if len(rows) == 0:
             break
+        late: bool = pass_index >= RELAX_AFTER_PASSES
         result: _PassResult = _speed_pass(blade, _subset(stations, rows), cond.rows(rows), speed[rows], rows,
-                                          coefficients, failures)
+                                          coefficients, failures,
+                                          SPEED_REL_TOLERANCE_LATE if late else SPEED_REL_TOLERANCE)
         stored = _stored_with(stored, rows[result.converged], result)
-        speed = _rows_replaced(speed, rows, result.next_speed)
+        weight: float = SPEED_RELAXATION if late else 1.0
+        speed = _rows_replaced(speed, rows, speed[rows] + weight * (result.next_speed - speed[rows]))
         done = done | _scatter(count, rows, result.converged)
     failures.flag(~done, lambda _p: f"BEMT relative speed did not converge in {MAX_SPEED_PASSES} Reynolds/Mach passes")
     return _Section(cn=stored.cn, ct=stored.ct, loss=stored.loss), stored.speed
@@ -430,7 +441,7 @@ def _stored_with(stored: _Stored, points: np.ndarray, result: _PassResult) -> _S
 
 
 def _speed_pass(blade: BladeGeometry, stations: _Stations, cond: _Conditions, speed: np.ndarray, rows: np.ndarray,
-                coefficients: SectionCoefficients, failures: _Failures) -> _PassResult:
+                coefficients: SectionCoefficients, failures: _Failures, tolerance: float) -> _PassResult:
     """One Reynolds/Mach pass for the points `rows` starting at their `speed`; flags failures in `failures`."""
     count: int = len(failures.reasons)
     reynolds: np.ndarray = cond.rho * speed * stations.chord_m / cond.mu
@@ -447,7 +458,7 @@ def _speed_pass(blade: BladeGeometry, stations: _Stations, cond: _Conditions, sp
     new_speed: np.ndarray = _relative_speed(stations, cond.omega, phi, section)
     valid: np.ndarray = np.all(np.isfinite(new_speed) & (new_speed > 0.0), axis=1)
     failures.flag(_scatter(count, rows, ~valid), lambda p: _speed_reason(stations, new_speed[_at(rows, p)]))
-    close: np.ndarray = np.all(np.abs(new_speed / speed - 1.0) < SPEED_REL_TOLERANCE, axis=1)
+    close: np.ndarray = np.all(np.abs(new_speed / speed - 1.0) < tolerance, axis=1)
     _flag_low_reynolds(failures, stations, reynolds, rows, ~failures.mask[rows] & close, count)
     converged: np.ndarray = ~failures.mask[rows] & close
     return _PassResult(converged=converged, next_speed=np.where(valid[:, None], new_speed, speed),

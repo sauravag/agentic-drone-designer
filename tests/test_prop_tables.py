@@ -76,17 +76,16 @@ def _cache_files(directory: Path) -> list[Path]:
     return sorted(directory.glob("*.json"))
 
 
-def _operating_point(table: PropellerTable, tip_mach: float, reynolds75: float, j: float,
+def _operating_point(table: PropellerTable, tip_mach: float, rho_eq: float, j: float,
                      sound: float = SEA_LEVEL[2]) -> tuple[float, float, float, float]:
-    """(rpm, airspeed, rho, mu) of a point at this tip Mach, Re75 and J (density follows from Re75)."""
+    """(rpm, airspeed, rho, mu) of a point at this tip Mach, equivalent density and J (at the table viscosity)."""
     d: float = table.diameter_m
     rpm: float = tip_mach * sound / (math.pi * d) * SECONDS_PER_MINUTE
-    rho: float = reynolds75 / prop_tables.reynolds75_at(d, table.pitch_m, rpm, 1.0, SEA_LEVEL[1]) * 1.0
-    return rpm, j * rpm / SECONDS_PER_MINUTE * d, rho, SEA_LEVEL[1]
+    return rpm, j * rpm / SECONDS_PER_MINUTE * d, rho_eq, prop_tables.TABLE_MU
 
 
 def _middle(table: PropellerTable) -> tuple[float, float]:
-    return table.tip_mach[len(table.tip_mach) // 2], table.reynolds75[len(table.reynolds75) // 2]
+    return table.tip_mach[len(table.tip_mach) // 2], table.rho_eq[len(table.rho_eq) // 2]
 
 
 def _sample_envelope(table: PropellerTable, atmosphere: Atmosphere) -> Iterator[tuple[float, float, Any]]:
@@ -98,9 +97,8 @@ def _sample_envelope(table: PropellerTable, atmosphere: Atmosphere) -> Iterator[
     found: int = 0
     for _ in range(MAX_SAMPLE_TRIES):
         rpm: float = rng.uniform(table.tip_mach[0], MAX_SAMPLE_TIP_MACH) * sound / (math.pi * d) * SECONDS_PER_MINUTE
-        re75: float = prop_tables.reynolds75_at(d, p, rpm, rho, mu)
-        if not table.reynolds75[0] <= re75 <= table.reynolds75[-1]:
-            continue
+        if prop_tables.reynolds75_at(d, p, rpm, rho, mu) < prop_tables.REPRESENTATIVE_RE_MIN:
+            continue  # below the BEMT floor: the reference point itself is not credible
         airspeed: float = rng.uniform(0.0, table.j[-1]) * rpm / SECONDS_PER_MINUTE * d
         try:
             point = bemt_point(blade, rpm, airspeed, rho, mu, sound)
@@ -127,26 +125,26 @@ def test_table_matches_bemt_within_two_percent(which: str, atmosphere: Atmospher
 
 
 def test_coefficients_outside_each_axis_raise(small_table: PropellerTable) -> None:
-    mach, re75 = _middle(small_table)
+    mach, rho_eq = _middle(small_table)
     j: float = small_table.j[len(small_table.j) // 2]
     with pytest.raises(ValueError, match="J="):
-        small_table.coefficients(small_table.j[-1] * 1.01, mach, re75)
+        small_table.coefficients(small_table.j[-1] * 1.01, mach, rho_eq)
     with pytest.raises(ValueError, match="J="):
-        small_table.coefficients(-0.01, mach, re75)
+        small_table.coefficients(-0.01, mach, rho_eq)
     with pytest.raises(ValueError, match="tip Mach"):
-        small_table.coefficients(j, small_table.tip_mach[-1] * 1.01, re75)
+        small_table.coefficients(j, small_table.tip_mach[-1] * 1.01, rho_eq)
     with pytest.raises(ValueError, match="tip Mach"):
-        small_table.coefficients(j, small_table.tip_mach[0] * 0.9, re75)
-    with pytest.raises(ValueError, match="Re75"):
-        small_table.coefficients(j, mach, small_table.reynolds75[0] * 0.9)
-    with pytest.raises(ValueError, match="Re75"):
-        small_table.coefficients(j, mach, small_table.reynolds75[-1] * 1.1)
+        small_table.coefficients(j, small_table.tip_mach[0] * 0.9, rho_eq)
+    with pytest.raises(ValueError, match="density"):
+        small_table.coefficients(j, mach, small_table.rho_eq[0] * 0.9)
+    with pytest.raises(ValueError, match="density"):
+        small_table.coefficients(j, mach, small_table.rho_eq[-1] * 1.1)
 
 
 def test_thrust_and_torque_propagate_range_errors(small_table: PropellerTable) -> None:
     rho, mu, sound = SEA_LEVEL
-    with pytest.raises(ValueError, match="Re75"):
-        small_table.thrust_n(9000.0, 0.0, 1e-3, mu, sound)  # near-vacuum density: Re75 far below the floor
+    with pytest.raises(ValueError, match="density"):
+        small_table.thrust_n(9000.0, 0.0, 1e-3, mu, sound)  # near-vacuum density: far below the density axis
     with pytest.raises(ValueError, match="tip Mach"):
         small_table.torque_nm(60000.0, 0.0, rho, mu, sound)  # supersonic tip
     with pytest.raises(ValueError, match="finite"):
@@ -160,10 +158,10 @@ def test_altitude_point_with_same_tip_mach_is_inside_the_table(small_table: Prop
 
 
 def test_thrust_never_negative_and_zero_at_top_of_j_axis(small_table: PropellerTable) -> None:
-    mach, re75 = _middle(small_table)
-    rpm, airspeed, rho, mu = _operating_point(small_table, mach, re75, small_table.j[-1])
+    mach, rho_eq = _middle(small_table)
+    rpm, airspeed, rho, mu = _operating_point(small_table, mach, rho_eq, small_table.j[-1])
     assert small_table.thrust_n(rpm, airspeed, rho, mu, SEA_LEVEL[2]) == 0.0
-    ct, _ = small_table.coefficients(small_table.j[-1], mach, re75)
+    ct, _ = small_table.coefficients(small_table.j[-1], mach, rho_eq)
     assert ct <= 0.0
 
 
@@ -175,18 +173,33 @@ def test_j_axis_reaches_zero_thrust_in_every_row(which: str, small_table: Propel
     assert np.all(ct[..., -1] <= 0.0)
     assert np.all(ct[..., 0] > 0.0)  # static thrust positive everywhere
     assert np.all(np.isfinite(np.asarray(table.cp)))
-    assert table.reynolds75[0] > 1e4 and table.tip_mach[-1] == pytest.approx(0.80)
+    assert table.tip_mach[-1] == pytest.approx(0.80)
+    lowest_re: float = prop_tables.reynolds75_at(table.diameter_m, table.pitch_m, table.tip_mach[0] * SEA_LEVEL[2]
+                                                 / (math.pi * table.diameter_m) * SECONDS_PER_MINUTE,
+                                                 table.rho_eq[0], prop_tables.TABLE_MU)
+    assert lowest_re > prop_tables.REPRESENTATIVE_RE_MIN  # the thinnest, slowest cell is above the BEMT floor
 
 
 COLD_DAY_OFFSET_C: Final[float] = -45.0  # sea level at -30 C: rho 1.45 kg/m^3
 
 
-def test_reynolds_axis_covers_cold_dense_air_at_the_mach_limit(small_table: PropellerTable) -> None:
+def test_density_axis_covers_cold_dense_air_at_the_mach_limit(small_table: PropellerTable) -> None:
     rho, mu = air_properties(0.0, COLD_DAY_OFFSET_C)
-    rpm_top = prop_tables.TABLE_MAX_TIP_MACH * SEA_LEVEL[2] / (math.pi * SMALL_PROP[0]) * SECONDS_PER_MINUTE
-    re_cold = prop_tables.reynolds75_at(*SMALL_PROP, rpm_top, rho, mu)
-    assert small_table.reynolds75[-1] >= re_cold * (1.0 - 1e-9)
-    small_table.coefficients(0.1, prop_tables.TABLE_MAX_TIP_MACH * (1.0 - 1e-9), re_cold * (1.0 - 1e-6))
+    rho_cold = prop_tables.equivalent_density(rho, mu)
+    assert small_table.rho_eq[-1] >= rho_cold * (1.0 - 1e-9)
+    small_table.coefficients(0.1, prop_tables.TABLE_MAX_TIP_MACH * (1.0 - 1e-9), rho_cold)
+
+
+@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT], ids=["sea_level", "4000m_isa_plus_20"])
+def test_density_axis_covers_hot_high_and_sea_level(atmosphere: Atmosphere, small_table: PropellerTable) -> None:
+    rho, mu, _ = atmosphere
+    assert small_table.rho_eq[0] <= prop_tables.equivalent_density(rho, mu) <= small_table.rho_eq[-1]
+
+
+def test_every_cell_is_a_physical_density(small_table: PropellerTable, big_table: PropellerTable) -> None:
+    """The old (Mach x Re75) grid implied densities of 0.1-45 kg/m^3 at its corners, where BEMT failed."""
+    for table in (small_table, big_table):
+        assert prop_tables.TABLE_THIN_RHO_EQ == table.rho_eq[0] and table.rho_eq[-1] < 2.0
 
 
 def test_pitch_speed(small_table: PropellerTable) -> None:
@@ -213,12 +226,12 @@ def test_failure_after_zero_thrust_holds_last_point_and_limits_torque(
     assert np.allclose(np.asarray(table.j_limit), j[-2])
     assert np.all(np.asarray(table.ct)[..., -1] <= 0.0) and np.all(np.isfinite(np.asarray(table.cp)))
     assert np.array_equal(np.asarray(table.cp)[..., -1], np.asarray(table.cp)[..., -2])
-    mach, re75 = _middle(table)
-    rpm, airspeed, rho, mu = _operating_point(table, mach, re75, j[-1])
+    mach, rho_eq = _middle(table)
+    rpm, airspeed, rho, mu = _operating_point(table, mach, rho_eq, j[-1])
     assert table.thrust_n(rpm, airspeed, rho, mu, SEA_LEVEL[2]) == 0.0
     with pytest.raises(ValueError, match="beyond the last computed J"):
         table.torque_nm(rpm, airspeed, rho, mu, SEA_LEVEL[2])
-    inside = _operating_point(table, mach, re75, j[-2] * 0.99)
+    inside = _operating_point(table, mach, rho_eq, j[-2] * 0.99)
     assert math.isfinite(table.torque_nm(*inside, SEA_LEVEL[2]))
 
 
@@ -303,7 +316,7 @@ def _stale_grid(payload: dict[str, Any]) -> None:
 
 
 def _decreasing_re(payload: dict[str, Any]) -> None:
-    payload["reynolds75"] = payload["reynolds75"][::-1]
+    payload["rho_eq"] = payload["rho_eq"][::-1]
 
 
 def _j_not_from_zero(payload: dict[str, Any]) -> None:
@@ -396,9 +409,10 @@ def test_extreme_props_build_and_match(size: tuple[float, float]) -> None:
 def test_mach_axis_always_ends_at_the_limit_with_two_nodes(monkeypatch: pytest.MonkeyPatch) -> None:
     mach, _ = prop_tables._axes(*SMALL_PROP)
     assert mach[-1] == prop_tables.TABLE_MAX_TIP_MACH and mach[0] < mach[1]
-    # a prop whose Reynolds floor already sits at tip Mach 0.7: single fixed nodes would leave one node
-    monkeypatch.setattr(prop_tables, "FIXED_MACH_NODES", (0.15, 0.30, 0.45, 0.60, 0.70))
-    monkeypatch.setattr(prop_tables, "_chord75_m", lambda d, p: 0.0038 * d)  # thin chord: floor at tip Mach ~0.66
+    # a prop whose Reynolds floor already sits near tip Mach 0.7 still gets two nodes ending at the limit
+    # thin chord: the Reynolds floor (set at the thinnest tabulated density) lands at tip Mach ~0.66
+    thin_chord: float = 0.0038 * 1.225 / prop_tables.TABLE_THIN_RHO_EQ
+    monkeypatch.setattr(prop_tables, "_chord75_m", lambda d, p: thin_chord * d)
     high, _ = prop_tables._axes(*SMALL_PROP)
     assert high[0] > 0.64 and len(high) >= 2 and high[-1] == prop_tables.TABLE_MAX_TIP_MACH and np.all(np.diff(high) > 0.0)
 
@@ -407,3 +421,32 @@ def test_axes_raise_when_the_reynolds_floor_reaches_the_tip_mach_limit(monkeypat
     monkeypatch.setattr(prop_tables, "_chord75_m", lambda d, p: 1e-9 * d)
     with pytest.raises(ValueError, match="no Mach range"):
         prop_tables._axes(*SMALL_PROP)
+
+
+def _catalogue_sample() -> list[tuple[float, float]]:
+    """Every distinct P/D ratio of the catalogue at its smallest and largest diameter (per application), plus the
+    five props the old (Mach x Re75) grid could not build."""
+    from src.tools.database.seed_data import catalog_rows
+
+    props = catalog_rows("propellers")
+    chosen: set[tuple[float, float]] = set()
+    for app in ("cruise", "vtol"):
+        rows = [p for p in props if p.application == app]
+        for ratio in {round(p.pitch_m / p.diameter_m, 3) for p in rows}:
+            same = [p for p in rows if round(p.pitch_m / p.diameter_m, 3) == ratio]
+            for p in (min(same, key=lambda r: r.diameter_m), max(same, key=lambda r: r.diameter_m)):
+                chosen.add((p.diameter_m, p.pitch_m))
+    inch: float = 0.0254
+    old_failures = [(8, 6.4), (15, 10), (20, 16), (32, 25.6), (36, 21.6)]
+    chosen |= {(p.diameter_m, p.pitch_m) for p in props
+               if any(abs(p.diameter_m - d * inch) < 1e-3 and abs(p.pitch_m - q * inch) < 1e-3 for d, q in old_failures)}
+    return sorted(chosen)
+
+
+CATALOGUE_SAMPLE: Final[list[tuple[float, float]]] = _catalogue_sample()
+
+
+@pytest.mark.parametrize("size", CATALOGUE_SAMPLE, ids=[f"{d:.3f}x{p:.3f}" for d, p in CATALOGUE_SAMPLE])
+def test_catalogue_propellers_build(size: tuple[float, float]) -> None:
+    table: PropellerTable = prop_tables._build_table(*size)
+    assert np.all(np.asarray(table.ct)[..., 0] > 0.0)
