@@ -196,3 +196,18 @@ def test_lift_rotor_hover_is_finite_with_figure_of_merit_below_one() -> None:
     figure_of_merit: float = p.thrust_n ** 1.5 / (p.shaft_power_w * math.sqrt(2.0 * RHO * disk_area))
     assert math.isfinite(p.thrust_n) and p.thrust_n > 0.0 and not p.is_windmilling
     assert 0.0 < figure_of_merit < 1.0
+
+
+def test_raises_when_relative_speed_does_not_converge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bemt, "SPEED_REL_TOLERANCE", 0.0)  # no pass can change W by less than zero
+    with pytest.raises(PropModelError, match="did not converge"):
+        bemt_point(generic_blade(0.254, 0.178), 6000, 0.0, RHO, MU, SPEED_OF_SOUND)
+
+
+def test_raises_on_non_finite_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    def nan_state(blade: BladeGeometry, stations: bemt._Stations, *args: float) -> tuple[bemt._Section, np.ndarray]:
+        nan: np.ndarray = np.full_like(stations.r_frac, math.nan)
+        return bemt._Section(cn=nan, ct=nan, loss=np.ones_like(nan)), np.ones_like(nan)
+    monkeypatch.setattr(bemt, "_converged_state", nan_state)
+    with pytest.raises(PropModelError, match="non-finite loads"):
+        bemt_point(generic_blade(0.254, 0.178), 6000, 0.0, RHO, MU, SPEED_OF_SOUND)
