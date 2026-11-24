@@ -160,9 +160,11 @@ def bom_rows(bom: SelectedBOM) -> list[dict[str, Any]]:
     """One row per part (quantity-weighted), then the total hardware mass."""
     parts: list[tuple[str, Any, int]] = [
         ("Cruise motor", bom.cruise_motor, 1), ("Cruise propeller", bom.cruise_propeller, 1),
+        ("Cruise ESC", bom.cruise_esc, 1),
         ("Battery", bom.battery, 1), ("Payload", bom.payload, 1),
         ("Generator", bom.ice_generator, 1),
         ("Lift motor", bom.vtol_motor, bom.vtol_motor_count), ("Lift propeller", bom.vtol_propeller, bom.vtol_motor_count),
+        ("Lift ESC", bom.vtol_esc, bom.vtol_motor_count),
     ]
     rows = [
         {"Part": label, "Item": part.name, "Qty": qty, "Unit mass (kg)": round(part.mass_kg, 3),

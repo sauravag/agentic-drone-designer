@@ -81,8 +81,10 @@ def test_phase_rows_cover_the_mission(run: pipeline.DesignRun) -> None:
 def test_bom_rows_list_parts_and_total(run: pipeline.DesignRun) -> None:
     rows = presenters.bom_rows(run.bom)
     parts = [r["Part"] for r in rows]
-    assert {"Cruise motor", "Battery", "Payload"} <= set(parts)
-    assert rows[-1]["Part"] == "Total" and rows[-1]["Mass (kg)"] == pytest.approx(run.bom.total_hardware_mass_kg)
+    assert {"Cruise motor", "Cruise ESC", "Battery", "Payload"} <= set(parts)
+    # the total is shown to the gram, like every row
+    assert rows[-1]["Part"] == "Total" and rows[-1]["Mass (kg)"] == pytest.approx(run.bom.total_hardware_mass_kg,
+                                                                                  abs=5e-4)
 
 
 def test_fcs_rows_compare_against_srs_limits() -> None:
