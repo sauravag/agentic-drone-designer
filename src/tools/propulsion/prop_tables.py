@@ -28,11 +28,13 @@ import json
 import logging
 import math
 import os
+import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Optional, Sequence
 
 import numpy as np
 
@@ -437,3 +439,52 @@ def propeller_table(diameter_m: float, pitch_m: float) -> PropellerTable:
         table = _build_table(float(diameter_m), float(pitch_m))
         _save(path, table)
     return table
+
+
+# ---------------------------------------------------------------- cache warming (Docker / CI / first use)
+
+WARM_FLAG: Final[str] = "--warm"
+
+
+@dataclass(frozen=True)
+class WarmSummary:
+    distinct: int  # distinct (diameter, pitch) pairs in the catalogue
+    failed: tuple[str, ...]  # "<D>x<P> m: <reason>" per table that could not be built
+    seconds: float
+
+
+def _catalogue_propellers() -> Sequence[Any]:
+    from src.tools.database.seed_data import catalog_rows  # lazy: the catalogue is not a table-model dependency
+
+    return catalog_rows("propellers")
+
+
+def warm_cache() -> WarmSummary:
+    """Build (or load) the table of every distinct catalogue propeller, so a first sizing run starts warm."""
+    start: float = time.perf_counter()
+    sizes: list[tuple[float, float]] = sorted({(p.diameter_m, p.pitch_m) for p in _catalogue_propellers()})
+    failed: list[str] = []
+    for diameter_m, pitch_m in sizes:
+        try:
+            propeller_table(diameter_m, pitch_m)
+        except (PropModelError, ValueError) as exc:
+            failed.append(f"{diameter_m:g}x{pitch_m:g} m: {exc}")
+    return WarmSummary(len(sizes), tuple(failed), time.perf_counter() - start)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    """`python -m src.tools.propulsion.prop_tables --warm`: warm the table cache; exit 1 if any table failed."""
+    args: list[str] = list(sys.argv[1:] if argv is None else argv)
+    if args != [WARM_FLAG]:
+        raise SystemExit(f"usage: python -m src.tools.propulsion.prop_tables {WARM_FLAG}")
+    summary: WarmSummary = warm_cache()
+    print(f"[Tool] prop_tables {WARM_FLAG}: {summary.distinct} distinct propeller tables in {cache_dir()} "
+          f"({summary.seconds:.1f} s, {len(summary.failed)} failed)")
+    for line in summary.failed:
+        print(f"[Tool] prop_tables failed: {line}")
+    if summary.failed:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

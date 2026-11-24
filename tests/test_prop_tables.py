@@ -464,3 +464,37 @@ CATALOGUE_SAMPLE: Final[list[tuple[float, float]]] = _catalogue_sample()
 def test_catalogue_propellers_build(size: tuple[float, float]) -> None:
     table: PropellerTable = prop_tables._build_table(*size)
     assert np.all(np.asarray(table.ct)[..., 0] > 0.0)
+
+
+def test_warm_cache_builds_each_distinct_catalogue_propeller_once(
+        counted_build: list[tuple[float, float]], monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    from types import SimpleNamespace
+    props = [SimpleNamespace(diameter_m=0.254, pitch_m=0.127), SimpleNamespace(diameter_m=0.254, pitch_m=0.127),
+             SimpleNamespace(diameter_m=0.3048, pitch_m=0.1524)]
+    monkeypatch.setattr(prop_tables, "_catalogue_propellers", lambda: props)
+
+    summary = prop_tables.warm_cache()
+    prop_tables.main(["--warm"])
+
+    assert sorted(set(counted_build)) == [(0.254, 0.127), (0.3048, 0.1524)]
+    assert len(counted_build) == 2  # the second pass hits the cache
+    assert summary.distinct == 2 and summary.failed == ()
+    assert capsys.readouterr().out.startswith("[Tool] prop_tables --warm: 2 distinct propeller tables")
+
+
+def test_warm_cache_reports_a_failed_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    def broken(diameter_m: float, pitch_m: float) -> PropellerTable:
+        raise PropModelError("no converge")
+
+    monkeypatch.setattr(prop_tables, "_build_table", broken)
+    monkeypatch.setattr(prop_tables, "_catalogue_propellers",
+                        lambda: [SimpleNamespace(diameter_m=0.1, pitch_m=0.05)])
+
+    summary = prop_tables.warm_cache()
+
+    assert summary.failed == ("0.1x0.05 m: no converge",)
+    with pytest.raises(SystemExit):
+        prop_tables.main(["--warm"])
