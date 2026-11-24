@@ -127,7 +127,7 @@ def test_escs_cover_every_motor_current_and_voltage() -> None:
 def test_esc_ratings_are_consistent() -> None:
     for e in catalog_rows("escs"):
         assert e.burst_current_a == pytest.approx(1.5 * e.continuous_current_a)
-        assert 0.9 <= e.efficiency <= 1.0
+        assert 0.95 <= e.efficiency <= 0.97
 
 
 def test_catalog_rows_match_seeded_database(tmp_path: Path) -> None:
@@ -164,3 +164,35 @@ def test_part_by_name_returns_row(tmp_path: Path) -> None:
     db = seed_database(tmp_path / "c.db")
     row: BaseModel = part_by_name(db, "cruise_motors", "Outrunner 2814-900KV")
     assert row.kv == 900.0
+
+
+def test_every_motor_has_an_esc_in_its_own_lowest_adequate_voltage_class() -> None:
+    escs: list[Esc] = catalog_rows("escs")
+    classes = sorted({e.max_voltage_v for e in escs})
+    for m in _motors():
+        own = min(v for v in classes if v >= m.voltage_v - 1e-6)
+        assert any(
+            e.max_voltage_v == own and e.continuous_current_a >= ESC_CURRENT_MARGIN * m.max_current_a for e in escs
+        ), (m.name, own)
+
+
+def test_base_matcher_picks_are_unchanged(tmp_path: Path) -> None:
+    from src.tools.database.matcher import match_cruise_motor, match_propeller, match_vtol_motor
+
+    db = seed_database(tmp_path / "c.db")
+    assert match_cruise_motor(db, 100).name == "Outrunner 2212-1400KV"
+    assert match_cruise_motor(db, 10000).name == "Axial-flux AX-25"
+    assert match_vtol_motor(db, 20).name == "Lift 4010-370KV"
+    assert match_propeller(db, 450, "cruise").name == "Carbon cruise prop 10x7in"
+    assert match_propeller(db, 1000, "cruise").name == "Carbon cruise prop 13x8in"
+    assert match_propeller(db, 200, "vtol").name == "Carbon vtol prop 9x4.5in"
+    assert match_propeller(db, 600, "vtol").name == "Carbon vtol prop 16x5.4in"
+
+
+def test_base_propeller_names_keep_legacy_format() -> None:
+    from src.tools.database.seed_data import CRUISE_PROPS_IN, VTOL_PROPS_IN
+
+    names = {p.name for p in catalog_rows("propellers")}
+    for app, table in (("cruise", CRUISE_PROPS_IN), ("vtol", VTOL_PROPS_IN)):
+        for dia, pitch, *_ in table:
+            assert f"Carbon {app} prop {dia}x{pitch}in" in names
