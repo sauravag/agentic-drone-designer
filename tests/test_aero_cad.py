@@ -27,7 +27,7 @@ from src.tools.fabrication.kit import (BOOM_MOTOR_WIRING_NOTE, FOLDING_PROP_NOTE
 from src.tools.fabrication.kit_mass import GEAR_NAME, GLUE_NAME, kit_mass_kg, residual_gear_item  # noqa: E402
 from src.tools.fabrication.kit_pod import STRUCTURE_CLEARANCE_M, kit_fuselage_diameter_m  # noqa: E402
 from src.tools.sizing.layouts import TAILED_BAND  # noqa: E402
-from src.tools.sizing.mass_model import sizing_output_gear  # noqa: E402
+from tests.sizing_helpers import sizing_output_gear  # noqa: E402
 from src.tools.sizing.topology import surface_laminar_fraction  # noqa: E402
 from tests.cad_helpers import _fitted_layout, _synthetic_aero, _synthetic_oml, part_solid, tube_solid  # noqa: E402
 from tests.reference_designs import CASES  # noqa: E402

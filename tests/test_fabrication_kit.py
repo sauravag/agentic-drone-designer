@@ -33,7 +33,7 @@ from src.tools.fabrication.tubes import SparPlan, SparSegment
 from src.tools.fabrication.wing_parts import PIN_CHORD_FRACTION, panel_rib_stations, spar_depth_at, spar_member_at
 from src.tools.fabrication.wing_stiffness import dbox_material_m2, dbox_web_x_m
 from src.tools.gear import GEAR_FRACTION, GearGeometry
-from src.tools.sizing.mass_model import sizing_output_gear
+from tests.sizing_helpers import sizing_output_gear
 from tests.cad_helpers import _fitted_layout, hole_diameters, part_solid, tube_solid
 from tests.test_fabrication_fuselage import _assert_no_intersections, _real_components, _test_battery
 

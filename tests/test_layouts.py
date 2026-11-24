@@ -208,7 +208,7 @@ def test_gear_is_one_description(tmp_path: Path) -> None:
     from src.tools.flight_control.flight_model import build_flight_model
     from src.tools.flight_control.jsbsim_exporter import export_jsbsim
     from src.tools.gear import GearInputs, PropellerDisc, gear_mass_kg, landing_gear
-    from src.tools.sizing.mass_model import sizing_output_gear
+    from tests.sizing_helpers import sizing_output_gear
     from tests.test_flight_control import load_design
 
     inputs = load_design("g1")

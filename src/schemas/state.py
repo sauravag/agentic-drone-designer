@@ -123,6 +123,16 @@ class SizingOutput(_Frozen):
         return self
 
     @model_validator(mode="after")
+    def _gear_matches_launch(self) -> "SizingOutput":
+        """gear_kind is stored so saved records load, but it follows launch_method (the gear rule in
+        src/tools/gear.py): a hand launch has no gear, a runway or vertical launch a tricycle."""
+        expected: str = "none" if self.launch_method == "hand" else "tricycle"
+        if self.gear_kind != expected:
+            raise ValueError(f"gear_kind {self.gear_kind!r} does not match launch_method {self.launch_method!r} "
+                             f"(expected {expected!r})")
+        return self
+
+    @model_validator(mode="after")
     def _tail_areas_match_surfaces(self) -> "SizingOutput":
         if not self.tail_surfaces:
             return self

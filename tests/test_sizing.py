@@ -448,6 +448,16 @@ def test_sizing_records_gear_kind() -> None:
     assert runway.gear_kind == "tricycle" and runway.empty_mass_breakdown["landing_gear"] > 0.0
 
 
+@pytest.mark.parametrize(("launch", "wrong_gear"), [("hand", "tricycle"), ("runway", "none"), ("vertical", "none")])
+def test_gear_kind_must_match_the_launch_method(launch: str, wrong_gear: str) -> None:
+    """gear_kind is kept so saved records load, but it cannot drift from launch_method: hand -> none, else tricycle."""
+    record = size_aircraft(G1_ELECTRIC_FW).model_dump()
+    with pytest.raises(ValueError, match="gear_kind"):
+        SizingOutput.model_validate({**record, "launch_method": launch, "gear_kind": wrong_gear})
+    legacy = {k: v for k, v in record.items() if k not in ("launch_method", "gear_kind")}
+    assert SizingOutput.model_validate(legacy).gear_kind == "tricycle"  # pre-hand-launch record: runway, gear
+
+
 # ------------------------------------------------- explicit booms and stopped-rotor drag (phase-2 re-baseline) ---
 
 TUBE_WALL_KG_M2: float = 1.6  # 1 mm carbon wall at 1600 kg/m^3, the spec value the model must use
