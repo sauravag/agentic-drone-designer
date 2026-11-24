@@ -144,3 +144,14 @@ def test_explorers_never_touch_avionics(db: Path, closure_options: list) -> None
     for option in [*closure_options, *improved]:
         assert option.change.requirements.flight_controller is None
         assert option.change.requirements.companion_computer is None
+
+
+def test_hand_launched_design_is_offered_no_runway_lever() -> None:
+    """The explorer reads the launch through resolved_launch_method: a thrown fixed-wing has no runway to allow."""
+    from src.agent.explorer import _discrete_candidates
+
+    hand = OperationalRequirements.model_validate({**G1_ELECTRIC_FW.model_dump(), "runway_available": False,
+                                                   "launch_method": "hand"})
+    assert [lever for lever, _ in _discrete_candidates(hand)] == ["propulsion"]
+    no_runway_vtol = G1_ELECTRIC_FW.model_copy(update={"runway_available": False, "airframe_topology": "auto"})
+    assert "runway" in [lever for lever, _ in _discrete_candidates(no_runway_vtol)]
