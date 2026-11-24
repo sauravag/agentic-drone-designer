@@ -411,3 +411,14 @@ def test_only_short_points_count_as_transient() -> None:
     assert is_transient(_hover("Hover_Peak", 10.0, 0.0))
     assert is_transient(_hover("Hover_Peak", 10.0, ESC_BURST_DURATION_S))
     assert not is_transient(_hover("Hover", 10.0, 120.0))
+
+
+def test_a_light_quadplane_still_gets_its_disk_loading_rotor_despite_a_high_rating() -> None:
+    # G2 8 h hybrid regression: ~9.3 kg, 22.8 N hover / 33 N peak per rotor, rotors at least 0.471 m. The only lift
+    # diameters allowed (22 in, rated 1900 W) are rated above 6x the ideal hover power; the disk-loading rule, not
+    # the rating, sets their size, so they must not be pruned as oversized.
+    hover = (_hover("Hover", 22.8, 120.0), _hover("Hover_Peak", 33.1, 0.0))
+    context = _context(points=G1_POINTS + hover, lift_rotor_count=4, min_lift_rotor_diameter_m=0.471)
+    match = match_propulsion(context)
+    rotor: Propeller = _row("propellers", match.lift_rotor)  # type: ignore[assignment]
+    assert rotor.diameter_m >= 0.471

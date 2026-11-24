@@ -171,13 +171,14 @@ def _matchable(motor: Motor) -> bool:
 
 
 def _prop_drives(prop: Propeller, motors: tuple[Motor, ...], points: tuple[FlightPoint, ...],
-                 installation: float) -> tuple[tuple[Drive, ...], tuple[Rejection, ...]]:
+                 installation: float, is_lift: bool) -> tuple[tuple[Drive, ...], tuple[Rejection, ...]]:
     """Every motor winding on one propeller: drives, and one rejection per failed candidate. Pruned by power
-    BEFORE the propeller's table is built."""
+    BEFORE the propeller's table is built. Lift rotors are never pruned as oversized: the disk-loading rule (and
+    LIFT_ROTOR_MAX_OVERSIZE) already bounds their size, and a lightly loaded large rotor is what it asks for."""
     ideal_w, hardest = hardest_ideal_w(prop, points, installation)
     if prop.max_power_w < ideal_w:
         return (), (Rejection("power (propeller rating)", hardest),)
-    if prop.max_power_w > PROP_OVERSIZE_FACTOR * ideal_w:
+    if not is_lift and prop.max_power_w > PROP_OVERSIZE_FACTOR * ideal_w:
         return (), (Rejection(RULE_OVERSIZE, ""),)  # skipped, not a limit (reported only if nothing else is left)
     sized = [m for m in motors if m.max_power_w <= MOTOR_OVERSIZE_FACTOR * ideal_w]
     weak = tuple(Rejection("power (motor rating)", hardest) for m in sized if m.max_power_w < ideal_w)
@@ -234,7 +235,7 @@ def _role(context: MatchContext, is_lift: bool, buses: tuple[Bus, ...]) -> _Role
     best: dict[BusKey, Option] = {}
     rejections: list[Rejection] = []
     for prop in props:
-        drives, rejected = _prop_drives(prop, motors, points, installation)
+        drives, rejected = _prop_drives(prop, motors, points, installation, is_lift)
         rejections.extend(rejected)
         for drive in drives:
             options, why = _drive_options(drive, buses, escs, count, cap_w, share_w)
