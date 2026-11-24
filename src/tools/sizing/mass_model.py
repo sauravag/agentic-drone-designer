@@ -95,6 +95,7 @@ class MatchedHardware:
     vtol_kg: float
     cruise_propeller_diameter_m: float
     lift_rotor_diameter_m: Optional[float] = None
+    cell_chemistry: str = "li_ion"  # the matched cell's: the energy store is sized with it
 
 
 @dataclass(frozen=True)
@@ -107,9 +108,9 @@ class PropulsionLoads:
 
 
 def lift_unit_mass_kg(motor_kg: float, rotor_kg: float, esc_kg: float) -> float:
-    """One installed lift rotor: motor + rotor + ESC, never less than VTOL_INSTALL_FACTOR x the motor (the mount
-    allowance; it no longer has to cover the ESC, which is now a real part)."""
-    return max(VTOL_INSTALL_FACTOR * motor_kg, motor_kg + rotor_kg + esc_kg)
+    """One installed lift rotor: motor + rotor with the mount allowance (never less than VTOL_INSTALL_FACTOR x the
+    motor), plus the ESC, which is a real part the allowance no longer covers."""
+    return max(VTOL_INSTALL_FACTOR * motor_kg, motor_kg + rotor_kg) + esc_kg
 
 
 def required_wing_area_m2(mtow_kg: float, rho: float, speed_ms: float, cl_limit: float) -> float:

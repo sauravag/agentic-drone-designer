@@ -13,11 +13,8 @@ from src.tools.database.matcher import (
     check_mtow_convergence,
     load_catalog,
     match_battery,
-    match_cruise_motor,
     match_ice_generator,
     match_payload,
-    match_propeller,
-    match_vtol_motor,
     select_bom,
 )
 from src.tools.database.packs import bus_window_v
@@ -121,20 +118,6 @@ def test_every_motor_has_a_compatible_propeller(db_path: Path, motor_table: str,
 # ------------------------------------------------------------- matching ---
 
 
-@pytest.mark.parametrize("required_w", [300.0, 2_500.0, 25_000.0])  # Group 1, 2, 3
-def test_cruise_motor_is_lightest_meeting_margin(db_path: Path, required_w: float) -> None:
-    motor = match_cruise_motor(db_path, required_w)
-    assert motor.continuous_power_w >= required_w * SAFETY_MARGIN
-    qualifying = [m for m in load_catalog(db_path, "cruise_motors") if m.continuous_power_w >= required_w * SAFETY_MARGIN]
-    assert motor.mass_kg == min(m.mass_kg for m in qualifying)
-
-
-@pytest.mark.parametrize("required_n", [15.0, 150.0, 1_500.0])
-def test_vtol_motor_meets_thrust_margin(db_path: Path, required_n: float) -> None:
-    motor = match_vtol_motor(db_path, required_n)
-    assert motor.max_thrust_n >= required_n * SAFETY_MARGIN
-
-
 @pytest.mark.parametrize("required_w", [800.0, 5_000.0, 40_000.0])
 def test_ice_generator_meets_power_margin(db_path: Path, required_w: float) -> None:
     gen = match_ice_generator(db_path, required_w)
@@ -155,12 +138,6 @@ def test_battery_is_built_from_the_matched_cell_and_series(db_path: Path) -> Non
 def test_battery_names_an_unknown_cell(db_path: Path) -> None:
     with pytest.raises(ComponentNotFoundError, match="cells"):
         match_battery(db_path, "no such cell", 4, 100.0 * 3600.0, 1_000.0)
-
-
-def test_propeller_absorbs_full_motor_power(db_path: Path) -> None:
-    prop = match_propeller(db_path, 4_000.0, "vtol")
-    assert prop.application == "vtol"
-    assert prop.max_power_w >= 4_000.0
 
 
 def test_payload_match_picks_closest_mass(db_path: Path) -> None:
@@ -187,14 +164,14 @@ def test_payload_match_unknown_sensor_raises(db_path: Path) -> None:
 
 
 def test_impossible_requirement_raises(db_path: Path) -> None:
-    with pytest.raises(ComponentNotFoundError, match="cruise_motors"):
-        match_cruise_motor(db_path, 10_000_000.0)
+    with pytest.raises(ComponentNotFoundError, match="ice_generators"):
+        match_ice_generator(db_path, 10_000_000.0)
 
 
 @pytest.mark.parametrize("bad", [0.0, -5.0, float("nan"), float("inf")])
 def test_non_physical_requirement_rejected(db_path: Path, bad: float) -> None:
     with pytest.raises(ValueError):
-        match_cruise_motor(db_path, bad)
+        match_ice_generator(db_path, bad)
 
 
 # ------------------------------------------------------------ BOM & MTOW ---

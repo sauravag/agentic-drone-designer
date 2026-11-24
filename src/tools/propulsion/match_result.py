@@ -111,4 +111,17 @@ def assemble_match(context: MatchContext, cruise: Option, lift: Optional[Option]
         lift_motor=lift.drive.motor.name if lift else None, lift_rotor=lift.drive.propeller.name if lift else None,
         lift_esc=lift.esc.name if lift else None, operating_points=ops, efficiencies=_efficiencies(options, ops),
         propulsion_mass_kg=hardware, notes=_notes(context, options, hotel_kg, pack, skipped),
+        **_part_records(cruise, lift), cell_chemistry=cell.chemistry,
     )
+
+
+def _part_records(cruise: Option, lift: Optional[Option]) -> dict[str, Optional[float]]:
+    """Each matched part's mass and the propeller/rotor diameters, stored on the match."""
+    return {
+        "cruise_motor_kg": cruise.drive.motor.mass_kg, "cruise_propeller_kg": cruise.drive.propeller.mass_kg,
+        "cruise_esc_kg": cruise.esc.mass_kg, "cruise_propeller_diameter_m": cruise.drive.propeller.diameter_m,
+        "lift_motor_kg": lift.drive.motor.mass_kg if lift else None,
+        "lift_rotor_kg": lift.drive.propeller.mass_kg if lift else None,
+        "lift_esc_kg": lift.esc.mass_kg if lift else None,
+        "lift_rotor_diameter_m": lift.drive.propeller.diameter_m if lift else None,
+    }

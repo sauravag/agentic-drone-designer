@@ -24,6 +24,7 @@ from src.units import G0
 from tests.reference_designs import G1_ELECTRIC_FW, G2_ELECTRIC_VTOL
 
 TRACTOR = layout_spec("pod_boom_tractor")
+CELL = "Li-ion 21700 energy 5.0Ah"
 PUSHER = layout_spec("single_boom_vtail_pusher")
 
 
@@ -60,7 +61,7 @@ def _match(tag: str, mass_kg: float, series: int = 4) -> PropulsionMatch:
     op = OperatingPoint(flight_point="Loiter", propulsor="cruise", rpm=5000.0, current_a=8.0, throttle=0.6,
                         prop_efficiency=0.7, motor_efficiency=0.85, tip_mach=0.3, electrical_power_w=120.0,
                         sagged=False)
-    return PropulsionMatch(cell_name="cell", series=series, cruise_motor=f"motor {tag}",
+    return PropulsionMatch(cell_name=CELL, series=series, cruise_motor=f"motor {tag}",
                            cruise_propeller=f"prop {tag}", cruise_esc="esc", operating_points=(op,),
                            efficiencies={name: 0.55 for name in FORWARD_PHASES}, propulsion_mass_kg=mass_kg)
 
@@ -225,13 +226,13 @@ def test_matched_hardware_reads_part_masses_and_diameters_from_the_catalogue() -
 
 
 def test_matched_hardware_names_an_unknown_part() -> None:
-    with pytest.raises(PropulsionMatchError, match="prop A"):
+    with pytest.raises(PropulsionMatchError, match="motor A"):
         loop.matched_hardware(_match("A", 1.0), 0)
 
 
 def test_lift_unit_mass_keeps_the_mount_allowance_as_a_floor() -> None:
-    assert lift_unit_mass_kg(1.0, 0.1, 0.05) == pytest.approx(1.3)  # mount allowance governs
-    assert lift_unit_mass_kg(1.0, 0.3, 0.1) == pytest.approx(1.4)  # real parts exceed it
+    assert lift_unit_mass_kg(1.0, 0.1, 0.05) == pytest.approx(1.35)  # mount allowance governs, plus the ESC
+    assert lift_unit_mass_kg(1.0, 0.4, 0.1) == pytest.approx(1.5)  # real parts exceed it, plus the ESC
 
 
 def test_matched_propeller_diameter_sets_the_sizing_gear() -> None:
@@ -380,3 +381,44 @@ def test_a_c_rate_bound_vtol_variant_no_longer_spirals_on_a_frozen_disk() -> Non
     rotor_area = 4 * math.pi * sizing.rotor_diameter_m**2 / 4
     lift_rotor = next(p for p in catalog_rows("propellers") if p.name == sizing.propulsion_match.lift_rotor)
     assert rotor_area == pytest.approx(4 * math.pi * lift_rotor.diameter_m**2 / 4, rel=1e-9)
+
+
+
+# ------------------------------------------------------------------ fix round 1 minors
+
+
+def test_matched_hardware_prefers_the_masses_stored_on_the_match() -> None:
+    stored = _match("A", 1.0).model_copy(update={
+        "cruise_motor_kg": 0.1, "cruise_propeller_kg": 0.02, "cruise_esc_kg": 0.03,
+        "cruise_propeller_diameter_m": 0.3, "cell_chemistry": "lipo"})
+    hardware = loop.matched_hardware(stored, 0)  # "motor A" is no catalogue part: no lookup happens
+    assert hardware.cruise_kg == pytest.approx(0.15)
+    assert hardware.cruise_propeller_diameter_m == 0.3 and hardware.cell_chemistry == "lipo"
+
+
+def test_a_final_rematch_with_another_cell_is_noted() -> None:
+    sizing = _FakeSizing()
+    a = _match("A", 0.3)
+    a_other_cell = a.model_copy(update={"cell_name": "Li-ion 18650 power 3.0Ah"})
+    fake, _ = _sequence_matcher([a, a_other_cell])
+
+    result = loop.size_with_matching(sizing.size_pass, lambda ev: ev, seed_efficiencies(TRACTOR, 0.95), fake)
+
+    assert result.match.cell_name == CELL
+    assert any("Li-ion 18650 power 3.0Ah" in note for note in result.match.notes)
+
+
+def test_electric_storage_uses_the_matched_cell_chemistry() -> None:
+    from src.tools.sizing.mission_profile import electric_storage
+
+    trace = simulate(_plan(), 4.0, _aero(), 15.0, 0.0, 0.0, _efficiencies())
+    li_ion = electric_storage(trace, 0.2, DEFAULT_ASSUMPTIONS)
+    lipo = electric_storage(trace, 0.2, DEFAULT_ASSUMPTIONS, "lipo")
+    assert lipo.battery_mass_kg == pytest.approx(li_ion.battery_mass_kg * 200.0 / 155.0)
+
+
+def test_the_sized_record_stores_part_masses_and_chemistry(g1: SizingOutput) -> None:
+    match = g1.propulsion_match
+    assert match is not None and match.cruise_motor_kg is not None and match.cell_chemistry is not None
+    cell = next(c for c in catalog_rows("cells") if c.name == match.cell_name)
+    assert match.cell_chemistry == cell.chemistry

@@ -51,6 +51,17 @@ class PropulsionMatch(BaseModel):
     efficiencies: Mapping[str, float]  # read-only view (a frozen model must not hand out a mutable dict)
     propulsion_mass_kg: float = Field(..., gt=0)
     notes: tuple[str, ...] = ()
+    # The parts' own masses and diameters and the cell chemistry, so readers need no catalogue lookup by name.
+    # None in records written before they were stored (readers then look the parts up by name).
+    cruise_motor_kg: Optional[float] = Field(None, gt=0)
+    cruise_propeller_kg: Optional[float] = Field(None, gt=0)
+    cruise_esc_kg: Optional[float] = Field(None, gt=0)
+    lift_motor_kg: Optional[float] = Field(None, gt=0)
+    lift_rotor_kg: Optional[float] = Field(None, gt=0)
+    lift_esc_kg: Optional[float] = Field(None, gt=0)
+    cruise_propeller_diameter_m: Optional[float] = Field(None, gt=0)
+    lift_rotor_diameter_m: Optional[float] = Field(None, gt=0)
+    cell_chemistry: Optional[Literal["li_ion", "lipo"]] = None
 
     @field_validator("efficiencies", mode="after")
     @classmethod

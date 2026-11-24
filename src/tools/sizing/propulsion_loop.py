@@ -126,17 +126,31 @@ def _part(table: str, name: str) -> Any:
     return found
 
 
+def _stored_or_catalogue(stored: Optional[float], table: str, name: str, field: str) -> float:
+    return stored if stored is not None else getattr(_part(table, name), field)
+
+
+def _cell_chemistry(match: PropulsionMatch) -> str:
+    return match.cell_chemistry or _part("cells", match.cell_name).chemistry
+
+
 def matched_hardware(match: PropulsionMatch, lift_rotor_count: int) -> MatchedHardware:
-    """Part masses and diameters of the matched set, from the catalogue the matching searched."""
-    cruise_prop = _part("propellers", match.cruise_propeller)
-    cruise_kg: float = (_part("cruise_motors", match.cruise_motor).mass_kg + cruise_prop.mass_kg
-                        + _part("escs", match.cruise_esc).mass_kg)
-    if match.lift_motor is None or match.lift_rotor is None or match.lift_esc is None or lift_rotor_count == 0:
-        return MatchedHardware(cruise_kg, 0.0, cruise_prop.diameter_m)
-    rotor = _part("propellers", match.lift_rotor)
-    unit: float = lift_unit_mass_kg(_part("vtol_motors", match.lift_motor).mass_kg, rotor.mass_kg,
-                                    _part("escs", match.lift_esc).mass_kg)
-    return MatchedHardware(cruise_kg, lift_rotor_count * unit, cruise_prop.diameter_m, rotor.diameter_m)
+    """Part masses, diameters and cell chemistry of the matched set: as stored on the match, or (records written
+    before they were stored) from the catalogue by name."""
+    m = match
+    cruise_kg: float = (_stored_or_catalogue(m.cruise_motor_kg, "cruise_motors", m.cruise_motor, "mass_kg")
+                        + _stored_or_catalogue(m.cruise_propeller_kg, "propellers", m.cruise_propeller, "mass_kg")
+                        + _stored_or_catalogue(m.cruise_esc_kg, "escs", m.cruise_esc, "mass_kg"))
+    cruise_d: float = _stored_or_catalogue(m.cruise_propeller_diameter_m, "propellers", m.cruise_propeller,
+                                           "diameter_m")
+    chemistry: str = _cell_chemistry(m)
+    if m.lift_motor is None or m.lift_rotor is None or m.lift_esc is None or lift_rotor_count == 0:
+        return MatchedHardware(cruise_kg, 0.0, cruise_d, cell_chemistry=chemistry)
+    unit: float = lift_unit_mass_kg(_stored_or_catalogue(m.lift_motor_kg, "vtol_motors", m.lift_motor, "mass_kg"),
+                                    _stored_or_catalogue(m.lift_rotor_kg, "propellers", m.lift_rotor, "mass_kg"),
+                                    _stored_or_catalogue(m.lift_esc_kg, "escs", m.lift_esc, "mass_kg"))
+    rotor_d: float = _stored_or_catalogue(m.lift_rotor_diameter_m, "propellers", m.lift_rotor, "diameter_m")
+    return MatchedHardware(cruise_kg, lift_rotor_count * unit, cruise_d, rotor_d, chemistry)
 
 
 # ------------------------------------------------------------------ the loop
@@ -145,6 +159,15 @@ def matched_hardware(match: PropulsionMatch, lift_rotor_count: int) -> MatchedHa
 def _describe(match: PropulsionMatch) -> str:
     lift: str = f", {match.lift_motor} on {match.lift_rotor}" if match.lift_motor else ""
     return f"{match.series}S {match.cruise_motor} on {match.cruise_propeller}{lift} ({match.propulsion_mass_kg:.3f} kg)"
+
+
+def _cell_note(recorded: PropulsionMatch, rematched: PropulsionMatch) -> PropulsionMatch:
+    """The recorded set, noting when the final re-match (same set) picked another cell for the pack."""
+    if rematched.cell_name == recorded.cell_name:
+        return recorded
+    note: str = (f"the final re-match picked cell {rematched.cell_name} for the same set; the design was sized "
+                 f"with {recorded.cell_name}")
+    return recorded.model_copy(update={"notes": (*recorded.notes, note)})
 
 
 def _cycle_choice(found: PropulsionMatch, history: tuple[PropulsionMatch, ...]) -> PropulsionMatch:
@@ -168,7 +191,7 @@ def size_with_matching(size_pass: Callable[[PropulsionEfficiencies, Optional[Pro
     for pass_no in range(1, MAX_PROPULSION_PASSES + 1):
         found: PropulsionMatch = match(context_for(evaluation))
         if history and found.set_key == history[-1].set_key:
-            return MatchedSizing(evaluation, history[-1], pass_no - 1)
+            return MatchedSizing(evaluation, _cell_note(history[-1], found), pass_no - 1)
         if any(m.set_key == found.set_key for m in history):
             chosen: PropulsionMatch = _cycle_choice(found, history)
             return MatchedSizing(size_pass(efficiencies_from(chosen, seed), chosen), chosen, pass_no)

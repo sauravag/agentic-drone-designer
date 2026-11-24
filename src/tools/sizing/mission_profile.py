@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Literal
 
-from src.schemas.assumptions import DesignAssumptions
+from src.schemas.assumptions import Chemistry, DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import PhaseResult
 from src.tools.sizing.aero_model import AirfoilPolar, air_properties
@@ -237,12 +237,14 @@ def simulate(
 # ------------------------------------------------------ energy storage ---
 
 
-def electric_storage(trace: MissionTrace, reserve: float, assumptions: DesignAssumptions) -> EnergyStorage:
-    """Li-Ion pack: capacity keeps >= `reserve` SoC at mission end; mass also satisfies the C-rate limit."""
-    specific_wh_kg: float = assumptions.specific_energy_wh_kg("li_ion")
+def electric_storage(trace: MissionTrace, reserve: float, assumptions: DesignAssumptions,
+                     chemistry: Chemistry = "li_ion") -> EnergyStorage:
+    """Pack of `chemistry` (Li-ion on pass 0, the matched cell's after): capacity keeps >= `reserve` SoC at mission
+    end; mass also satisfies the C-rate limit."""
+    specific_wh_kg: float = assumptions.specific_energy_wh_kg(chemistry)
     energy_j: float = sum(p.energy_j for p in trace.phases) / (1.0 - reserve)
     by_energy: float = energy_j / WH_TO_J / specific_wh_kg
-    by_power: float = trace.peak_total_w / (assumptions.max_c_rate("li_ion") * specific_wh_kg)
+    by_power: float = trace.peak_total_w / (assumptions.max_c_rate(chemistry) * specific_wh_kg)
     return EnergyStorage(energy_j, max(by_energy, by_power), trace.peak_total_w, 0.0)
 
 

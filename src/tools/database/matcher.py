@@ -10,7 +10,7 @@ import math
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Callable, Final, Literal, Optional, TypeVar
+from typing import Callable, Final, Optional, TypeVar
 
 from pydantic import BaseModel
 
@@ -19,15 +19,12 @@ from src.schemas.components import (
     Cell,
     CompanionComputer,
     ComponentNeeds,
-    CruiseMotor,
     Esc,
     FlightController,
     IceGenerator,
     Payload,
-    Propeller,
     SelectedBOM,
     SensorType,
-    VtolMotor,
 )
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.payload_catalog import payload_display_name, payload_spec
@@ -92,18 +89,6 @@ def _lightest(db_path: Path, table: str, predicate: Callable[[T], bool], require
     return min(candidates, key=lambda item: item.mass_kg)
 
 
-def match_cruise_motor(db_path: Path, required_power_w: float) -> CruiseMotor:
-    need: float = _require_positive(required_power_w, "required_power_w") * SAFETY_MARGIN
-    return _lightest(db_path, "cruise_motors", lambda m: m.continuous_power_w >= need,
-                     f"continuous power >= {need:.0f} W (incl. margin)")
-
-
-def match_vtol_motor(db_path: Path, required_thrust_n: float) -> VtolMotor:
-    need: float = _require_positive(required_thrust_n, "required_thrust_n") * SAFETY_MARGIN
-    return _lightest(db_path, "vtol_motors", lambda m: m.max_thrust_n >= need,
-                     f"max thrust >= {need:.0f} N (incl. margin)")
-
-
 def match_ice_generator(
     db_path: Path, required_power_w: float, bus_window_v: Optional[tuple[float, float]] = None
 ) -> IceGenerator:
@@ -133,13 +118,6 @@ def match_battery(db_path: Path, cell_name: str, series: int, required_energy_j:
     cell: Cell = part_by_name(db_path, "cells", cell_name)  # type: ignore[assignment]
     return build_pack(cell, series, _require_positive(required_energy_j, "required_energy_j"),
                       _require_positive(required_peak_power_w, "required_peak_power_w"), assumptions)
-
-
-def match_propeller(db_path: Path, motor_max_power_w: float, application: Literal["cruise", "vtol"]) -> Propeller:
-    """A propeller must absorb its motor's full max power, so no extra margin is applied here."""
-    need: float = _require_positive(motor_max_power_w, "motor_max_power_w")
-    return _lightest(db_path, "propellers", lambda p: p.application == application and p.max_power_w >= need,
-                     f"{application} prop rated >= {need:.0f} W")
 
 
 def match_payload(
