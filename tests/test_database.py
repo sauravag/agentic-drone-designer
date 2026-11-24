@@ -257,3 +257,49 @@ def test_c_rate_assumption_changes_which_packs_fit(db_path: Path) -> None:
     fast = match_battery(db_path, 500 * WH_TO_J, 60_000, "li_ion", DesignAssumptions(liion_max_c_rate=30))
     assert fast.chemistry == "li_ion"
     assert fast.max_c_rate == 30
+
+
+# ---------------------------------------------------- generator voltages ---
+
+GENSET_POWERS_W: tuple[float, ...] = (300.0, 800.0, 1_800.0, 5_000.0, 12_000.0, 40_000.0, 60_000.0)
+
+
+def test_generator_voltage_variants_follow_their_base_rows(db_path: Path) -> None:
+    gens = load_catalog(db_path, "ice_generators")
+    bases = [g for g in gens if g.output_voltage_v is None]
+    variants = [g for g in gens if g.output_voltage_v is not None]
+    assert gens[:len(bases)] == bases  # every legacy (unregulated) row first, in its original order
+    labels = {g.name.rsplit(" ", 1)[-1] for g in variants}
+    assert {"6S", "12S", "14S"} <= labels
+    assert max(g.output_voltage_v for g in variants) >= 300.0  # HV classes for the big gensets
+    by_name = {g.name: g for g in bases}
+    for variant in variants:
+        base = by_name[variant.name.rsplit(" ", 1)[0]]
+        assert (variant.mass_kg, variant.continuous_power_w) == (base.mass_kg, base.continuous_power_w)
+
+
+@pytest.mark.parametrize("required_w", GENSET_POWERS_W)
+def test_generator_pick_without_window_is_the_base_row(db_path: Path, required_w: float) -> None:
+    gen = match_ice_generator(db_path, required_w)
+    assert gen.output_voltage_v is None
+    bases = [g for g in load_catalog(db_path, "ice_generators") if g.output_voltage_v is None]
+    expected = min((g for g in bases if g.continuous_power_w >= required_w * SAFETY_MARGIN), key=lambda g: g.mass_kg)
+    assert gen == expected
+
+
+def test_generator_inside_bus_window_is_matched(db_path: Path) -> None:
+    gen = match_ice_generator(db_path, 2_500.0, bus_window_v=(39.6, 50.4))  # a 12S Li-ion bus
+    assert 39.6 <= gen.output_voltage_v <= 50.4
+    assert gen.continuous_power_w >= 2_500.0 * SAFETY_MARGIN
+    assert gen.mass_kg == match_ice_generator(db_path, 2_500.0).mass_kg
+
+
+def test_generator_outside_bus_window_not_matched(db_path: Path) -> None:
+    with pytest.raises(ComponentNotFoundError, match=r"1\.0.*2\.0 V"):
+        match_ice_generator(db_path, 1_000.0, bus_window_v=(1.0, 2.0))
+
+
+@pytest.mark.parametrize("window", [(50.0, 40.0), (0.0, 40.0), (float("nan"), 40.0)])
+def test_generator_window_must_be_valid(db_path: Path, window: tuple[float, float]) -> None:
+    with pytest.raises(ValueError):
+        match_ice_generator(db_path, 1_000.0, bus_window_v=window)

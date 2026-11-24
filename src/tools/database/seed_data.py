@@ -17,21 +17,24 @@ from typing import Final
 from pydantic import BaseModel
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
-from src.schemas.components import Battery, CruiseMotor, Esc, IceGenerator, Payload, Propeller, VtolMotor
+from src.schemas.components import Battery, Cell, CruiseMotor, Esc, IceGenerator, Payload, Propeller, VtolMotor
 from src.schemas.payload_catalog import PAYLOADS
-from src.tools.database.catalog_variants import cruise_motor_rows, esc_rows, propeller_rows, vtol_motor_rows
+from src.tools.database.catalog_variants import (cruise_motor_rows, esc_rows, generator_rows, propeller_rows,
+                                                 vtol_motor_rows)
 
 DEFAULT_DB_PATH: Final[Path] = Path(__file__).resolve().parents[3] / "data" / "cots_catalog.db"
 # Bump whenever a table's columns or seeded rows change: ensure_catalog reseeds a file with another version.
 # 2: researched NextVision/SIYI gimbals and the payload vendor / reference-price columns.
 # 3: motor windings + equivalent-circuit constants, propeller pitch/folding variants, ESC table.
-CATALOG_VERSION: Final[int] = 3
+# 4: cells table, battery cell columns, generator output voltage + regulated voltage variants.
+CATALOG_VERSION: Final[int] = 4
 
 CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "cruise_motors": CruiseMotor,
     "vtol_motors": VtolMotor,
     "ice_generators": IceGenerator,
     "batteries": Battery,
+    "cells": Cell,
     "propellers": Propeller,
     "escs": Esc,
     "payloads": Payload,
@@ -87,7 +90,10 @@ VTOL_MOTORS: Final[list[tuple]] = [
     ("Lift 24070-20KV",   12.500, 3200, 48000, 400.0, 0.250, 0.095),
 ]
 
-# (name, mass_kg, continuous_power_w, bsfc_kg_kwh, fuel_type, length_m, width_m, height_m)
+# (name, mass_kg, continuous_power_w, bsfc_kg_kwh, fuel_type, length_m, width_m, height_m); the regulated
+# output-voltage variants are appended by catalog_variants.generator_rows.
+GENERATOR_FIELDS: Final[list[str]] = ["name", "mass_kg", "continuous_power_w", "bsfc_kg_kwh", "fuel_type",
+                                      "length_m", "width_m", "height_m"]
 ICE_GENERATORS: Final[list[tuple]] = [
     ("2-stroke genset 0.35 kW",   1.6,   350, 0.95, "gasoline", 0.20, 0.14, 0.14),
     ("2-stroke genset 0.6 kW",    2.4,   600, 0.85, "gasoline", 0.25, 0.18, 0.18),
@@ -130,6 +136,30 @@ BATTERIES: Final[list[tuple]] = [
     ("LiPo HV pack 4 kWh",    "lipo",    4000.0, 25.0, 400.0),
     ("LiPo HV pack 6 kWh",    "lipo",    6000.0, 25.0, 400.0),
     ("LiPo HV pack 8 kWh",    "lipo",    8000.0, 25.0, 400.0),
+]
+
+# Cell classes packs are built from (`packs.build_pack`). ESTIMATES representative of current generic cells
+# (energy / power / high-drain 18650 and 21700, 4680, large-format pouches; LiPo pouches with the high discharge
+# currents a hybrid buffer needs), not datasheet values. Cylindrical cells: length x diameter x diameter.
+# (name, mass_kg, chemistry, nominal_voltage_v, max_voltage_v, capacity_wh, max_current_a, length_m, width_m, height_m)
+CELLS: Final[list[tuple]] = [
+    ("Li-ion 18650 energy 3.5Ah",     0.048, "li_ion", 3.6, 4.2,  12.6,  10, 0.065, 0.0185, 0.0185),
+    ("Li-ion 18650 power 3.0Ah",      0.047, "li_ion", 3.6, 4.2,  10.8,  20, 0.065, 0.0185, 0.0185),
+    ("Li-ion 18650 high-drain 2.5Ah", 0.045, "li_ion", 3.6, 4.2,   9.0,  30, 0.065, 0.0185, 0.0185),
+    ("Li-ion 21700 energy 5.0Ah",     0.069, "li_ion", 3.6, 4.2,  18.0,  10, 0.070, 0.021,  0.021),
+    ("Li-ion 21700 balanced 4.5Ah",   0.068, "li_ion", 3.6, 4.2,  16.2,  15, 0.070, 0.021,  0.021),
+    ("Li-ion 21700 power 4.2Ah",      0.070, "li_ion", 3.6, 4.2,  15.1,  30, 0.070, 0.021,  0.021),
+    ("Li-ion 4680 22Ah",              0.355, "li_ion", 3.6, 4.2,  79.2, 100, 0.080, 0.046,  0.046),
+    ("Li-ion pouch 10Ah",             0.150, "li_ion", 3.6, 4.2,  36.0,  20, 0.120, 0.060,  0.007),
+    ("Li-ion pouch 50Ah",             0.720, "li_ion", 3.6, 4.2, 180.0,  50, 0.300, 0.100,  0.012),
+    ("Li-ion pouch 100Ah",            1.400, "li_ion", 3.6, 4.2, 360.0, 100, 0.340, 0.140,  0.016),
+    ("LiPo pouch 1.3Ah 50C",          0.030, "lipo",   3.7, 4.2,   4.81,  65, 0.070, 0.035,  0.007),
+    ("LiPo pouch 2.2Ah 25C",          0.045, "lipo",   3.7, 4.2,   8.14,  55, 0.090, 0.035,  0.008),
+    ("LiPo pouch 5Ah 25C",            0.105, "lipo",   3.7, 4.2,  18.5, 125, 0.140, 0.045,  0.0075),
+    ("LiPo pouch 10Ah 25C",           0.205, "lipo",   3.7, 4.2,  37.0, 250, 0.160, 0.065,  0.009),
+    ("LiPo pouch 16Ah 15C",           0.310, "lipo",   3.7, 4.2,  59.2, 240, 0.180, 0.075,  0.011),
+    ("LiPo pouch 22Ah 25C",           0.450, "lipo",   3.7, 4.2,  81.4, 550, 0.200, 0.090,  0.012),
+    ("LiPo pouch 30Ah 10C",           0.580, "lipo",   3.7, 4.2, 111.0, 300, 0.220, 0.100,  0.013),
 ]
 
 # (diameter_in, pitch_in, mass_kg, max_power_w) — vendor I/O is in inches; converted to metres
@@ -201,8 +231,9 @@ def build_catalog() -> dict[str, list[BaseModel]]:
     return {
         "cruise_motors": cruise_motors,
         "vtol_motors": vtol_motors,
-        "ice_generators": _tuple_rows(IceGenerator, ICE_GENERATORS),
+        "ice_generators": generator_rows(_tuple_rows(IceGenerator, ICE_GENERATORS, GENERATOR_FIELDS)),
         "batteries": _battery_rows(),
+        "cells": _tuple_rows(Cell, CELLS),
         "propellers": _propeller_rows(),
         "escs": esc_rows([*cruise_motors, *vtol_motors]),
         "payloads": list(PAYLOADS),

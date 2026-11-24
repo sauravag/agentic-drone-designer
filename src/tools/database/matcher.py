@@ -101,10 +101,26 @@ def match_vtol_motor(db_path: Path, required_thrust_n: float) -> VtolMotor:
                      f"max thrust >= {need:.0f} N (incl. margin)")
 
 
-def match_ice_generator(db_path: Path, required_power_w: float) -> IceGenerator:
+def match_ice_generator(
+    db_path: Path, required_power_w: float, bus_window_v: Optional[tuple[float, float]] = None
+) -> IceGenerator:
+    """Lightest genset with the power margin. With a bus window (end-of-reserve loaded to fully charged pack
+    voltage), only gensets whose regulated output lies inside it qualify; without one, the choice is unchanged
+    (base rows first, and a voltage variant weighs the same as its base, so the tie keeps the base row)."""
     need: float = _require_positive(required_power_w, "required_power_w") * SAFETY_MARGIN
-    return _lightest(db_path, "ice_generators", lambda g: g.continuous_power_w >= need,
-                     f"continuous power >= {need:.0f} W (incl. margin)")
+    requirement: str = f"continuous power >= {need:.0f} W (incl. margin)"
+    if bus_window_v is None:
+        return _lightest(db_path, "ice_generators", lambda g: g.continuous_power_w >= need, requirement)
+    low, high = bus_window_v
+    _require_positive(low, "bus window low")
+    if not math.isfinite(high) or high < low:
+        raise ValueError(f"bus window must be (low, high) with low <= high, got {bus_window_v!r}")
+    return _lightest(
+        db_path, "ice_generators",
+        lambda g: g.continuous_power_w >= need and g.output_voltage_v is not None
+        and low <= g.output_voltage_v <= high,
+        f"{requirement} and output voltage within {low:.1f}-{high:.1f} V",
+    )
 
 
 def rescale_pack(battery: Battery, assumptions: DesignAssumptions) -> Battery:

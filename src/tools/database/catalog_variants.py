@@ -1,5 +1,5 @@
-"""Rows generated from the base motor / propeller tables: KV windings, pitch and folding propeller
-variants, and generic ESC classes.
+"""Rows generated from the base motor / propeller / generator tables: KV windings, pitch and folding
+propeller variants, generic ESC classes and regulated-output generator voltage variants.
 
 ALL constants below are catalogue ESTIMATES, not datasheet values (see seed_data's header note).
 Ordering contract: every base row stays first, in its original order, with generated rows appended
@@ -10,7 +10,7 @@ import math
 import re
 from typing import Final
 
-from src.schemas.components import CruiseMotor, Esc, Propeller, VtolMotor
+from src.schemas.components import CruiseMotor, Esc, IceGenerator, Propeller, VtolMotor
 from src.units import INCH_TO_M
 
 NOMINAL_CELL_V: Final[float] = 3.7
@@ -49,6 +49,15 @@ ESC_BASE_MASS_KG: Final[float] = 0.01
 ESC_MASS_KG_PER_KW: Final[float] = 0.025  # of continuous power (current x max voltage)
 ESC_DENSITY_KG_M3: Final[float] = 1200.0
 ESC_ASPECT: Final[tuple[float, float, float]] = (3.0, 2.0, 1.0)  # L : W : H
+
+# Generator voltage variants (ESTIMATES): a regulated DC output at a pack's nominal voltage (cells x 3.7 V), so it
+# sits inside the bus window of that series count for both chemistries. Same mass as the base genset (the
+# rectifier/regulator is part of the genset). HV classes (>= 24S) only on the big gensets; any class whose output
+# current would exceed GENSET_MAX_OUTPUT_CURRENT_A is not offered.
+GENSET_SERIES_CLASSES: Final[tuple[int, ...]] = (6, 12, 14, 24, 48, 96)
+GENSET_HV_MIN_SERIES: Final[int] = 24
+GENSET_HV_MIN_POWER_W: Final[float] = 5_000.0
+GENSET_MAX_OUTPUT_CURRENT_A: Final[float] = 250.0
 
 
 def rated_max_voltage(nominal_v: float) -> float:
@@ -171,13 +180,30 @@ def esc_rows(motors: list[CruiseMotor | VtolMotor]) -> list[Esc]:
     rows: list[Esc] = []
     previous_v: float = 0.0
     for class_v, label in classes:
-        need: float = max(
-            (ESC_CURRENT_MARGIN * (m.max_current_a or 0.0) for m in motors if previous_v + _VOLTAGE_EPS_V < m.voltage_v <= class_v + _VOLTAGE_EPS_V),
-            default=0.0,
-        )
+        in_class: list[CruiseMotor | VtolMotor] = [
+            m for m in motors if previous_v + _VOLTAGE_EPS_V < m.voltage_v <= class_v + _VOLTAGE_EPS_V
+        ]
+        need: float = max((ESC_CURRENT_MARGIN * (m.max_current_a or 0.0) for m in in_class), default=0.0)
         for rung in ESC_CURRENT_LADDER_A:
             rows.append(_esc_row(rung, class_v, label))
             if rung >= need:
                 break
         previous_v = class_v
     return rows
+
+
+def _genset_offers(genset: IceGenerator, series: int) -> bool:
+    output_v: float = series * NOMINAL_CELL_V
+    if series >= GENSET_HV_MIN_SERIES and genset.continuous_power_w < GENSET_HV_MIN_POWER_W:
+        return False
+    return genset.continuous_power_w / output_v <= GENSET_MAX_OUTPUT_CURRENT_A
+
+
+def generator_rows(bases: list[IceGenerator]) -> list[IceGenerator]:
+    """Base gensets (unregulated, output_voltage_v None, original order), then each one's regulated voltage
+    variants named "<base> <S>S". Same mass as the base, so the lightest-part matcher's tie keeps the base row."""
+    variants: list[IceGenerator] = [
+        g.model_copy(update={"name": f"{g.name} {s}S", "output_voltage_v": round(s * NOMINAL_CELL_V, 1)})
+        for g in bases for s in GENSET_SERIES_CLASSES if _genset_offers(g, s)
+    ]
+    return [*bases, *variants]

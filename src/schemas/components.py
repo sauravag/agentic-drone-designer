@@ -5,6 +5,7 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from src.schemas.assumptions import Chemistry
 from src.schemas.requirements import CUBE_ORANGE_PLUS, CUSTOM_PAYLOAD, FlightControllerId
 from src.units import KWH_TO_J, WH_TO_J
 
@@ -75,26 +76,56 @@ class IceGenerator(_Component):
     length_m: Length
     width_m: Length
     height_m: Length
+    # Regulated DC output voltage of a voltage variant; None on the legacy (unregulated) rows.
+    output_voltage_v: Optional[Voltage] = None
 
     @property
     def bsfc_kg_per_j(self) -> float:
         return self.bsfc_kg_kwh / KWH_TO_J
 
 
+def _check_specific_energy(capacity_wh: float, mass_kg: float, name: str) -> None:
+    e_spec: float = capacity_wh / mass_kg
+    if not MIN_SPECIFIC_ENERGY_WH_KG <= e_spec <= MAX_SPECIFIC_ENERGY_WH_KG:
+        raise ValueError(f"non-physical specific energy {e_spec:.0f} Wh/kg for {name}")
+
+
+class Cell(_Component):
+    """One cell class a pack is built from (catalogue estimate)."""
+
+    chemistry: Chemistry
+    nominal_voltage_v: float = Field(..., gt=0, le=5.0)
+    max_voltage_v: float = Field(..., gt=0, le=5.0)  # fully charged
+    capacity_wh: float = Field(..., gt=0, le=2_000.0)
+    max_current_a: float = Field(..., gt=0, le=1_000.0)  # max continuous discharge
+    length_m: Length
+    width_m: Length
+    height_m: Length
+
+    @model_validator(mode="after")
+    def _physical(self) -> "Cell":
+        if self.max_voltage_v <= self.nominal_voltage_v:
+            raise ValueError(f"{self.name}: max voltage must exceed the nominal voltage")
+        _check_specific_energy(self.capacity_wh, self.mass_kg, self.name)
+        return self
+
+
 class Battery(_Component):
-    chemistry: Literal["li_ion", "lipo"]
+    chemistry: Chemistry
     capacity_wh: float = Field(..., gt=0, le=100_000.0)
     max_c_rate: float = Field(..., gt=0, le=100.0)
     voltage_v: Voltage
     length_m: Length
     width_m: Length
     height_m: Length
+    # A pack built from cells (`build_pack`); None on the fixed catalogue packs and on legacy bom.json.
+    cell_name: Optional[str] = Field(None, min_length=1, max_length=120)
+    series: Optional[int] = Field(None, ge=1, le=1_000)
+    parallel: Optional[int] = Field(None, ge=1, le=10_000)
 
     @model_validator(mode="after")
     def _physical_specific_energy(self) -> "Battery":
-        e_spec: float = self.capacity_wh / self.mass_kg
-        if not MIN_SPECIFIC_ENERGY_WH_KG <= e_spec <= MAX_SPECIFIC_ENERGY_WH_KG:
-            raise ValueError(f"non-physical specific energy {e_spec:.0f} Wh/kg for {self.name}")
+        _check_specific_energy(self.capacity_wh, self.mass_kg, self.name)
         return self
 
     @property

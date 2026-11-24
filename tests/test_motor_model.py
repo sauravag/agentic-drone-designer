@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from src.schemas.components import CruiseMotor, Esc, VtolMotor
 from src.tools.database.matcher import ComponentNotFoundError, part_by_name
-from src.tools.database.seed_data import catalog_rows, seed_database
+from src.tools.database.seed_data import CRUISE_PROPS_IN, VTOL_PROPS_IN, catalog_rows, seed_database
 from src.tools.propulsion.motor import motor_point
 
 ESC_CURRENT_MARGIN = 1.2
@@ -190,8 +190,6 @@ def test_base_matcher_picks_are_unchanged(tmp_path: Path) -> None:
 
 
 def test_base_propeller_names_keep_legacy_format() -> None:
-    from src.tools.database.seed_data import CRUISE_PROPS_IN, VTOL_PROPS_IN
-
     names = {p.name for p in catalog_rows("propellers")}
     for app, table in (("cruise", CRUISE_PROPS_IN), ("vtol", VTOL_PROPS_IN)):
         for dia, pitch, *_ in table:
