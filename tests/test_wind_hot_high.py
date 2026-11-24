@@ -109,10 +109,11 @@ def test_the_stall_limit_holds_at_the_take_off_site(g1_hot_high: SizingOutput) -
 
 
 def test_hover_uses_the_take_off_site_density(g2_hot_high: SizingOutput) -> None:
-    s, a = g2_hot_high, DEFAULT_ASSUMPTIONS
-    disk_m2 = 4.0 * math.pi * s.rotor_diameter_m**2 / 4.0
+    s = g2_hot_high
+    assert s.propulsion_match is not None
+    disk_m2 = 4.0 * math.pi * s.rotor_diameter_m**2 / 4.0  # the matched lift rotor's disk
     hover_w = ((s.mtow_kg * G0) ** 1.5 / math.sqrt(2.0 * _take_off_density(VTOL_SITE) * disk_m2)
-               / a.hover_figure_of_merit / a.lift_motor_efficiency)
+               / s.propulsion_match.efficiencies["Hover"])
     assert _phase(s, "VTOL_Takeoff").propulsive_power_w == pytest.approx(hover_w, rel=1e-6)
     assert _phase(s, "VTOL_Land").propulsive_power_w == pytest.approx(hover_w, rel=1e-6)
 

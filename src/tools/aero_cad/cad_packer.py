@@ -54,6 +54,7 @@ from src.tools.sizing.layouts import StaticMarginBand
 from src.tools.gear import GearGeometry, PropellerDisc
 from src.tools.sizing.mass_model import PropulsionLoads, airframe_mass_kg, as_built_gear
 from src.tools.sizing.mission_solver import VTOL_ROTOR_COUNT
+from src.tools.sizing.propulsion_loop import matched_hardware
 
 logger = logging.getLogger(__name__)
 
@@ -235,12 +236,16 @@ def _load_oml(oml_step: Path) -> bd.Shape:
 
 
 def sized_airframe_mass_kg(sizing: SizingOutput) -> float:
-    """Structure, booms and landing gear from the sizing build-up (no propulsion/avionics/systems)."""
+    """Structure, booms and landing gear from the sizing build-up (no propulsion/avionics/systems). The propulsion
+    taken out is what sizing booked: the matched set's parts, or the power-scaled estimate in a pre-matching record."""
+    rotors: int = VTOL_ROTOR_COUNT if sizing.airframe_topology == "quadplane_vtol" else 0
+    match = sizing.propulsion_match
     loads = PropulsionLoads(
         cruise_motor_power_w=sizing.cruise_motor_power_w,
         vtol_total_thrust_n=sizing.vtol_thrust_per_motor_n * VTOL_ROTOR_COUNT,
         generator_power_w=sizing.generator_power_w,
         fuel_mass_kg=sizing.fuel_mass_kg,
+        matched=matched_hardware(match, rotors) if match is not None else None,
     )
     return airframe_mass_kg(sizing.mtow_kg, sizing.empty_mass_kg, loads, sizing.avionics_mass_kg)
 

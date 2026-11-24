@@ -21,7 +21,7 @@ from src.tools.aero_cad.layout import CONSTANT_SECTION_FRACTION, AircraftLayout,
 from src.tools.sizing.mass_model import (
     FUEL_SYSTEM_FRACTION,
     SYSTEMS_FRACTION,
-    VTOL_INSTALL_FACTOR,
+    lift_unit_mass_kg,
 )
 
 FUEL_DENSITY_KG_M3: Final[float] = 720.0  # gasoline / avgas
@@ -126,13 +126,13 @@ def payload(bom: SelectedBOM, layout: AircraftLayout) -> PlacedComponent:
 
 
 def cruise_motor(bom: SelectedBOM, layout: AircraftLayout) -> PlacedComponent:
-    """Cruise motor + propeller just ahead of the propeller station: a tractor's ahead of the nose bulkhead (x = 0),
-    a boom-end pusher's between the boom end and the hub (the mount length leaves room for any catalog motor; a
-    longer one runs into the boom and counts as a collision). The cruise ESC is not in the BOM and is omitted (a few
-    % of motor mass)."""
+    """Cruise motor + propeller + ESC just ahead of the propeller station: a tractor's ahead of the nose bulkhead
+    (x = 0), a boom-end pusher's between the boom end and the hub (the mount length leaves room for any catalog
+    motor; a longer one runs into the boom and counts as a collision). A pre-matching bom.json has no ESC."""
     m = bom.cruise_motor
     station = layout.propeller
-    mass: float = m.mass_kg + bom.cruise_propeller.mass_kg
+    esc_kg: float = bom.cruise_esc.mass_kg if bom.cruise_esc is not None else 0.0
+    mass: float = m.mass_kg + bom.cruise_propeller.mass_kg + esc_kg
     aft_face: float = station.x_m if station.is_pusher else station.x_m - COMPONENT_GAP_M
     return PlacedComponent("cruise_motor", "cylinder", mass, (m.length_m, m.diameter_m, m.diameter_m),
                            (aft_face - m.length_m / 2, station.y_m, station.z_m), False)
@@ -153,12 +153,12 @@ def hybrid_parts(sizing: SizingOutput, bom: SelectedBOM, layout: AircraftLayout,
 
 
 def vtol_motors(bom: SelectedBOM, layout: AircraftLayout) -> list[PlacedComponent]:
-    """Lift motor + propeller + ESC/mount allowance (the sizing VTOL_INSTALL_FACTOR) on each hub."""
+    """Lift motor + propeller + ESC with the mount allowance (`lift_unit_mass_kg`, what sizing books) on each hub."""
     if bom.vtol_motor is None or bom.vtol_propeller is None:
         return []
     m = bom.vtol_motor
-    install: float = max(0.0, (VTOL_INSTALL_FACTOR - 1) * m.mass_kg - bom.vtol_propeller.mass_kg)
-    mass: float = m.mass_kg + bom.vtol_propeller.mass_kg + install
+    esc_kg: float = bom.vtol_esc.mass_kg if bom.vtol_esc is not None else 0.0
+    mass: float = lift_unit_mass_kg(m.mass_kg, bom.vtol_propeller.mass_kg, esc_kg)
     return [
         PlacedComponent(f"vtol_motor_{i}", "box", mass, (m.diameter_m, m.diameter_m, m.length_m),
                         (x, y, z + m.length_m / 2), False)

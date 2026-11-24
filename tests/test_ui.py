@@ -307,11 +307,11 @@ def test_assumptions_panel_shows_defaults_and_applies_to_description_runs(tmp_pa
 
 def test_reset_restores_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     at = _llm_app(tmp_path, monkeypatch)
-    at.number_input(key="assume_drivetrain_efficiency").set_value(0.9)
+    at.number_input(key="assume_pusher_efficiency_factor").set_value(0.85)
     at.run()
     at.button(key="reset_assumptions").click()
     at.run()
-    assert at.number_input(key="assume_drivetrain_efficiency").value == pytest.approx(0.68)
+    assert at.number_input(key="assume_pusher_efficiency_factor").value == pytest.approx(0.95)
 
 
 def test_assumptions_apply_to_the_structured_form_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

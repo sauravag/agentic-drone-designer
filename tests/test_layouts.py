@@ -359,7 +359,7 @@ from src.tools.sizing import layouts  # noqa: E402
 from src.tools.sizing import mass_model as mm  # noqa: E402
 from src.tools.sizing.layouts import (PUSHER_MOTOR_MOUNT_FRACTION, PUSHER_TAIL_GAP_FRACTION, TAILED_BAND,  # noqa: E402
                                       VTAIL_PAIR_ASPECT_RATIO, LayoutSpec)
-from src.tools.sizing.mission_solver import cruise_drivetrain_efficiency  # noqa: E402
+from src.tools.sizing.mission_profile import SEED_FORWARD_EFFICIENCY, seed_efficiencies  # noqa: E402
 
 VTAIL = "single_boom_vtail_pusher"
 G1_PROP_DIAMETER_M = 0.279
@@ -396,13 +396,11 @@ def test_unknown_tail_kind_has_no_sizing_rule() -> None:
 
 
 def test_pusher_efficiency_applies_only_to_pushers() -> None:
-    assumptions = DesignAssumptions(drivetrain_efficiency=0.70)
-    tractor = cruise_drivetrain_efficiency(layout_spec("pod_boom_tractor"), assumptions)
-    pusher = cruise_drivetrain_efficiency(layout_spec(VTAIL), assumptions)
-    assert tractor == 0.70
+    tractor = seed_efficiencies(layout_spec("pod_boom_tractor"), 0.95).forward_for("Loiter")
+    pusher = seed_efficiencies(layout_spec(VTAIL), 0.95).forward_for("Loiter")
+    assert tractor == SEED_FORWARD_EFFICIENCY
     assert pusher == pytest.approx(0.95 * tractor)
-    custom = assumptions.model_copy(update={"pusher_efficiency_factor": 0.85})
-    assert cruise_drivetrain_efficiency(layout_spec(VTAIL), custom) == pytest.approx(0.85 * 0.70)
+    assert seed_efficiencies(layout_spec(VTAIL), 0.85).forward_for("Loiter") == pytest.approx(0.85 * tractor)
 
 
 @pytest.mark.parametrize("bad", [0.79, 1.01])
