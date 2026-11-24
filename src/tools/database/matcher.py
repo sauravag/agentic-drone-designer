@@ -1,5 +1,6 @@
-"""COTS hardware snapping: pick the lightest catalog part that meets a requirement with a 15%
-safety margin, assemble a SelectedBOM, and check MTOW convergence.
+"""COTS hardware snapping: the matched propulsion set (sizing's PropulsionMatch) taken by name, the pack built from
+the matched cell and series count, the remaining parts the lightest that meet a requirement with a 15% safety
+margin; assemble a SelectedBOM, and check MTOW convergence.
 
 Catalog tables are small (<100 rows), so each lookup loads the table and filters in Python.
 That keeps queries free of dynamic SQL and re-validates every row read from disk.
@@ -15,9 +16,11 @@ from pydantic import BaseModel
 
 from src.schemas.components import (
     Battery,
+    Cell,
     CompanionComputer,
     ComponentNeeds,
     CruiseMotor,
+    Esc,
     FlightController,
     IceGenerator,
     Payload,
@@ -29,8 +32,8 @@ from src.schemas.components import (
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.payload_catalog import payload_display_name, payload_spec
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS
-from src.tools.database.seed_data import CATALOG_TABLES, pack_envelope
-from src.units import WH_TO_J
+from src.tools.database.packs import build_pack, bus_window_v
+from src.tools.database.seed_data import CATALOG_TABLES
 
 SAFETY_MARGIN: float = 1.15
 MTOW_TOLERANCE: float = 0.03
@@ -123,42 +126,13 @@ def match_ice_generator(
     )
 
 
-def rescale_pack(battery: Battery, assumptions: DesignAssumptions) -> Battery:
-    """Copy of `battery` whose mass, box and C-rate follow the run's assumptions for its chemistry.
-
-    Capacity and voltage stay catalog values; with non-default assumptions the pack is notional.
-    """
-    chem = battery.chemistry
-    mass, length, width, height = pack_envelope(
-        battery.capacity_wh, assumptions.specific_energy_wh_kg(chem), assumptions.energy_density_wh_l(chem)
-    )
-    return battery.model_copy(update={
-        "mass_kg": mass, "length_m": length, "width_m": width, "height_m": height,
-        "max_c_rate": assumptions.max_c_rate(chem),
-    })
-
-
-def match_battery(
-    db_path: Path,
-    required_energy_j: float,
-    required_peak_power_w: float,
-    chemistry: Optional[Literal["li_ion", "lipo"]] = None,
-    assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS,
-) -> Battery:
-    """Lightest pack that fits, after rescaling every catalog pack to the run's assumptions."""
-    energy: float = _require_positive(required_energy_j, "required_energy_j") * SAFETY_MARGIN
-    peak: float = _require_positive(required_peak_power_w, "required_peak_power_w") * SAFETY_MARGIN
-    packs: list[Battery] = [rescale_pack(b, assumptions) for b in load_catalog(db_path, "batteries")]
-    candidates: list[Battery] = [
-        b for b in packs
-        if b.capacity_j >= energy and b.max_power_w >= peak and (chemistry is None or b.chemistry == chemistry)
-    ]
-    if not candidates:
-        raise ComponentNotFoundError(
-            f"No part in batteries satisfies energy >= {energy / WH_TO_J:.0f} Wh, peak >= {peak:.0f} W, "
-            f"chemistry={chemistry or 'any'}"
-        )
-    return min(candidates, key=lambda b: b.mass_kg)
+def match_battery(db_path: Path, cell_name: str, series: int, required_energy_j: float,
+                  required_peak_power_w: float, assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS) -> Battery:
+    """The pack of the matched cell and series count with the fewest parallel strings for the sized energy and peak
+    power (spec 6.3). No extra margin: sizing already holds the reserve, and rounding P up is the only step."""
+    cell: Cell = part_by_name(db_path, "cells", cell_name)  # type: ignore[assignment]
+    return build_pack(cell, series, _require_positive(required_energy_j, "required_energy_j"),
+                      _require_positive(required_peak_power_w, "required_peak_power_w"), assumptions)
 
 
 def match_propeller(db_path: Path, motor_max_power_w: float, application: Literal["cruise", "vtol"]) -> Propeller:
@@ -221,33 +195,65 @@ def avionics_parts(
                                    power_w=assumptions.jetson_power_w, reference_price_usd=price)
 
 
+MATCHED_NAME_FIELDS: Final[tuple[str, ...]] = (
+    "cruise_motor_name", "cruise_propeller_name", "cruise_esc_name", "cell_name", "battery_series",
+)
+MATCHED_LIFT_FIELDS: Final[tuple[str, ...]] = ("vtol_motor_name", "vtol_propeller_name", "vtol_esc_name")
+
+
+def _require_matched(needs: ComponentNeeds) -> None:
+    """ValueError unless the needs carry the matched propulsion set (and its lift set when rotors are asked for)."""
+    fields: tuple[str, ...] = MATCHED_NAME_FIELDS + (
+        MATCHED_LIFT_FIELDS if needs.vtol_thrust_per_motor_n is not None else ())
+    missing: list[str] = [name for name in fields if getattr(needs, name) is None]
+    if missing:
+        raise ValueError(f"component needs lack the matched propulsion set ({', '.join(missing)}); "
+                         "size the design with propulsion matching first")
+
+
+def _lift_parts(db_path: Path, needs: ComponentNeeds) -> dict[str, object]:
+    if needs.vtol_thrust_per_motor_n is None:
+        return {}
+    return {"vtol_motor": part_by_name(db_path, "vtol_motors", str(needs.vtol_motor_name)),
+            "vtol_propeller": part_by_name(db_path, "propellers", str(needs.vtol_propeller_name)),
+            "vtol_esc": part_by_name(db_path, "escs", str(needs.vtol_esc_name)),
+            "vtol_motor_count": needs.vtol_motor_count}
+
+
+def _battery_and_generator(db_path: Path, needs: ComponentNeeds,
+                           assumptions: DesignAssumptions) -> tuple[Battery, Optional[IceGenerator]]:
+    """The cell-built pack; for a hybrid, the lightest genset whose output sits in that pack's bus window."""
+    cell: Cell = part_by_name(db_path, "cells", str(needs.cell_name))  # type: ignore[assignment]
+    if needs.battery_chemistry is not None and cell.chemistry != needs.battery_chemistry:
+        raise ValueError(f"matched cell {cell.name} is {cell.chemistry}, the design needs {needs.battery_chemistry}")
+    series: int = int(needs.battery_series or 0)
+    battery: Battery = match_battery(db_path, cell.name, series, needs.battery_energy_j, needs.battery_peak_power_w,
+                                     assumptions)
+    if needs.generator_power_w is None:
+        return battery, None
+    return battery, match_ice_generator(db_path, needs.generator_power_w, bus_window_v(cell, series))
+
+
 def select_bom(
     db_path: Path, needs: ComponentNeeds, assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS
 ) -> SelectedBOM:
-    """Snap every SI requirement to a discrete COTS part. VTOL rotors and the ICE generator are
-    selected only when the sizing engine asked for them."""
-    cruise_motor: CruiseMotor = match_cruise_motor(db_path, needs.cruise_power_w)
-    vtol_motor: Optional[VtolMotor] = None
-    vtol_prop: Optional[Propeller] = None
-    if needs.vtol_thrust_per_motor_n is not None:
-        vtol_motor = match_vtol_motor(db_path, needs.vtol_thrust_per_motor_n)
-        vtol_prop = match_propeller(db_path, vtol_motor.max_power_w, "vtol")
-    generator: Optional[IceGenerator] = (
-        match_ice_generator(db_path, needs.generator_power_w) if needs.generator_power_w is not None else None
-    )
+    """The BOM of a matched design: the propulsion set by name, the pack from the matched cell x series, the genset
+    inside the bus window (hybrids), the payload and avionics. VTOL rotors and the genset appear only when the
+    sizing engine asked for them."""
+    _require_matched(needs)
+    battery, generator = _battery_and_generator(db_path, needs, assumptions)
     flight_controller, companion = avionics_parts(needs, assumptions)
+    cruise_esc: Esc = part_by_name(db_path, "escs", str(needs.cruise_esc_name))  # type: ignore[assignment]
     return SelectedBOM(
-        cruise_motor=cruise_motor,
-        cruise_propeller=match_propeller(db_path, cruise_motor.max_power_w, "cruise"),
-        battery=match_battery(db_path, needs.battery_energy_j, needs.battery_peak_power_w, needs.battery_chemistry,
-                              assumptions),
+        cruise_motor=part_by_name(db_path, "cruise_motors", str(needs.cruise_motor_name)),
+        cruise_propeller=part_by_name(db_path, "propellers", str(needs.cruise_propeller_name)),
+        cruise_esc=cruise_esc,
+        battery=battery,
         payload=payload_part(db_path, needs),
-        vtol_motor=vtol_motor,
-        vtol_propeller=vtol_prop,
-        vtol_motor_count=needs.vtol_motor_count if vtol_motor is not None else 0,
         ice_generator=generator,
         flight_controller=flight_controller,
         companion_computer=companion,
+        **_lift_parts(db_path, needs),
     )
 
 

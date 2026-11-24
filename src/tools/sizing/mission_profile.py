@@ -2,13 +2,16 @@
 battery / fuel storage sizing for electric and series-hybrid powertrains (SRS §4.1.2). All SI."""
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Literal
 
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import PhaseResult
 from src.tools.sizing.aero_model import AirfoilPolar, air_properties
+from src.tools.sizing.layouts import LayoutSpec
 from src.tools.sizing.mass_model import Geometry
 from src.tools.sizing.topology import Airframe
 from src.units import G0, WH_TO_J
@@ -25,6 +28,44 @@ ABORT_RESERVE_S: Final[float] = 60.0
 STEPS_PER_PHASE: Final[int] = 20
 
 PhaseName = Literal["VTOL_Takeoff", "Climb", "Ingress", "Loiter", "Egress", "VTOL_Land"]
+FORWARD_PHASES: Final[tuple[str, ...]] = ("Climb", "Ingress", "Loiter", "Egress")
+
+# Pass-0 seeds only (spec 6.5): the first sizing pass uses the former fixed assumptions; every later pass uses the
+# efficiencies of the matched propulsion set.
+SEED_FORWARD_EFFICIENCY: Final[float] = 0.68  # cruise electrical-to-thrust-power (x the pusher factor for pushers)
+SEED_HOVER_FIGURE_OF_MERIT: Final[float] = 0.72
+SEED_LIFT_MOTOR_EFFICIENCY: Final[float] = 0.85
+
+
+@dataclass(frozen=True)
+class PropulsionEfficiencies:
+    """Efficiencies one sizing pass holds fixed. `forward` per forward phase name: thrust power / electrical power.
+    `hover` (T/W 1) and `hover_peak` (T/W VTOL_THRUST_TO_WEIGHT): ideal induced power / electrical power."""
+
+    forward: Mapping[str, float]
+    hover: float
+    hover_peak: float
+
+    def __post_init__(self) -> None:
+        missing: list[str] = [name for name in FORWARD_PHASES if name not in self.forward]
+        if missing:
+            raise ValueError(f"forward efficiencies missing for {missing}")
+        values: list[float] = [*self.forward.values(), self.hover, self.hover_peak]
+        if not all(math.isfinite(v) and 0.0 < v <= 1.0 for v in values):
+            raise ValueError(f"efficiencies must lie in (0, 1], got {values}")
+        object.__setattr__(self, "forward", MappingProxyType(dict(self.forward)))  # read-only copy
+
+    def forward_for(self, phase: str) -> float:
+        return self.forward[phase]
+
+
+def seed_efficiencies(spec: LayoutSpec, pusher_efficiency_factor: float) -> PropulsionEfficiencies:
+    """Pass-0 efficiencies: SEED_FORWARD_EFFICIENCY (x the pusher installation factor for any pusher layout) and
+    SEED_HOVER_FIGURE_OF_MERIT x SEED_LIFT_MOTOR_EFFICIENCY in hover."""
+    factor: float = 1.0 if spec.propeller == "tractor_nose" else pusher_efficiency_factor
+    hover: float = SEED_HOVER_FIGURE_OF_MERIT * SEED_LIFT_MOTOR_EFFICIENCY
+    return PropulsionEfficiencies({name: SEED_FORWARD_EFFICIENCY * factor for name in FORWARD_PHASES},
+                                  hover, hover)
 
 
 @dataclass(frozen=True)
@@ -45,6 +86,7 @@ class PhaseSpec:
     speed_ms: float
     rho: float
     climb_rate_ms: float = 0.0
+    altitude_m: float = 0.0  # where the phase is flown (mid-climb for the climb), for viscosity and speed of sound
 
 
 @dataclass(frozen=True)
@@ -90,14 +132,13 @@ def forward_power_w(
     return (drag * speed + weight_n * climb_rate) / eta
 
 
-def hover_power_w(
-    weight_n: float, aero: AeroState, figure_of_merit: float, motor_efficiency: float, thrust_to_weight: float = 1.0
-) -> float:
-    """Momentum theory: P = T^1.5 / sqrt(2*rho*A) / FM / eta_motor.
-    Sustained hover (energy) uses T/W = 1; installed peak (motor & C-rate sizing) uses T/W = 1.45."""
+def hover_power_w(weight_n: float, aero: AeroState, efficiency: float, thrust_to_weight: float = 1.0) -> float:
+    """Momentum theory: P = T^1.5 / sqrt(2*rho*A) / efficiency, where efficiency = ideal induced power / electrical
+    power (figure of merit x motor and ESC efficiency). Sustained hover (energy) uses T/W = 1; installed peak (motor
+    & C-rate sizing) uses T/W = 1.45."""
     thrust: float = thrust_to_weight * weight_n
     induced: float = thrust**1.5 / math.sqrt(2.0 * aero.rho_takeoff * aero.disk_area_m2)
-    return induced / figure_of_merit / motor_efficiency
+    return induced / efficiency
 
 
 def speed_for_cl(weight_n: float, rho: float, aero: AeroState, cl: float) -> float:
@@ -127,36 +168,39 @@ def phase_plan(
     v_climb: float = max(speed_for_cl(weight, rho_climb, aero, math.sqrt(3.0 * aero.cd0 / aero.k)),
                          _min_speed(weight, rho_climb, aero, polar.cl_max_3d))
     transit_s: float = req.combat_radius_m / (req.cruise_speed_ms - req.design_wind_ms)  # headwind both ways
+    climb_alt: float = req.takeoff_altitude_m + climb_height_m / 2.0
+    ceiling: float = req.service_ceiling_m
     plan: list[PhaseSpec] = [
-        PhaseSpec("Climb", climb_height_m / CLIMB_RATE_MS, False, v_climb, rho_climb, CLIMB_RATE_MS),
-        PhaseSpec("Ingress", transit_s, False, req.cruise_speed_ms, aero.rho_cruise),
-        PhaseSpec("Loiter", req.endurance_s, False, loiter_speed(weight, aero, polar.cl_max_3d), aero.rho_cruise),
-        PhaseSpec("Egress", transit_s, False, req.cruise_speed_ms, aero.rho_cruise),
+        PhaseSpec("Climb", climb_height_m / CLIMB_RATE_MS, False, v_climb, rho_climb, CLIMB_RATE_MS, climb_alt),
+        PhaseSpec("Ingress", transit_s, False, req.cruise_speed_ms, aero.rho_cruise, altitude_m=ceiling),
+        PhaseSpec("Loiter", req.endurance_s, False, loiter_speed(weight, aero, polar.cl_max_3d), aero.rho_cruise,
+                  altitude_m=ceiling),
+        PhaseSpec("Egress", transit_s, False, req.cruise_speed_ms, aero.rho_cruise, altitude_m=ceiling),
     ]
     if airframe == "quadplane_vtol":
-        plan.insert(0, PhaseSpec("VTOL_Takeoff", VTOL_PHASE_S, True, 0.0, aero.rho_takeoff))
-        plan.append(PhaseSpec("VTOL_Land", VTOL_PHASE_S, True, 0.0, aero.rho_takeoff))
+        site: float = req.takeoff_altitude_m
+        plan.insert(0, PhaseSpec("VTOL_Takeoff", VTOL_PHASE_S, True, 0.0, aero.rho_takeoff, altitude_m=site))
+        plan.append(PhaseSpec("VTOL_Land", VTOL_PHASE_S, True, 0.0, aero.rho_takeoff, altitude_m=site))
     return tuple(plan)
 
 
 def _step_power_w(
-    spec: PhaseSpec, weight_n: float, aero: AeroState,
-    drivetrain_efficiency: float, figure_of_merit: float, lift_motor_efficiency: float,
+    spec: PhaseSpec, weight_n: float, aero: AeroState, efficiencies: PropulsionEfficiencies
 ) -> tuple[float, float]:
     """(sustained propulsive power for energy, installed peak propulsive power for sizing)."""
     if spec.is_hover:
-        sustained: float = hover_power_w(weight_n, aero, figure_of_merit, lift_motor_efficiency)
-        peak: float = hover_power_w(weight_n, aero, figure_of_merit, lift_motor_efficiency, VTOL_THRUST_TO_WEIGHT)
+        sustained: float = hover_power_w(weight_n, aero, efficiencies.hover)
+        peak: float = hover_power_w(weight_n, aero, efficiencies.hover_peak, VTOL_THRUST_TO_WEIGHT)
         return sustained, peak
     power: float = forward_power_w(
-        weight_n, spec.speed_ms, spec.rho, aero, drivetrain_efficiency, spec.climb_rate_ms
+        weight_n, spec.speed_ms, spec.rho, aero, efficiencies.forward_for(spec.name), spec.climb_rate_ms
     )
     return power, power
 
 
 def simulate(
     plan: tuple[PhaseSpec, ...], mtow_kg: float, aero: AeroState, hotel_w: float, gen_w: float,
-    bsfc_kg_per_j: float, drivetrain_efficiency: float, figure_of_merit: float, lift_motor_efficiency: float,
+    bsfc_kg_per_j: float, efficiencies: PropulsionEfficiencies,
 ) -> MissionTrace:
     """Integrate each phase in STEPS_PER_PHASE steps. The generator (if any) supplies demand up to
     its rating and burns fuel, lightening the aircraft; the battery covers any deficit."""
@@ -166,9 +210,7 @@ def simulate(
         dt: float = spec.duration_s / STEPS_PER_PHASE
         prop_sum = total_sum = energy = phase_fuel = 0.0
         for _ in range(STEPS_PER_PHASE):
-            prop, prop_peak = _step_power_w(
-                spec, (mtow_kg - fuel) * G0, aero, drivetrain_efficiency, figure_of_merit, lift_motor_efficiency
-            )
+            prop, prop_peak = _step_power_w(spec, (mtow_kg - fuel) * G0, aero, efficiencies)
             total, total_peak = prop + hotel_w, prop_peak + hotel_w
             from_gen: float = min(total, gen_w)
             burned: float = bsfc_kg_per_j * from_gen * dt

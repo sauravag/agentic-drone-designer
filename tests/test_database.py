@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
+from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import ComponentNeeds
 from src.tools.database.matcher import (
     SAFETY_MARGIN,
@@ -18,10 +18,10 @@ from src.tools.database.matcher import (
     match_payload,
     match_propeller,
     match_vtol_motor,
-    rescale_pack,
     select_bom,
 )
-from src.tools.database.seed_data import CATALOG_TABLES, seed_database
+from src.tools.database.packs import bus_window_v
+from src.tools.database.seed_data import CATALOG_TABLES, CATALOG_VERSION, catalog_rows, seed_database
 from src.units import WH_TO_J
 
 MIN_ROWS_PER_TABLE: int = 15
@@ -47,9 +47,9 @@ def test_each_table_has_at_least_15_rows(db_path: Path, table: str) -> None:
 def test_reseeding_is_idempotent(tmp_path: Path) -> None:
     path: Path = tmp_path / "catalog.db"
     seed_database(path)
-    first: int = len(load_catalog(path, "batteries"))
+    first: int = len(load_catalog(path, "cells"))
     seed_database(path)
-    assert len(load_catalog(path, "batteries")) == first  # would double if seeding appended
+    assert len(load_catalog(path, "cells")) == first  # would double if seeding appended
 
 
 def test_load_catalog_rejects_unknown_table(db_path: Path) -> None:
@@ -59,7 +59,7 @@ def test_load_catalog_rejects_unknown_table(db_path: Path) -> None:
 
 def test_load_catalog_rejects_missing_db(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        load_catalog(tmp_path / "missing.db", "batteries")
+        load_catalog(tmp_path / "missing.db", "cells")
 
 
 # ----------------------------------------------------------- SI sanity ---
@@ -75,10 +75,17 @@ def test_all_masses_and_lengths_are_si(db_path: Path) -> None:
                     assert 0 < value < 3.0, f"{table}:{item.name}.{field}={value}"
 
 
-def test_battery_specific_energy_is_physical(db_path: Path) -> None:
-    for battery in load_catalog(db_path, "batteries"):
-        assert 100.0 <= battery.specific_energy_wh_kg <= 300.0, battery.name
-        assert battery.capacity_j == pytest.approx(battery.capacity_wh * 3600.0)
+def test_fixed_battery_table_is_gone(db_path: Path) -> None:
+    assert "batteries" not in CATALOG_TABLES and CATALOG_VERSION == 5
+    with pytest.raises(ValueError, match="Unknown catalog table"):
+        load_catalog(db_path, "batteries")
+
+
+def test_cell_built_packs_are_physical(db_path: Path) -> None:
+    for cell in load_catalog(db_path, "cells"):
+        pack = match_battery(db_path, cell.name, 6, 300.0 * WH_TO_J, 900.0)
+        assert 100.0 <= pack.specific_energy_wh_kg <= 300.0, cell.name
+        assert pack.capacity_j == pytest.approx(pack.capacity_wh * 3600.0)
 
 
 def test_ice_bsfc_is_physical(db_path: Path) -> None:
@@ -96,13 +103,12 @@ def test_catalog_spans_group1_to_group3_scales(db_path: Path) -> None:
     cruise = load_catalog(db_path, "cruise_motors")
     vtol = load_catalog(db_path, "vtol_motors")
     gens = load_catalog(db_path, "ice_generators")
-    batts = load_catalog(db_path, "batteries")
     assert min(m.continuous_power_w for m in cruise) <= 200.0
     assert max(m.continuous_power_w for m in cruise) >= 40_000.0
     # 500 kg quadplane at T/W 1.45 needs ~1780 N per rotor
     assert max(m.max_thrust_n for m in vtol) >= 1_800.0
     assert max(g.continuous_power_w for g in gens) >= 50_000.0
-    assert max(b.capacity_wh for b in batts) >= 10_000.0
+    assert {c.chemistry for c in load_catalog(db_path, "cells")} == {"li_ion", "lipo"}
 
 
 @pytest.mark.parametrize(("motor_table", "application"), [("cruise_motors", "cruise"), ("vtol_motors", "vtol")])
@@ -135,17 +141,20 @@ def test_ice_generator_meets_power_margin(db_path: Path, required_w: float) -> N
     assert gen.continuous_power_w >= required_w * SAFETY_MARGIN
 
 
-def test_battery_meets_energy_and_peak_power(db_path: Path) -> None:
+def test_battery_is_built_from_the_matched_cell_and_series(db_path: Path) -> None:
     energy_j: float = 500.0 * 3600.0
     peak_w: float = 6_000.0
-    battery = match_battery(db_path, energy_j, peak_w)
-    assert battery.capacity_j >= energy_j * SAFETY_MARGIN
-    assert battery.max_power_w >= peak_w * SAFETY_MARGIN
+    battery = match_battery(db_path, "Li-ion 21700 power 4.2Ah", 12, energy_j, peak_w)
+    assert (battery.cell_name, battery.series) == ("Li-ion 21700 power 4.2Ah", 12)
+    assert battery.capacity_j >= energy_j
+    assert battery.max_power_w >= peak_w
+    fewer = match_battery(db_path, "Li-ion 21700 power 4.2Ah", 12, energy_j / 2, peak_w / 2)
+    assert fewer.parallel is not None and battery.parallel is not None and fewer.parallel < battery.parallel
 
 
-def test_battery_chemistry_filter(db_path: Path) -> None:
-    battery = match_battery(db_path, 100.0 * 3600.0, 1_000.0, chemistry="lipo")
-    assert battery.chemistry == "lipo"
+def test_battery_names_an_unknown_cell(db_path: Path) -> None:
+    with pytest.raises(ComponentNotFoundError, match="cells"):
+        match_battery(db_path, "no such cell", 4, 100.0 * 3600.0, 1_000.0)
 
 
 def test_propeller_absorbs_full_motor_power(db_path: Path) -> None:
@@ -191,35 +200,63 @@ def test_non_physical_requirement_rejected(db_path: Path, bad: float) -> None:
 # ------------------------------------------------------------ BOM & MTOW ---
 
 
-def test_electric_fixed_wing_bom(db_path: Path) -> None:
-    needs = ComponentNeeds(
-        cruise_power_w=400.0,
-        battery_energy_j=300.0 * 3600.0,
-        battery_peak_power_w=900.0,
-        payload_mass_kg=1.0,
+def _part(table: str, application: str | None = None):
+    return next(row for row in catalog_rows(table) if application is None or row.application == application)
+
+
+def _matched_needs(**changes: object) -> ComponentNeeds:
+    base: dict[str, object] = dict(
+        cruise_power_w=400.0, battery_energy_j=300.0 * 3600.0, battery_peak_power_w=900.0, payload_mass_kg=1.0,
+        cruise_motor_name=catalog_rows("cruise_motors")[0].name,
+        cruise_propeller_name=_part("propellers", "cruise").name, cruise_esc_name=catalog_rows("escs")[0].name,
+        cell_name="Li-ion 21700 energy 5.0Ah", battery_series=4,
     )
+    return ComponentNeeds(**{**base, **changes})
+
+
+def test_electric_fixed_wing_bom(db_path: Path) -> None:
+    needs = _matched_needs()
     bom = select_bom(db_path, needs)
-    assert bom.vtol_motor is None and bom.ice_generator is None
+    assert bom.vtol_motor is None and bom.ice_generator is None and bom.vtol_esc is None
     assert bom.flight_controller is not None and bom.companion_computer is None  # default: Cube, no Jetson
-    expected = (bom.cruise_motor.mass_kg + bom.cruise_propeller.mass_kg + bom.battery.mass_kg + bom.payload.mass_kg
-                + bom.flight_controller.mass_kg)
+    assert (bom.cruise_motor.name, bom.cruise_propeller.name) == (needs.cruise_motor_name,
+                                                                   needs.cruise_propeller_name)
+    assert bom.cruise_esc is not None and bom.cruise_esc.name == needs.cruise_esc_name
+    assert (bom.battery.cell_name, bom.battery.series) == (needs.cell_name, 4)
+    expected = (bom.cruise_motor.mass_kg + bom.cruise_propeller.mass_kg + bom.cruise_esc.mass_kg
+                + bom.battery.mass_kg + bom.payload.mass_kg + bom.flight_controller.mass_kg)
     assert bom.total_hardware_mass_kg == pytest.approx(expected)
 
 
+def test_bom_needs_the_matched_propulsion_set(db_path: Path) -> None:
+    with pytest.raises(ValueError, match="cruise_motor_name.*propulsion matching"):
+        select_bom(db_path, ComponentNeeds(cruise_power_w=400.0, battery_energy_j=3e5, battery_peak_power_w=900.0,
+                                           payload_mass_kg=1.0))
+    with pytest.raises(ValueError, match="vtol_motor_name"):
+        select_bom(db_path, _matched_needs(vtol_thrust_per_motor_n=30.0))
+
+
 def test_hybrid_quadplane_bom_includes_generator_and_four_rotors(db_path: Path) -> None:
-    needs = ComponentNeeds(
-        cruise_power_w=4_000.0,
-        battery_energy_j=800.0 * 3600.0,
-        battery_peak_power_w=20_000.0,
-        payload_mass_kg=20.0,
-        vtol_thrust_per_motor_n=300.0,
-        generator_power_w=5_000.0,
+    lift_motor = next(m for m in catalog_rows("vtol_motors") if m.kv is not None)
+    needs = _matched_needs(
+        cruise_power_w=4_000.0, battery_energy_j=800.0 * 3600.0, battery_peak_power_w=20_000.0,
+        payload_mass_kg=20.0, vtol_thrust_per_motor_n=300.0, generator_power_w=5_000.0,
+        battery_chemistry="lipo", cell_name="LiPo pouch 22Ah 25C", battery_series=12,
+        vtol_motor_name=lift_motor.name, vtol_propeller_name=_part("propellers", "vtol").name,
+        vtol_esc_name=catalog_rows("escs")[1].name,
     )
     bom = select_bom(db_path, needs)
     assert bom.ice_generator is not None and bom.vtol_motor is not None and bom.vtol_propeller is not None
-    assert bom.vtol_motor_count == 4
-    rotor_mass = 4 * (bom.vtol_motor.mass_kg + bom.vtol_propeller.mass_kg)
+    assert bom.vtol_esc is not None and bom.vtol_motor_count == 4
+    low, high = bus_window_v(next(c for c in catalog_rows("cells") if c.name == needs.cell_name), 12)
+    assert bom.ice_generator.output_voltage_v is not None and low <= bom.ice_generator.output_voltage_v <= high
+    rotor_mass = 4 * (bom.vtol_motor.mass_kg + bom.vtol_propeller.mass_kg + bom.vtol_esc.mass_kg)
     assert bom.total_hardware_mass_kg > rotor_mass + bom.ice_generator.mass_kg
+
+
+def test_hybrid_bom_rejects_a_cell_of_the_wrong_chemistry(db_path: Path) -> None:
+    with pytest.raises(ValueError, match="lipo"):
+        select_bom(db_path, _matched_needs(battery_chemistry="lipo", generator_power_w=500.0))
 
 
 @pytest.mark.parametrize(
@@ -238,25 +275,21 @@ def test_mtow_convergence_rejects_non_positive() -> None:
 # ------------------------------------------------- assumption-driven packs ---
 
 
-def test_default_assumptions_leave_catalog_packs_unchanged(db_path: Path) -> None:
-    for b in load_catalog(db_path, "batteries"):
-        assert rescale_pack(b, DEFAULT_ASSUMPTIONS) == b
-
-
 def test_higher_specific_energy_makes_the_same_pack_lighter(db_path: Path) -> None:
-    b = next(b for b in load_catalog(db_path, "batteries") if b.chemistry == "li_ion")
-    light = rescale_pack(b, DesignAssumptions(liion_specific_energy_wh_kg=300))
-    assert light.mass_kg == pytest.approx(b.capacity_wh / 300, rel=1e-3)
-    assert light.capacity_wh == b.capacity_wh
+    base = match_battery(db_path, "Li-ion 21700 energy 5.0Ah", 6, 300 * WH_TO_J, 900.0)
+    light = match_battery(db_path, "Li-ion 21700 energy 5.0Ah", 6, 300 * WH_TO_J, 900.0,
+                          DesignAssumptions(liion_specific_energy_wh_kg=300))
+    assert light.mass_kg == pytest.approx(base.capacity_wh / 300, rel=1e-3)
+    assert light.capacity_wh == base.capacity_wh
 
 
-def test_c_rate_assumption_changes_which_packs_fit(db_path: Path) -> None:
-    # 500 Wh / 60 kW: the largest seeded Li-ion pack (15 kWh at 3C = 45 kW) cannot supply 69 kW.
-    with pytest.raises(ComponentNotFoundError):
-        match_battery(db_path, 500 * WH_TO_J, 60_000, "li_ion")
-    fast = match_battery(db_path, 500 * WH_TO_J, 60_000, "li_ion", DesignAssumptions(liion_max_c_rate=30))
-    assert fast.chemistry == "li_ion"
-    assert fast.max_c_rate == 30
+def test_peak_power_sets_the_parallel_count(db_path: Path) -> None:
+    # 500 Wh at 12S of 10 A cells: energy alone needs a few strings, 60 kW needs far more.
+    by_energy = match_battery(db_path, "Li-ion 21700 energy 5.0Ah", 12, 500 * WH_TO_J, 1_000.0)
+    by_power = match_battery(db_path, "Li-ion 21700 energy 5.0Ah", 12, 500 * WH_TO_J, 60_000.0)
+    assert by_power.parallel is not None and by_energy.parallel is not None
+    assert by_power.parallel > by_energy.parallel
+    assert by_power.max_power_w >= 60_000.0  # the cells' continuous current covers the peak
 
 
 # ---------------------------------------------------- generator voltages ---

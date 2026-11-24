@@ -81,6 +81,11 @@ def air_properties(altitude_m: float, temperature_offset_c: float = 0.0) -> tupl
     return float(atm.density()), float(atm.dynamic_viscosity())
 
 
+def speed_of_sound_ms(altitude_m: float, temperature_offset_c: float = 0.0) -> float:
+    """Speed of sound (m/s) at altitude in the same ISA-offset atmosphere as `air_properties`."""
+    return float(asb.Atmosphere(altitude=altitude_m, temperature_deviation=temperature_offset_c).speed_of_sound())
+
+
 def reynolds_number(rho: float, speed_ms: float, length_m: float, mu: float) -> float:
     return rho * speed_ms * length_m / mu
 

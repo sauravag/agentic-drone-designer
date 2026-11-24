@@ -6,11 +6,11 @@ re-validates through the target models, so bounds and cross-field validators alw
 """
 
 from decimal import Decimal
-from typing import Final, Literal, Mapping, Optional
+from typing import Any, Final, Literal, Mapping, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.schemas.assumptions import DesignAssumptions
+from src.schemas.assumptions import DesignAssumptions, drop_legacy_efficiency_keys
 from src.schemas.requirements import (ARK_JETSON_PAB, CUSTOM_PAYLOAD, LAYOUT_LABELS, AirframeLayout, FlightControllerId,
                                       LaunchChoice, OperationalRequirements)
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
@@ -37,9 +37,8 @@ FIELD_LABELS: Final[dict[str, str]] = {
     "lipo_energy_density_wh_l": "Energy density (LiPo, Wh/L)",
     "lipo_max_c_rate": "Max discharge (LiPo)",
     "battery_reserve_fraction": "Battery reserve", "fuel_reserve_fraction": "Fuel reserve",
-    "bsfc_kg_per_kwh": "Generator BSFC (kg/kWh)", "drivetrain_efficiency": "Drivetrain efficiency",
+    "bsfc_kg_per_kwh": "Generator BSFC (kg/kWh)",
     "pusher_efficiency_factor": "Pusher installation factor",
-    "hover_figure_of_merit": "Hover figure of merit", "lift_motor_efficiency": "Lift motor efficiency",
     "avionics_base_mass_kg": "Avionics allowance base (kg)",
     "avionics_mass_per_mtow": "Avionics allowance per kg MTOW (kg/kg)",
     "avionics_base_power_w": "Avionics power base (W)", "avionics_power_per_kg_w": "Avionics power per kg MTOW (W/kg)",
@@ -87,10 +86,7 @@ class AssumptionChanges(BaseModel):
     battery_reserve_fraction: Optional[float] = None
     fuel_reserve_fraction: Optional[float] = None
     bsfc_kg_per_kwh: Optional[float] = None
-    drivetrain_efficiency: Optional[float] = None
     pusher_efficiency_factor: Optional[float] = None
-    hover_figure_of_merit: Optional[float] = None
-    lift_motor_efficiency: Optional[float] = None
     avionics_base_mass_kg: Optional[float] = None
     avionics_mass_per_mtow: Optional[float] = None
     avionics_base_power_w: Optional[float] = None
@@ -99,6 +95,11 @@ class AssumptionChanges(BaseModel):
     ark_pab_stack_mass_kg: Optional[float] = None
     companion_computer_mass_kg: Optional[float] = None
     jetson_power_w: Optional[float] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_efficiencies(cls, data: Any) -> Any:
+        return drop_legacy_efficiency_keys(data, cls.__name__)
 
 
 class KnobChanges(BaseModel):

@@ -35,11 +35,8 @@ GROUPS: Final[dict[str, tuple[tuple[str, str], ...]]] = {
         ("bsfc_kg_per_kwh", "BSFC (kg/kWh)"),
         ("fuel_reserve_fraction", "Fuel reserve (fraction)"),
     ),
-    "Efficiencies": (
-        ("drivetrain_efficiency", "Drivetrain efficiency (fraction)"),
+    "Propeller installation": (
         ("pusher_efficiency_factor", "Pusher installation factor (fraction, pusher layouts)"),
-        ("hover_figure_of_merit", "Hover figure of merit (fraction)"),
-        ("lift_motor_efficiency", "Lift motor efficiency (fraction)"),
     ),
     "Avionics": (
         ("avionics_base_mass_kg", "Allowance base mass (kg)"),

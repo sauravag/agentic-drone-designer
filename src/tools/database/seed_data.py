@@ -17,7 +17,7 @@ from typing import Final
 from pydantic import BaseModel
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
-from src.schemas.components import Battery, Cell, CruiseMotor, Esc, IceGenerator, Payload, Propeller, VtolMotor
+from src.schemas.components import Cell, CruiseMotor, Esc, IceGenerator, Payload, Propeller, VtolMotor
 from src.schemas.payload_catalog import PAYLOADS
 from src.tools.database.catalog_variants import (cruise_motor_rows, esc_rows, generator_rows, propeller_rows,
                                                  vtol_motor_rows)
@@ -27,13 +27,13 @@ DEFAULT_DB_PATH: Final[Path] = Path(__file__).resolve().parents[3] / "data" / "c
 # 2: researched NextVision/SIYI gimbals and the payload vendor / reference-price columns.
 # 3: motor windings + equivalent-circuit constants, propeller pitch/folding variants, ESC table.
 # 4: cells table, battery cell columns, generator output voltage + regulated voltage variants.
-CATALOG_VERSION: Final[int] = 4
+# 5: the fixed `batteries` pack table is gone: every pack is built from a cell (`packs.build_pack`).
+CATALOG_VERSION: Final[int] = 5
 
 CATALOG_TABLES: Final[dict[str, type[BaseModel]]] = {
     "cruise_motors": CruiseMotor,
     "vtol_motors": VtolMotor,
     "ice_generators": IceGenerator,
-    "batteries": Battery,
     "cells": Cell,
     "propellers": Propeller,
     "escs": Esc,
@@ -113,31 +113,6 @@ ICE_GENERATORS: Final[list[tuple]] = [
     ("Heavy-fuel genset 75 kW",  75.0, 75000, 0.36, "jp8",      0.95, 0.58, 0.50),
 ]
 
-# (name, chemistry, capacity_wh, max_c_rate, voltage_v) — mass/dims derived from pack constants
-BATTERIES: Final[list[tuple]] = [
-    ("Li-Ion 21700 3S1P",     "li_ion",    54.0,  3.0,  10.8),
-    ("Li-Ion 21700 4S2P",     "li_ion",   144.0,  3.0,  14.4),
-    ("Li-Ion 21700 6S2P",     "li_ion",   216.0,  3.0,  21.6),
-    ("Li-Ion 21700 6S4P",     "li_ion",   432.0,  3.0,  21.6),
-    ("Li-Ion 21700 6S6P",     "li_ion",   648.0,  3.0,  21.6),
-    ("Li-Ion 21700 12S4P",    "li_ion",   864.0,  3.0,  43.2),
-    ("Li-Ion 21700 12S6P",    "li_ion",  1296.0,  3.0,  43.2),
-    ("Li-Ion 21700 12S10P",   "li_ion",  2160.0,  3.0,  43.2),
-    ("Li-Ion 21700 14S12P",   "li_ion",  3024.0,  3.0,  50.4),
-    ("Li-Ion HV pack 5 kWh",  "li_ion",  5000.0,  3.0, 400.0),
-    ("Li-Ion HV pack 15 kWh", "li_ion", 15000.0,  3.0, 400.0),
-    ("LiPo 3S 2200mAh",       "lipo",      24.4, 25.0,  11.1),
-    ("LiPo 4S 5000mAh",       "lipo",      74.0, 25.0,  14.8),
-    ("LiPo 6S 10000mAh",      "lipo",     222.0, 25.0,  22.2),
-    ("LiPo 6S 16000mAh",      "lipo",     355.0, 25.0,  22.2),
-    ("LiPo 12S 16000mAh",     "lipo",     710.0, 25.0,  44.4),
-    ("LiPo 12S 22000mAh",     "lipo",     977.0, 25.0,  44.4),
-    ("LiPo HV pack 2 kWh",    "lipo",    2000.0, 25.0, 100.0),
-    ("LiPo HV pack 4 kWh",    "lipo",    4000.0, 25.0, 400.0),
-    ("LiPo HV pack 6 kWh",    "lipo",    6000.0, 25.0, 400.0),
-    ("LiPo HV pack 8 kWh",    "lipo",    8000.0, 25.0, 400.0),
-]
-
 # Cell classes packs are built from (`packs.build_pack`). ESTIMATES representative of current generic cells
 # (energy / power / high-drain 18650 and 21700, 4680, large-format pouches; LiPo pouches with the high discharge
 # currents a hybrid buffer needs), not datasheet values. Cylindrical cells: length x diameter x diameter.
@@ -185,8 +160,7 @@ def pack_envelope(
 ) -> tuple[float, float, float, float]:
     """Pack (mass_kg, length_m, width_m, height_m) from capacity, specific energy and energy density.
 
-    The single source of pack geometry: the seed rows and `rescale_pack` both call it, so a pack
-    rescaled with the default assumptions is bit-identical to its seeded row.
+    The single source of pack geometry: every cell-built pack (`packs.build_pack`) takes its mass and box here.
     """
     volume_m3: float = capacity_wh / (energy_density_wh_l * 1000.0)
     unit: float = (volume_m3 / (PACK_ASPECT[0] * PACK_ASPECT[1] * PACK_ASPECT[2])) ** (1.0 / 3.0)
@@ -196,22 +170,6 @@ def pack_envelope(
         round(PACK_ASPECT[1] * unit, 4),
         round(PACK_ASPECT[2] * unit, 4),
     )
-
-
-def _battery_rows() -> list[Battery]:
-    """Derive pack mass and a box envelope from capacity using chemistry constants."""
-    rows: list[Battery] = []
-    for name, chem, wh, c_rate, volts in BATTERIES:
-        mass, length, width, height = pack_envelope(
-            wh, PACK_SPECIFIC_ENERGY_WH_KG[chem], PACK_ENERGY_DENSITY_WH_L[chem]
-        )
-        rows.append(
-            Battery(
-                name=name, chemistry=chem, capacity_wh=wh, max_c_rate=c_rate, voltage_v=volts,
-                mass_kg=mass, length_m=length, width_m=width, height_m=height,
-            )
-        )
-    return rows
 
 
 def _propeller_rows() -> list[Propeller]:
@@ -232,7 +190,6 @@ def build_catalog() -> dict[str, list[BaseModel]]:
         "cruise_motors": cruise_motors,
         "vtol_motors": vtol_motors,
         "ice_generators": generator_rows(_tuple_rows(IceGenerator, ICE_GENERATORS, GENERATOR_FIELDS)),
-        "batteries": _battery_rows(),
         "cells": _tuple_rows(Cell, CELLS),
         "propellers": _propeller_rows(),
         "escs": esc_rows([*cruise_motors, *vtol_motors]),

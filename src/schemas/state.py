@@ -10,6 +10,7 @@ from src.schemas.assumptions import DesignAssumptions
 from src.schemas.changes import ChangeSet
 from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import FabricationSettings
+from src.schemas.propulsion import PropulsionMatch
 from src.schemas.requirements import AirframeLayout, OperationalRequirements
 
 Positive = Annotated[float, Field(gt=0)]
@@ -114,6 +115,8 @@ class SizingOutput(_Frozen):
     phases: tuple[PhaseResult, ...]
     avionics_mass_kg: Positive  # what sizing used: shared allowance + flight-controller stack (+ Jetson)
     avionics_power_w: Positive  # whole-flight avionics draw incl. a fitted Jetson (excludes payload)
+    # The matched propulsion set the design was sized with (spec 6.5); None in records that predate matching.
+    propulsion_match: Optional[PropulsionMatch] = None
 
     @model_validator(mode="after")
     def _mass_closure(self) -> "SizingOutput":

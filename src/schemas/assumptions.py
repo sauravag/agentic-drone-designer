@@ -4,14 +4,35 @@ Defaults reproduce the historical hard-coded values exactly. Field descriptions 
 help text. This module must not import from `src.tools` (seed_data imports it, not vice versa).
 """
 
-from typing import Final, Literal
+import logging
+from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.schemas.requirements import ARK_JETSON_PAB
 
+logger: logging.Logger = logging.getLogger(__name__)
+
 Chemistry = Literal["li_ion", "lipo"]
 SERIES_HYBRID: Final[str] = "series_hybrid"
+# Efficiencies that came from fixed assumptions before propulsion matching (spec 6.5): saved records may still carry
+# them; they are accepted and dropped, since the matched propulsion set now gives every efficiency.
+LEGACY_EFFICIENCY_KEYS: Final[tuple[str, ...]] = (
+    "drivetrain_efficiency", "hover_figure_of_merit", "lift_motor_efficiency",
+)
+
+
+def drop_legacy_efficiency_keys(data: Any, model_name: str) -> Any:
+    """`data` without the retired efficiency keys (a new dict; the input is not changed), logging what was dropped.
+    Non-dict input passes through for pydantic to reject or accept."""
+    if not isinstance(data, dict):
+        return data
+    dropped: list[str] = [key for key in LEGACY_EFFICIENCY_KEYS if key in data]
+    if not dropped:
+        return data
+    logger.info("%s: ignoring retired assumption(s) %s; propulsion matching now sets these efficiencies",
+                model_name, ", ".join(dropped))
+    return {key: value for key, value in data.items() if key not in LEGACY_EFFICIENCY_KEYS}
 
 
 class DesignAssumptions(BaseModel):
@@ -44,18 +65,9 @@ class DesignAssumptions(BaseModel):
     bsfc_kg_per_kwh: float = Field(
         0.50, ge=0.25, le=1.20, description="Generator brake-specific fuel consumption (kg/kWh)."
     )
-    drivetrain_efficiency: float = Field(
-        0.68, ge=0.40, le=0.95, description="Cruise electrical-to-thrust efficiency (fraction)."
-    )
     pusher_efficiency_factor: float = Field(
         0.95, ge=0.80, le=1.00,
-        description="Pusher installation loss on the cruise drivetrain efficiency (fraction; pusher layouts only).",
-    )
-    hover_figure_of_merit: float = Field(
-        0.72, ge=0.40, le=0.90, description="Rotor hover figure of merit (fraction)."
-    )
-    lift_motor_efficiency: float = Field(
-        0.85, ge=0.50, le=0.98, description="VTOL lift motor + ESC efficiency (fraction)."
+        description="Pusher installation loss on the cruise propeller efficiency (fraction; pusher layouts only).",
     )
 
     # --- avionics (defaults researched 2026-11-18; docs/superpowers/specs/2026-11-18-companion-computer-design.md)
@@ -83,6 +95,11 @@ class DesignAssumptions(BaseModel):
     jetson_power_w: float = Field(
         25.0, ge=1.0, le=100.0, description="Jetson Orin NX power, drawn for the whole flight when fitted (W)."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_efficiencies(cls, data: Any) -> Any:
+        return drop_legacy_efficiency_keys(data, cls.__name__)
 
     def avionics_mass_kg(self, mtow_kg: float, flight_controller: str, companion_computer: bool) -> float:
         """Shared allowance + the chosen flight-controller stack (+ the separate Jetson for a Cube)."""

@@ -196,6 +196,16 @@ class ComponentNeeds(BaseModel):
     flight_controller: FlightControllerId = CUBE_ORANGE_PLUS
     companion_computer: bool = False
     payload_model: str = CUSTOM_PAYLOAD  # a catalogue name is used as-is; Custom is matched by mass
+    # The matched propulsion set (sizing's PropulsionMatch): the BOM takes these parts by name and builds the pack
+    # from `cell_name` x `battery_series`. None only for needs built without a matched sizing.
+    cruise_motor_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    cruise_propeller_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    cruise_esc_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    vtol_motor_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    vtol_propeller_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    vtol_esc_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    cell_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    battery_series: Optional[int] = Field(default=None, ge=1, le=1_000)
 
 
 class SelectedBOM(BaseModel):
@@ -207,8 +217,10 @@ class SelectedBOM(BaseModel):
     cruise_propeller: Propeller
     battery: Battery
     payload: Payload
+    cruise_esc: Optional[Esc] = None  # None only in bom.json written before propulsion matching
     vtol_motor: Optional[VtolMotor] = None
     vtol_propeller: Optional[Propeller] = None
+    vtol_esc: Optional[Esc] = None  # one per lift rotor; None without rotors or in pre-matching bom.json
     vtol_motor_count: int = 0
     ice_generator: Optional[IceGenerator] = None
     flight_controller: Optional[FlightController] = None  # None only in bom.json written before the avionics choice
@@ -220,10 +232,11 @@ class SelectedBOM(BaseModel):
         has_motor: bool = self.vtol_motor is not None
         has_prop: bool = self.vtol_propeller is not None
         complete: bool = has_motor and has_prop and self.vtol_motor_count >= MIN_VTOL_ROTORS
-        absent: bool = not has_motor and not has_prop and self.vtol_motor_count == 0
+        absent: bool = not has_motor and not has_prop and self.vtol_motor_count == 0 and self.vtol_esc is None
         if not (complete or absent):
             raise ValueError(
-                f"Inconsistent VTOL set: motor={has_motor}, propeller={has_prop}, count={self.vtol_motor_count}; "
+                f"Inconsistent VTOL set: motor={has_motor}, propeller={has_prop}, esc={self.vtol_esc is not None}, "
+                f"count={self.vtol_motor_count}; "
                 f"need all three (count >= {MIN_VTOL_ROTORS}) or none (count == 0)"
             )
         return self
@@ -233,9 +246,10 @@ class SelectedBOM(BaseModel):
     def total_hardware_mass_kg(self) -> float:
         single: float = sum(
             part.mass_kg
-            for part in (self.cruise_motor, self.cruise_propeller, self.battery, self.payload, self.ice_generator,
-                         self.flight_controller, self.companion_computer)
+            for part in (self.cruise_motor, self.cruise_propeller, self.cruise_esc, self.battery, self.payload,
+                         self.ice_generator, self.flight_controller, self.companion_computer)
             if part is not None
         )
-        rotor_set: float = sum(p.mass_kg for p in (self.vtol_motor, self.vtol_propeller) if p is not None)
+        rotor_set: float = sum(p.mass_kg for p in (self.vtol_motor, self.vtol_propeller, self.vtol_esc)
+                               if p is not None)
         return single + self.vtol_motor_count * rotor_set

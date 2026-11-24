@@ -111,5 +111,5 @@ def test_legacy_battery_without_cells_loads(tmp_path: Path) -> None:
                                      "max_c_rate": 25.0, "voltage_v": 22.2, "mass_kg": 1.48, "length_m": 0.2,
                                      "width_m": 0.1, "height_m": 0.066})
     assert (legacy.cell_name, legacy.series, legacy.parallel) == (None, None, None)
-    seeded: list[Battery] = load_catalog(seed_database(tmp_path / "c.db"), "batteries")
-    assert seeded and all(b.cell_name is None for b in seeded)  # fixed packs stay until Task 6's switch-over
+    with pytest.raises(ValueError, match="Unknown catalog table"):  # the fixed packs are gone (Task 6)
+        load_catalog(seed_database(tmp_path / "c.db"), "batteries")

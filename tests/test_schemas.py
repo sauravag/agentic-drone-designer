@@ -3,7 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from src.schemas.components import Battery, CruiseMotor, Payload, Propeller, SelectedBOM, VtolMotor
+from src.schemas.components import Battery, CruiseMotor, Esc, Payload, Propeller, SelectedBOM, VtolMotor
+from src.schemas.propulsion import OperatingPoint, PropulsionMatch
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import CADArtifacts, SizingOutput
 
@@ -153,3 +154,48 @@ def test_old_sizing_records_without_cruise_speed_still_validate() -> None:
     sizing = SizingOutput(**_sizing_kwargs())
     assert sizing.v_cruise_ms is None
     assert SizingOutput(**_sizing_kwargs(v_cruise_ms=25.0)).v_cruise_ms == 25.0
+
+
+CRUISE_ESC = Esc(name="esc40", mass_kg=0.04, continuous_current_a=40.0, burst_current_a=50.0, max_voltage_v=26.0,
+                 efficiency=0.96, length_m=0.05, width_m=0.025, height_m=0.01)
+LIFT_ESC = Esc(name="esc20", mass_kg=0.02, continuous_current_a=20.0, burst_current_a=25.0, max_voltage_v=26.0,
+               efficiency=0.96, length_m=0.04, width_m=0.02, height_m=0.01)
+
+
+def test_bom_hardware_mass_counts_the_escs() -> None:
+    bom = SelectedBOM(**_bom_parts(), vtol_motor=VTOL_MOTOR, vtol_propeller=VTOL_PROP, vtol_motor_count=4,
+                      cruise_esc=CRUISE_ESC, vtol_esc=LIFT_ESC)
+    assert bom.total_hardware_mass_kg == pytest.approx(
+        0.1 + 0.035 + 0.04 + 0.72 + 1.0 + 4 * (0.15 + 0.05 + 0.02))
+
+
+def test_legacy_bom_without_escs_loads() -> None:
+    legacy = SelectedBOM(**_bom_parts()).model_dump()
+    legacy.pop("cruise_esc")
+    legacy.pop("vtol_esc")
+    legacy.pop("total_hardware_mass_kg")
+    bom = SelectedBOM.model_validate(legacy)
+    assert bom.cruise_esc is None and bom.vtol_esc is None
+
+
+def test_bom_rejects_a_lift_esc_without_rotors() -> None:
+    with pytest.raises(ValidationError, match="VTOL"):
+        SelectedBOM(**_bom_parts(), vtol_esc=LIFT_ESC)
+
+
+def test_legacy_sizing_record_without_match_loads() -> None:
+    record = SizingOutput(**_sizing_kwargs()).model_dump(mode="json")
+    record.pop("propulsion_match")
+    assert SizingOutput.model_validate(record).propulsion_match is None
+
+
+def test_sizing_record_round_trips_its_propulsion_match() -> None:
+    match = PropulsionMatch(
+        cell_name="c", series=4, cruise_motor="m", cruise_propeller="p", cruise_esc="esc40",
+        operating_points=(OperatingPoint(flight_point="Loiter", propulsor="cruise", rpm=5000.0, current_a=8.0,
+                                         throttle=0.6, prop_efficiency=0.7, motor_efficiency=0.85, tip_mach=0.3,
+                                         electrical_power_w=120.0, sagged=False),),
+        efficiencies={"Loiter": 0.6}, propulsion_mass_kg=0.2)
+    sizing = SizingOutput(**_sizing_kwargs(propulsion_match=match))
+    again = SizingOutput.model_validate_json(sizing.model_dump_json())
+    assert again.propulsion_match == match and again.propulsion_match.set_key == (4, "m", "p", None, None)

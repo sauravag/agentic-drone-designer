@@ -7,7 +7,7 @@ Propulsion hardware carries the matcher's 15% margin so sized MTOW tracks the di
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Optional
 
 from src.schemas.state import SizingOutput, TailSurface
 from src.tools.gear import GearGeometry, GearInputs, PropellerDisc, gear_mass_kg, landing_gear
@@ -64,6 +64,7 @@ LIFT_BOOM_COUNT: Final[int] = 2  # two longitudinal booms, two lift rotors each
 # fuselage diameter. Calibrated 2026-11-23 as the mean of real BOM propeller / sized fuselage diameter over the
 # reference designs (fresh size_aircraft + select_bom on the seed catalog): G1 0.2794/0.1263 = 2.211,
 # G2 0.4064/0.2128 = 1.909, G3 0.8128/0.4046 = 2.009; mean 2.043, rounded to 2.04.
+# Used on sizing pass 0 only: every later pass takes the matched cruise propeller's diameter (spec 6.5).
 PROP_TO_FUSELAGE_DIAMETER_RATIO: Final[float] = 2.04
 
 
@@ -86,11 +87,29 @@ class Geometry:
 
 
 @dataclass(frozen=True)
+class MatchedHardware:
+    """Masses and diameters of a matched propulsion set (spec 6.5), held fixed through one sizing pass.
+    `vtol_kg` is the whole lift system: lift rotor count x `lift_unit_mass_kg`."""
+
+    cruise_kg: float  # cruise motor + propeller + ESC
+    vtol_kg: float
+    cruise_propeller_diameter_m: float
+    lift_rotor_diameter_m: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class PropulsionLoads:
     cruise_motor_power_w: float
     vtol_total_thrust_n: float = 0.0
     generator_power_w: float = 0.0
     fuel_mass_kg: float = 0.0
+    matched: Optional[MatchedHardware] = None  # None: pass 0 (power- and thrust-scaled estimates)
+
+
+def lift_unit_mass_kg(motor_kg: float, rotor_kg: float, esc_kg: float) -> float:
+    """One installed lift rotor: motor + rotor + ESC, never less than VTOL_INSTALL_FACTOR x the motor (the mount
+    allowance; it no longer has to cover the ESC, which is now a real part)."""
+    return max(VTOL_INSTALL_FACTOR * motor_kg, motor_kg + rotor_kg + esc_kg)
 
 
 def required_wing_area_m2(mtow_kg: float, rho: float, speed_ms: float, cl_limit: float) -> float:
@@ -170,13 +189,13 @@ def boom_mass_kg(boom: BoomSet) -> float:
     return boom.count * boom.length_m * CF_TUBE_WALL_KG_M2 * math.pi * boom.diameter_m
 
 
-def _sizing_propeller_diameter_m(geom: Geometry) -> float:
-    """The propeller is not chosen until the BOM: sizing estimates it as PROP_TO_FUSELAGE_DIAMETER_RATIO x the
-    fuselage diameter (the CAD stage recomputes the gear and clearances from the real one)."""
-    return PROP_TO_FUSELAGE_DIAMETER_RATIO * geom.fuselage_diameter_m
+def _sizing_propeller_diameter_m(geom: Geometry, matched_m: Optional[float] = None) -> float:
+    """The matched cruise propeller's diameter; before a set is matched (pass 0), PROP_TO_FUSELAGE_DIAMETER_RATIO x
+    the fuselage diameter (the CAD stage recomputes the gear and clearances from the BOM propeller)."""
+    return PROP_TO_FUSELAGE_DIAMETER_RATIO * geom.fuselage_diameter_m if matched_m is None else matched_m
 
 
-def _tail_boom_end_m(geom: Geometry, spec: LayoutSpec) -> float:
+def _tail_boom_end_m(geom: Geometry, spec: LayoutSpec, propeller_diameter_m: Optional[float] = None) -> float:
     """Aft end of the centre tail boom at DEFAULT_WING_STATION: the tail trailing edge, plus the propeller gap for a
     boom-end pusher (the motor sits beyond it)."""
     if not geom.tail_surfaces:
@@ -184,17 +203,18 @@ def _tail_boom_end_m(geom: Geometry, spec: LayoutSpec) -> float:
     _, _, x_ac = _default_station_wing_m(geom)
     tail_end: float = max(_surface_trailing_edge_m(s, x_ac) for s in geom.tail_surfaces)
     if spec.propeller == "pusher_boom_end":
-        return tail_end + pusher_tail_gap_m(_sizing_propeller_diameter_m(geom))
+        return tail_end + pusher_tail_gap_m(_sizing_propeller_diameter_m(geom, propeller_diameter_m))
     return tail_end
 
 
-def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> tuple[BoomSet, ...]:
+def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float,
+                 propeller_diameter_m: Optional[float] = None) -> tuple[BoomSet, ...]:
     """The boom tubes the sizing books, estimated at DEFAULT_WING_STATION exactly as the CAD layout places them:
     a centre tail boom from TAIL_BOOM_START_FRACTION of the pod to `_tail_boom_end_m` (when `has_tail_boom`), and
     two lift booms when there are lift rotors (`rotor_diameter_m` > 0)."""
     if spec.booms != "centre":
         raise ValueError(f"no boom estimate for {spec.booms!r} booms yet")
-    tail_end: float = _tail_boom_end_m(geom, spec)
+    tail_end: float = _tail_boom_end_m(geom, spec, propeller_diameter_m)
     root, x_le, x_ac = _default_station_wing_m(geom)
     start: float = TAIL_BOOM_START_FRACTION * geom.fuselage_length_m
     tail: tuple[BoomSet, ...] = (
@@ -207,21 +227,24 @@ def sizing_booms(geom: Geometry, spec: LayoutSpec, rotor_diameter_m: float) -> t
     return (*tail, BoomSet(LIFT_BOOM_COUNT, length, diameter, "lift_booms"))
 
 
-def _sizing_propeller(geom: Geometry, spec: LayoutSpec) -> PropellerDisc:
-    """Sizing's propeller-disc estimate: on the nose for a tractor; for a boom-end pusher, on the boom axis (z = 0,
-    the centre boom's height) the motor-mount length behind the tail-boom end."""
-    diameter: float = _sizing_propeller_diameter_m(geom)
+def _sizing_propeller(geom: Geometry, spec: LayoutSpec, matched_m: Optional[float] = None) -> PropellerDisc:
+    """Sizing's propeller disc: on the nose for a tractor; for a boom-end pusher, on the boom axis (z = 0, the
+    centre boom's height) the motor-mount length behind the tail-boom end."""
+    diameter: float = _sizing_propeller_diameter_m(geom, matched_m)
     if spec.propeller == "tractor_nose":
         return PropellerDisc(0.0, 0.0, diameter)
     if spec.propeller == "pusher_boom_end":
-        return PropellerDisc(_tail_boom_end_m(geom, spec) + pusher_mount_length_m(diameter), 0.0, diameter)
+        return PropellerDisc(_tail_boom_end_m(geom, spec, matched_m) + pusher_mount_length_m(diameter), 0.0,
+                             diameter)
     raise ValueError(f"no propeller-disc estimate for {spec.propeller!r} propellers: not built yet")
 
 
-def sizing_gear(geom: Geometry, spec: LayoutSpec, launch: LaunchMethod) -> GearGeometry:
+def sizing_gear(geom: Geometry, spec: LayoutSpec, launch: LaunchMethod,
+                propeller_diameter_m: Optional[float] = None) -> GearGeometry:
     """Landing gear from sizing's own estimates: the wing at DEFAULT_WING_STATION, the CG at the layout's target
-    static margin ahead of the wing AC, and the propeller disc `_sizing_propeller` estimates."""
-    propeller: PropellerDisc = _sizing_propeller(geom, spec)
+    static margin ahead of the wing AC, and the propeller disc `_sizing_propeller` gives (the matched diameter when
+    one is given)."""
+    propeller: PropellerDisc = _sizing_propeller(geom, spec, propeller_diameter_m)
     _, _, x_ac = _default_station_wing_m(geom)
     x_cg: float = x_ac - spec.static_margin.target * geom.mean_chord_m
     return landing_gear(GearInputs(launch, geom.fuselage_length_m, geom.fuselage_diameter_m, geom.mean_chord_m,
@@ -250,10 +273,16 @@ def _structure_mass(mtow_kg: float, geom: Geometry, booms: Sequence[BoomSet]) ->
 
 
 def _propulsion_mass(loads: PropulsionLoads) -> dict[str, float]:
-    """Lift motors with their props/ESCs/mounts; the lift booms are structure (`sizing_booms`)."""
-    vtol: float = MATCH_MARGIN * loads.vtol_total_thrust_n / VTOL_THRUST_N_PER_KG * VTOL_INSTALL_FACTOR
+    """Cruise propulsor and lift motors with their props/ESCs/mounts: the matched set's real parts when there is one,
+    else the power- and thrust-scaled estimates (pass 0). The lift booms are structure (`sizing_booms`)."""
+    matched: Optional[MatchedHardware] = loads.matched
+    if matched is None:
+        cruise: float = MATCH_MARGIN * loads.cruise_motor_power_w / CRUISE_PROPULSION_W_PER_KG
+        vtol: float = MATCH_MARGIN * loads.vtol_total_thrust_n / VTOL_THRUST_N_PER_KG * VTOL_INSTALL_FACTOR
+    else:
+        cruise, vtol = matched.cruise_kg, matched.vtol_kg
     return {
-        "cruise_propulsion": MATCH_MARGIN * loads.cruise_motor_power_w / CRUISE_PROPULSION_W_PER_KG,
+        "cruise_propulsion": cruise,
         "vtol_system": vtol,
         "generator": MATCH_MARGIN * loads.generator_power_w / GENSET_W_PER_KG,
         "fuel_system": FUEL_SYSTEM_FRACTION * loads.fuel_mass_kg,

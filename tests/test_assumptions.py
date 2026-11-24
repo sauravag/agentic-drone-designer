@@ -10,7 +10,7 @@ def test_defaults_match_todays_constants() -> None:
     a = DEFAULT_ASSUMPTIONS
     assert (a.liion_specific_energy_wh_kg, a.liion_max_c_rate, a.lipo_specific_energy_wh_kg) == (200, 3, 155)
     assert (a.battery_reserve_fraction, a.fuel_reserve_fraction, a.bsfc_kg_per_kwh) == (0.20, 0.10, 0.50)
-    assert (a.drivetrain_efficiency, a.hover_figure_of_merit, a.lift_motor_efficiency) == (0.68, 0.72, 0.85)
+    assert a.pusher_efficiency_factor == 0.95
     assert a.non_default() == {}
 
 
@@ -20,7 +20,7 @@ def test_defaults_match_todays_constants() -> None:
         ("liion_specific_energy_wh_kg", 99),
         ("liion_specific_energy_wh_kg", 501),
         ("liion_max_c_rate", 0.5),
-        ("drivetrain_efficiency", 0.99),
+        ("pusher_efficiency_factor", 0.5),
         ("battery_reserve_fraction", 0.05),
     ],
 )
@@ -48,3 +48,33 @@ def test_catalog_pack_constants_come_from_the_defaults() -> None:
 
     assert seed_data.PACK_SPECIFIC_ENERGY_WH_KG == {"li_ion": 200.0, "lipo": 155.0}
     assert seed_data.PACK_ENERGY_DENSITY_WH_L == {"li_ion": 250.0, "lipo": 280.0}
+
+
+LEGACY_EFFICIENCY_KEYS = {"drivetrain_efficiency": 0.7, "hover_figure_of_merit": 0.75, "lift_motor_efficiency": 0.9}
+
+
+def test_efficiency_assumptions_are_gone() -> None:
+    assert not set(LEGACY_EFFICIENCY_KEYS) & set(DesignAssumptions.model_fields)
+
+
+def test_legacy_assumptions_with_efficiency_keys_load(caplog: pytest.LogCaptureFixture) -> None:
+    legacy = {"liion_specific_energy_wh_kg": 250.0, **LEGACY_EFFICIENCY_KEYS}
+
+    with caplog.at_level("INFO", logger="src.schemas.assumptions"):
+        loaded = DesignAssumptions.model_validate(legacy)
+
+    assert loaded == DesignAssumptions(liion_specific_energy_wh_kg=250.0)
+    assert "drivetrain_efficiency" in caplog.text and "propulsion matching" in caplog.text
+
+
+def test_legacy_assumption_changes_with_efficiency_keys_load() -> None:
+    from src.schemas.changes import AssumptionChanges
+
+    changes = AssumptionChanges.model_validate({"bsfc_kg_per_kwh": 0.6, **LEGACY_EFFICIENCY_KEYS})
+
+    assert changes == AssumptionChanges(bsfc_kg_per_kwh=0.6)
+
+
+def test_unknown_keys_are_still_rejected_next_to_legacy_ones() -> None:
+    with pytest.raises(ValidationError):
+        DesignAssumptions.model_validate({"drivetrain_efficiency": 0.7, "bogus": 1})

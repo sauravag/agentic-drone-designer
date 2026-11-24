@@ -16,6 +16,7 @@ from scipy.optimize import brentq
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import ComponentNeeds
 from src.schemas.knobs import OVERRIDE_BOUNDS, OVERRIDE_DEFAULTS
+from src.schemas.propulsion import PropulsionMatch
 from src.schemas.requirements import CUSTOM_PAYLOAD, OperationalRequirements
 from src.schemas.state import SizingOutput
 from src.tools.sizing.aero_model import (
@@ -31,9 +32,11 @@ from src.tools.sizing.aero_model import (
     select_airfoil,
 )
 from src.tools.gear import GearGeometry
+from src.tools.propulsion.match_types import MatchContext
 from src.tools.sizing.errors import SizingDivergenceError  # re-exported: callers import it from here
-from src.tools.sizing.layouts import BoomSet, LayoutSpec, layout_spec
+from src.tools.sizing.layouts import BoomSet, layout_spec
 from src.tools.sizing.mass_model import (
+    MatchedHardware,
     PropulsionLoads,
     empty_mass_breakdown,
     required_wing_area_m2,
@@ -48,6 +51,8 @@ from src.tools.sizing.mission_profile import (
     AeroState,
     EnergyStorage,
     MissionTrace,
+    PhaseSpec,
+    PropulsionEfficiencies,
     disk_loading_n_m2,
     electric_storage,
     forward_power_w,
@@ -55,8 +60,11 @@ from src.tools.sizing.mission_profile import (
     hybrid_storage,
     loiter_speed,
     phase_plan,
+    seed_efficiencies,
     simulate,
 )
+from src.tools.sizing.propulsion_loop import MatchedSizing, flight_points, match_context, matched_hardware, \
+    size_with_matching
 from src.tools.sizing.topology import (HAND_LAUNCH_MAX_MTOW_KG, Airframe, LaunchMethod, Propulsion, classify_group,
                                        effective_max_stall_speed_ms, resolved_launch_method, select_airframe,
                                        select_propulsion, surface_laminar_fraction)
@@ -88,9 +96,12 @@ class _Design:
     airframe: Airframe
     propulsion: Propulsion
     params: dict[str, float]  # validated overrides merged over defaults
-    assumptions: DesignAssumptions  # technology constants (efficiencies, specific energy, reserves)
+    assumptions: DesignAssumptions  # technology constants (specific energy, reserves, avionics)
     cruise_polar: AirfoilPolar  # profile drag + high-altitude CLmax, at cruise Re
     stall_polar: AirfoilPolar  # CLmax for the stall constraint, at the take-off-site stall Re (same airfoil)
+    efficiencies: PropulsionEfficiencies  # held fixed through the pass: the seed (pass 0) or the matched set's
+    match: Optional[PropulsionMatch] = None  # the frozen matched set (None on pass 0)
+    hardware: Optional[MatchedHardware] = None  # its part masses and diameters
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,7 @@ class _Evaluation:
     mtow_out: float
     design: _Design
     aero: AeroState
+    plan: tuple[PhaseSpec, ...]
     trace: MissionTrace
     storage: EnergyStorage
     generator_power_w: float
@@ -126,14 +138,6 @@ def _validate_overrides(overrides: dict[str, float]) -> dict[str, float]:
     return {**OVERRIDE_DEFAULTS, **{k: float(v) for k, v in overrides.items()}}
 
 
-def cruise_drivetrain_efficiency(spec: LayoutSpec, assumptions: DesignAssumptions) -> float:
-    """Cruise electrical-to-thrust efficiency: the drivetrain efficiency, times the pusher installation factor for a
-    propeller working in the wake of the airframe (any pusher layout)."""
-    if spec.propeller == "tractor_nose":
-        return assumptions.drivetrain_efficiency
-    return assumptions.drivetrain_efficiency * assumptions.pusher_efficiency_factor
-
-
 def _wing_area_m2(mtow: float, design: _Design, rho_to: float, rho_c: float) -> float:
     """Binding of two constraints: stall at max_stall_speed at the take-off site, and cruise at altitude flown
     no slower than SPEED_MARGIN_OVER_STALL x local stall (CL <= CLmax / margin^2)."""
@@ -150,6 +154,26 @@ def _rotor_diameter_m(disk_area_m2: float) -> float:
     return math.sqrt(4.0 * disk_area_m2 / VTOL_ROTOR_COUNT / math.pi)
 
 
+def _disk_loading_rotor_diameter_m(mtow: float) -> float:
+    """The lift-rotor diameter the empirical disk loading asks for at this MTOW (the matching's lower bound)."""
+    return _rotor_diameter_m(mtow * G0 / disk_loading_n_m2(mtow))
+
+
+def _lift_disk_area_m2(mtow: float, design: _Design) -> float:
+    """Total lift-rotor disk area: the matched rotor's once a set is frozen, else from the disk loading (pass 0)."""
+    if design.airframe != "quadplane_vtol":
+        return 0.0
+    rotor_d: Optional[float] = design.hardware.lift_rotor_diameter_m if design.hardware else None
+    if rotor_d is None:
+        return mtow * G0 / disk_loading_n_m2(mtow)
+    return VTOL_ROTOR_COUNT * math.pi * rotor_d**2 / 4.0
+
+
+def _propeller_diameter_m(design: _Design) -> Optional[float]:
+    """The matched cruise propeller's diameter (None on pass 0: sizing's fuselage-ratio estimate)."""
+    return design.hardware.cruise_propeller_diameter_m if design.hardware else None
+
+
 def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float, tuple[BoomSet, ...]]:
     """Geometry + drag polar at this MTOW. Returns (aero, mu at cruise altitude, the boom tubes): the booms are built
     once here and feed both the drag build-up and the empty mass."""
@@ -160,9 +184,9 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float, tuple[B
     geom = size_geometry(mtow, _wing_area_m2(mtow, design, rho_to, rho_c), p["aspect_ratio"],
                          p["tail_volume_h"], p["tail_volume_v"], p["fuselage_length_factor"], spec)
     is_quad: bool = design.airframe == "quadplane_vtol"
-    disk: float = mtow * G0 / disk_loading_n_m2(mtow) if is_quad else 0.0
+    disk: float = _lift_disk_area_m2(mtow, design)
     rotor_d: float = _rotor_diameter_m(disk)
-    booms = sizing_booms(geom, spec, rotor_d)
+    booms = sizing_booms(geom, spec, rotor_d, _propeller_diameter_m(design))
     laminar = surface_laminar_fraction(resolved_launch_method(req))
     profile_cd: float = (design.cruise_polar.cd_min if laminar is None
                          else profile_drag_cd(design.cruise_polar.name, design.cruise_polar.reynolds, laminar))
@@ -176,31 +200,29 @@ def _aero_state(mtow: float, design: _Design) -> tuple[AeroState, float, tuple[B
 
 def _evaluate(mtow: float, design: _Design) -> _Evaluation:
     req, assumptions = design.req, design.assumptions
-    eta: float = cruise_drivetrain_efficiency(layout_spec(req.airframe_layout), assumptions)
+    eta: float = design.efficiencies.forward_for("Ingress")  # the cruise-speed phase
     aero, mu_c, booms = _aero_state(mtow, design)
     _, mu_to = air_properties(req.takeoff_altitude_m, req.isa_temperature_offset_c)
     hotel: float = hotel_power_w(req, mtow, assumptions)
     cruise_total: float = forward_power_w(mtow * G0, req.cruise_speed_ms, aero.rho_cruise, aero, eta) + hotel
     is_hybrid: bool = design.propulsion == "series_hybrid"
     gen_w: float = GENERATOR_MARGIN * cruise_total if is_hybrid else 0.0
-    trace = simulate(
-        phase_plan(req, design.airframe, design.cruise_polar, aero, mtow), mtow, aero, hotel, gen_w,
-        assumptions.bsfc_kg_per_kwh / KWH_TO_J, eta, assumptions.hover_figure_of_merit,
-        assumptions.lift_motor_efficiency,
-    )
+    plan: tuple[PhaseSpec, ...] = phase_plan(req, design.airframe, design.cruise_polar, aero, mtow)
+    trace = simulate(plan, mtow, aero, hotel, gen_w, assumptions.bsfc_kg_per_kwh / KWH_TO_J, design.efficiencies)
     reserve: float = reserve_fraction(design.params, design.propulsion, assumptions)
     storage = (hybrid_storage(trace, gen_w, reserve, assumptions) if is_hybrid
                else electric_storage(trace, reserve, assumptions))
     vtol_thrust: float = VTOL_THRUST_TO_WEIGHT * mtow * G0 if design.airframe == "quadplane_vtol" else 0.0
-    loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg)
+    loads = PropulsionLoads(trace.max_forward_propulsive_w, vtol_thrust, gen_w, storage.fuel_mass_kg,
+                            design.hardware)
     avionics: float = assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer)
     gear: GearGeometry = sizing_gear(
-        aero.geom, layout_spec(req.airframe_layout), resolved_launch_method(req))
+        aero.geom, layout_spec(req.airframe_layout), resolved_launch_method(req), _propeller_diameter_m(design))
     breakdown: dict[str, float] = empty_mass_breakdown(mtow, aero.geom, design.airframe, loads, avionics, booms, gear)
     empty: float = sum(breakdown.values())
     return _Evaluation(
         mtow_in=mtow, mtow_out=empty + req.payload_mass_kg + storage.battery_mass_kg + storage.fuel_mass_kg,
-        design=design, aero=aero, trace=trace, storage=storage, generator_power_w=gen_w,
+        design=design, aero=aero, plan=plan, trace=trace, storage=storage, generator_power_w=gen_w,
         cruise_total_w=cruise_total,
         wing_reynolds=reynolds_number(aero.rho_cruise, req.cruise_speed_ms, aero.geom.mean_chord_m, mu_c),
         stall_reynolds=reynolds_number(aero.rho_takeoff, effective_max_stall_speed_ms(req), aero.geom.mean_chord_m,
@@ -290,13 +312,16 @@ def _is_self_consistent(ev: _Evaluation, name: str) -> bool:
     return name == d.cruise_polar.name and max(shifts) <= RE_REFRESH_TOL
 
 
-def _size_powertrain(req: OperationalRequirements, airframe: Airframe, propulsion: Propulsion,
-                     params: dict[str, float], assumptions: DesignAssumptions) -> _Evaluation:
-    """Outer loop: re-pick the Reynolds-matched airfoil and re-evaluate its cruise/stall polars until
-    airfoil and Re are self-consistent. If it never settles (e.g. flip-flopping across the Re = 3e5
-    boundary), fall back to the visited design with the lowest stall CLmax - the conservative wing."""
+def _size_airfoil(req: OperationalRequirements, airframe: Airframe, propulsion: Propulsion,
+                  params: dict[str, float], assumptions: DesignAssumptions, efficiencies: PropulsionEfficiencies,
+                  match: Optional[PropulsionMatch]) -> _Evaluation:
+    """One sizing pass with the propulsion frozen: re-pick the Reynolds-matched airfoil and re-evaluate its
+    cruise/stall polars until airfoil and Re are self-consistent. If it never settles (e.g. flip-flopping across the
+    Re = 3e5 boundary), fall back to the visited design with the lowest stall CLmax - the conservative wing."""
     initial: AirfoilPolar = airfoil_polar(*INITIAL_AIRFOIL)
-    design = _Design(req, airframe, propulsion, params, assumptions, initial, initial)
+    rotors: int = VTOL_ROTOR_COUNT if airframe == "quadplane_vtol" else 0
+    hardware: Optional[MatchedHardware] = matched_hardware(match, rotors) if match is not None else None
+    design = _Design(req, airframe, propulsion, params, assumptions, initial, initial, efficiencies, match, hardware)
     visited: list[_Design] = []
     for _ in range(MAX_AIRFOIL_PASSES):
         visited.append(design)
@@ -310,6 +335,36 @@ def _size_powertrain(req: OperationalRequirements, airframe: Airframe, propulsio
     logger.warning("Airfoil selection did not settle in %d passes; using conservative %s (CLmax %.3f)",
                    MAX_AIRFOIL_PASSES, conservative.stall_polar.name, conservative.stall_polar.cl_max_3d)
     return _converge(conservative)
+
+
+def _match_context(ev: _Evaluation) -> MatchContext:
+    """What the propulsion matching needs from one converged pass (flight points, limits, hotel load)."""
+    design, req = ev.design, ev.design.req
+    is_quad: bool = design.airframe == "quadplane_vtol"
+    rotors: int = VTOL_ROTOR_COUNT if is_quad else 0
+    points = flight_points(ev.plan, ev.trace.phases, design.efficiencies, ev.mtow_out, rotors,
+                           req.isa_temperature_offset_c)
+    return match_context(
+        points, is_hybrid=design.propulsion == "series_hybrid", lift_rotor_count=rotors,
+        rotor_diameter_m=_disk_loading_rotor_diameter_m(ev.mtow_out) if is_quad else 0.0,
+        fuselage_diameter_m=ev.aero.geom.fuselage_diameter_m, is_hand_launch=resolved_launch_method(req) == "hand",
+        spec=layout_spec(req.airframe_layout), hotel_w=hotel_power_w(req, ev.mtow_out, design.assumptions),
+        assumptions=design.assumptions,
+    )
+
+
+def _size_powertrain(req: OperationalRequirements, airframe: Airframe, propulsion: Propulsion,
+                     params: dict[str, float], assumptions: DesignAssumptions) -> _Evaluation:
+    """Size with the propulsion matched (spec 6.5): `size_with_matching` re-sizes with each matched set frozen until
+    the set repeats; the evaluation's design carries the set it was sized with."""
+    def size_pass(efficiencies: PropulsionEfficiencies, match: Optional[PropulsionMatch]) -> _Evaluation:
+        return _size_airfoil(req, airframe, propulsion, params, assumptions, efficiencies, match)
+
+    seed: PropulsionEfficiencies = seed_efficiencies(layout_spec(req.airframe_layout),
+                                                     assumptions.pusher_efficiency_factor)
+    result: MatchedSizing[_Evaluation] = size_with_matching(size_pass, _match_context, seed)
+    logger.info("%s %s: propulsion set settled after %d matched pass(es)", propulsion, airframe, result.passes)
+    return result.evaluation
 
 
 def _to_output(ev: _Evaluation) -> SizingOutput:
@@ -358,6 +413,7 @@ def _to_output(ev: _Evaluation) -> SizingOutput:
         phases=ev.trace.phases,
         avionics_mass_kg=design.assumptions.avionics_mass_kg(mtow, req.flight_controller, req.companion_computer),
         avionics_power_w=design.assumptions.avionics_power_w(mtow, req.jetson_fitted),
+        propulsion_match=design.match,
     )
 
 
@@ -392,6 +448,7 @@ def component_needs(sizing: SizingOutput, req: OperationalRequirements) -> Compo
     """Translate a converged design into SI hardware requirements for the COTS matcher."""
     is_quad: bool = sizing.airframe_topology == "quadplane_vtol"
     is_hybrid: bool = sizing.propulsion_type == "series_hybrid"
+    match: Optional[PropulsionMatch] = sizing.propulsion_match
     return ComponentNeeds(
         cruise_power_w=sizing.cruise_motor_power_w,
         battery_energy_j=sizing.battery_energy_j,
@@ -406,4 +463,16 @@ def component_needs(sizing: SizingOutput, req: OperationalRequirements) -> Compo
         payload_model=req.payload_model,
         # A named model carries the designer's power; Custom keeps matching by mass alone, as before.
         payload_power_w=None if req.payload_model == CUSTOM_PAYLOAD else req.payload_power_w,
+        **_matched_names(match, is_quad),
     )
+
+
+def _matched_names(match: Optional[PropulsionMatch], is_quad: bool) -> dict[str, object]:
+    """The ComponentNeeds part names of the matched set (none for a record sized before matching)."""
+    if match is None:
+        return {}
+    lift: dict[str, object] = ({"vtol_motor_name": match.lift_motor, "vtol_propeller_name": match.lift_rotor,
+                                "vtol_esc_name": match.lift_esc} if is_quad else {})
+    return {"cruise_motor_name": match.cruise_motor, "cruise_propeller_name": match.cruise_propeller,
+            "cruise_esc_name": match.cruise_esc, "cell_name": match.cell_name, "battery_series": match.series,
+            **lift}
