@@ -1,6 +1,6 @@
 """Propulsion operating points produced by the propulsor model (spec 6.4)."""
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,3 +24,34 @@ class OperatingPoint(BaseModel):
     tip_mach: float = Field(..., gt=0)
     electrical_power_w: float = Field(..., gt=0)  # drawn from the bus, ESC loss included
     sagged: bool
+
+
+SetKey = tuple[int, str, str, Optional[str], Optional[str]]
+
+
+class PropulsionMatch(BaseModel):
+    """The matched propulsion set (spec 6.4) with its operating points. `efficiencies` per flight point name:
+    forward phases T V / P_electrical, hover phases ideal induced power / P_electrical (what sizing consumes).
+    `propulsion_mass_kg` is the hardware only: cruise motor + propeller + ESC, plus lift motor + rotor + ESC per
+    lift rotor."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cell_name: str = Field(..., min_length=1, max_length=120)
+    series: int = Field(..., ge=1, le=1_000)
+    cruise_motor: str = Field(..., min_length=1, max_length=120)
+    cruise_propeller: str = Field(..., min_length=1, max_length=120)
+    cruise_esc: str = Field(..., min_length=1, max_length=120)
+    lift_motor: Optional[str] = Field(None, min_length=1, max_length=120)
+    lift_rotor: Optional[str] = Field(None, min_length=1, max_length=120)
+    lift_esc: Optional[str] = Field(None, min_length=1, max_length=120)
+    operating_points: tuple[OperatingPoint, ...] = Field(..., min_length=1)
+    efficiencies: dict[str, float]
+    propulsion_mass_kg: float = Field(..., gt=0)
+    notes: tuple[str, ...] = ()
+
+    @property
+    def set_key(self) -> SetKey:
+        """What "the set" means for the outer sizing loop's convergence: (S, cruise motor winding, cruise
+        propeller, lift motor winding, lift rotor)."""
+        return self.series, self.cruise_motor, self.cruise_propeller, self.lift_motor, self.lift_rotor

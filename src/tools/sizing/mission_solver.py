@@ -31,6 +31,7 @@ from src.tools.sizing.aero_model import (
     select_airfoil,
 )
 from src.tools.gear import GearGeometry
+from src.tools.sizing.errors import SizingDivergenceError  # re-exported: callers import it from here
 from src.tools.sizing.layouts import BoomSet, LayoutSpec, layout_spec
 from src.tools.sizing.mass_model import (
     PropulsionLoads,
@@ -79,10 +80,6 @@ RE_REFRESH_TOL: Final[float] = 0.10
 INITIAL_AIRFOIL: Final[tuple[str, float]] = ("sd7037", 2e5)
 VTOL_ROTOR_COUNT: Final[int] = 4
 
-
-
-class SizingDivergenceError(RuntimeError):
-    """The mission cannot close with this powertrain/airframe (mass spiral or beyond Group 3)."""
 
 
 @dataclass(frozen=True)

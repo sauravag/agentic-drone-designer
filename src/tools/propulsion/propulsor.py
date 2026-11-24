@@ -59,6 +59,51 @@ def _require_air(airspeed_ms: float, rho: float, mu: float, speed_of_sound_ms: f
         _require(value, name, 0.0)
 
 
+def rpm_window(table: PropellerTable, airspeed_ms: float, rho: float, mu: float,
+               speed_of_sound_ms: float) -> Optional[tuple[float, float]]:
+    """rpm range inside the table's tip Mach, Re75 and J axes for this air and airspeed (None if empty)."""
+    rpm_per_mach: float = speed_of_sound_ms * SECONDS_PER_MINUTE / (math.pi * table.diameter_m)
+    re_per_rpm: float = reynolds75_at(table.diameter_m, table.pitch_m, 1.0, rho, mu)
+    lo: float = max(table.tip_mach[0] * rpm_per_mach, table.reynolds75[0] / re_per_rpm,
+                    airspeed_ms * SECONDS_PER_MINUTE / (table.diameter_m * table.j[-1]))
+    hi: float = min(table.tip_mach[-1] * rpm_per_mach, table.reynolds75[-1] / re_per_rpm)
+    lo, hi = lo * (1.0 + AXIS_INSET), hi * (1.0 - AXIS_INSET)
+    return (lo, hi) if lo < hi else None
+
+
+def _rpm_for_thrust(table: PropellerTable, thrust_n: float, airspeed_ms: float, rho: float, mu: float,
+                    speed_of_sound_ms: float) -> Optional[float]:
+    window: Optional[tuple[float, float]] = rpm_window(table, airspeed_ms, rho, mu, speed_of_sound_ms)
+    if window is None:
+        return None
+    lo, hi = window
+
+    def excess(rpm: float) -> float:
+        return table.thrust_n(rpm, airspeed_ms, rho, mu, speed_of_sound_ms) - thrust_n
+
+    f_lo, f_hi = excess(lo), excess(hi)
+    if f_hi < 0.0 or f_lo > 0.0:  # beyond tip Mach 0.80 / above pitch speed, or below the table floor
+        return None
+    if f_hi == 0.0:
+        return hi
+    return _bracketed_root(excess, lo, hi, f_lo, f_hi, ROOT_THRUST_RTOL * thrust_n)
+
+
+def shaft_for_thrust(table: PropellerTable, prop_thrust_n: float, airspeed_ms: float, rho: float, mu: float,
+                     speed_of_sound_ms: float) -> Optional[tuple[float, float]]:
+    """(rpm, shaft torque N m) at which the propeller itself makes `prop_thrust_n`, or None when the table cannot
+    (tip Mach 0.80, above pitch speed, below the table floor, a negative or out-of-range torque). Motor-free, so
+    the matching search solves it once per propeller and flight point."""
+    try:
+        rpm: Optional[float] = _rpm_for_thrust(table, prop_thrust_n, airspeed_ms, rho, mu, speed_of_sound_ms)
+        if rpm is None:
+            return None
+        torque: float = table.torque_nm(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
+    except (ValueError, PropModelError):  # a table limit (range, past the computed J): not achievable
+        return None
+    return (rpm, torque) if torque >= 0.0 else None
+
+
 @dataclass(frozen=True)
 class Propulsor:
     table: PropellerTable
@@ -82,32 +127,7 @@ class Propulsor:
 
     def _rpm_window(self, airspeed_ms: float, rho: float, mu: float,
                     speed_of_sound_ms: float) -> Optional[tuple[float, float]]:
-        """rpm range inside the table's tip Mach, Re75 and J axes for this air and airspeed (None if empty)."""
-        t: PropellerTable = self.table
-        rpm_per_mach: float = speed_of_sound_ms * SECONDS_PER_MINUTE / (math.pi * t.diameter_m)
-        re_per_rpm: float = reynolds75_at(t.diameter_m, t.pitch_m, 1.0, rho, mu)
-        lo: float = max(t.tip_mach[0] * rpm_per_mach, t.reynolds75[0] / re_per_rpm,
-                        airspeed_ms * SECONDS_PER_MINUTE / (t.diameter_m * t.j[-1]))
-        hi: float = min(t.tip_mach[-1] * rpm_per_mach, t.reynolds75[-1] / re_per_rpm)
-        lo, hi = lo * (1.0 + AXIS_INSET), hi * (1.0 - AXIS_INSET)
-        return (lo, hi) if lo < hi else None
-
-    def _rpm_for_thrust(self, thrust_n: float, airspeed_ms: float, rho: float, mu: float,
-                        speed_of_sound_ms: float) -> Optional[float]:
-        window: Optional[tuple[float, float]] = self._rpm_window(airspeed_ms, rho, mu, speed_of_sound_ms)
-        if window is None:
-            return None
-        lo, hi = window
-
-        def excess(rpm: float) -> float:
-            return self.table.thrust_n(rpm, airspeed_ms, rho, mu, speed_of_sound_ms) - thrust_n
-
-        f_lo, f_hi = excess(lo), excess(hi)
-        if f_hi < 0.0 or f_lo > 0.0:  # beyond tip Mach 0.80 / above pitch speed, or below the table floor
-            return None
-        if f_hi == 0.0:
-            return hi
-        return _bracketed_root(excess, lo, hi, f_lo, f_hi, ROOT_THRUST_RTOL * thrust_n)
+        return rpm_window(self.table, airspeed_ms, rho, mu, speed_of_sound_ms)
 
     def _efficiency(self, delivered_n: float, airspeed_ms: float, rho: float, shaft_w: float) -> float:
         """T V / P_shaft forward, the figure of merit in hover, both on the delivered thrust."""
@@ -127,15 +147,12 @@ class Propulsor:
         _require_air(airspeed_ms, rho, mu, speed_of_sound_ms)
         bus: float = self.bus_voltage_v if bus_voltage_v is None else bus_voltage_v
         _require(bus, "bus_voltage_v", 0.0)
-        try:
-            prop_thrust_n: float = thrust_n / self.installation_factor
-            rpm: Optional[float] = self._rpm_for_thrust(prop_thrust_n, airspeed_ms, rho, mu, speed_of_sound_ms)
-            if rpm is None:
-                return None
-            torque: float = self.table.torque_nm(rpm, airspeed_ms, rho, mu, speed_of_sound_ms)
-            motor: MotorPoint = motor_point(self.kv, self.rm_ohm, self.i0_a, rpm, torque)  # torque < 0 raises
-        except (ValueError, PropModelError):  # a table limit (range, past the computed J, CP < 0): not achievable
+        shaft: Optional[tuple[float, float]] = shaft_for_thrust(
+            self.table, thrust_n / self.installation_factor, airspeed_ms, rho, mu, speed_of_sound_ms)
+        if shaft is None:
             return None
+        rpm: float = shaft[0]
+        motor: MotorPoint = motor_point(self.kv, self.rm_ohm, self.i0_a, rpm, shaft[1])
         if motor.current_a > self.max_current_a or motor.voltage_v > bus or motor.shaft_power_w <= 0.0:
             return None
         return OperatingPoint(
