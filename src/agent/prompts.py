@@ -18,8 +18,8 @@ for "hand-launched", "hand launch" or "thrown" (a hand launch needs no runway or
 launch, otherwise leave it null. Set airframe_layout only when the user names a layout: "V-tail" or "V tail" \
 with "pusher" is single_boom_vtail_pusher; a twin-boom H-tail pusher, twin-boom inverted-V pusher or flying wing \
 is its own id; a conventional pod-and-boom is pod_boom_tractor. Only set dod_group if the user names a group. \
-Set flight_controller \
-to ark_jetson_pab when the user names ARK, PAB or a Jetson carrier with an autopilot, to cube_orange_plus when they name a Cube, otherwise leave it null. Set companion_computer=true \
+Set flight_controller to ark_jetson_pab when the user names ARK, PAB or a Jetson carrier with an autopilot, \
+to cube_orange_plus when they name a Cube, otherwise leave it null. Set companion_computer=true \
 for autonomous operation, onboard AI or a named Jetson / companion computer, false only if the user \
 explicitly excludes one, otherwise leave it null. List anything ambiguous or contradictory in ambiguities. Give the mission a short name.
 """ + ("Set payload_model to the product name when the user names a specific payload (catalogue gimbals: "
