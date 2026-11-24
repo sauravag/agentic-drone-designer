@@ -21,7 +21,7 @@ from src.tools.sizing.mission_profile import (FORWARD_PHASES, SEED_FORWARD_EFFIC
                                               simulate)
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
 from src.units import G0
-from tests.reference_designs import G1_ELECTRIC_FW
+from tests.reference_designs import G1_ELECTRIC_FW, G2_ELECTRIC_VTOL
 
 TRACTOR = layout_spec("pod_boom_tractor")
 PUSHER = layout_spec("single_boom_vtail_pusher")
@@ -344,3 +344,39 @@ def test_select_bom_returns_the_matched_parts(g1: SizingOutput, tmp_path: Path) 
     assert (bom.battery.cell_name, bom.battery.series) == (match.cell_name, match.series)
     assert bom.battery.capacity_j >= g1.battery_energy_j
     assert bom.vtol_motor is None and bom.vtol_esc is None
+
+
+# ------------------------------------------------------------------ fix ruling L3: continuous lift disk in a pass
+
+
+def test_lift_disk_is_the_matched_area_or_the_disk_loading_area_whichever_is_larger() -> None:
+    from dataclasses import replace as dc_replace
+
+    from src.tools.sizing import mission_solver as ms
+    from src.tools.sizing.mission_profile import disk_loading_n_m2
+
+    req = G2_ELECTRIC_VTOL
+    seed = seed_efficiencies(layout_spec(req.airframe_layout), DEFAULT_ASSUMPTIONS.pusher_efficiency_factor)
+    base = ms._size_airfoil(req, "quadplane_vtol", "electric", ms._validate_overrides({}), DEFAULT_ASSUMPTIONS,
+                            seed, None).design
+    design = dc_replace(base, hardware=MatchedHardware(1.0, 4.0, 0.5, 0.8))
+    matched_area = 4 * math.pi * 0.8**2 / 4
+    light, heavy = 10.0, 200.0
+    assert ms._lift_disk_area_m2(light, design) == pytest.approx(matched_area)
+    assert ms._lift_disk_area_m2(heavy, design) == pytest.approx(heavy * G0 / disk_loading_n_m2(heavy))
+    assert ms._lift_disk_area_m2(heavy, design) > matched_area
+
+
+def test_a_c_rate_bound_vtol_variant_no_longer_spirals_on_a_frozen_disk() -> None:
+    from src.tools.sizing.errors import SizingDivergenceError
+    from tests.reference_designs import REQ_FAILED
+
+    req = REQ_FAILED.model_copy(update={"endurance_hours": 1.0, "combat_radius_km": 20.0})
+    try:
+        sizing = size_aircraft(req)
+    except SizingDivergenceError as exc:  # allowed only for a physical reason, not the frozen-disk spiral
+        pytest.fail(f"REQ_FAILED-1h did not close: {exc}")
+    assert sizing.propulsion_match is not None and sizing.airframe_topology == "quadplane_vtol"
+    rotor_area = 4 * math.pi * sizing.rotor_diameter_m**2 / 4
+    lift_rotor = next(p for p in catalog_rows("propellers") if p.name == sizing.propulsion_match.lift_rotor)
+    assert rotor_area == pytest.approx(4 * math.pi * lift_rotor.diameter_m**2 / 4, rel=1e-9)

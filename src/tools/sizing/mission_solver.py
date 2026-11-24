@@ -160,13 +160,17 @@ def _disk_loading_rotor_diameter_m(mtow: float) -> float:
 
 
 def _lift_disk_area_m2(mtow: float, design: _Design) -> float:
-    """Total lift-rotor disk area: the matched rotor's once a set is frozen, else from the disk loading (pass 0)."""
+    """Total lift-rotor disk area: the disk-loading area at this MTOW, never below the frozen matched rotors' area
+    (fix ruling L3). Within a pass the root find then stays continuous: a heavier trial MTOW gets the bigger disk
+    the next match would give it, instead of a fixed disk whose hover power grows as W^1.5. At the converged set the
+    matched rotor is at least the disk-loading diameter, so the area is the matched one."""
     if design.airframe != "quadplane_vtol":
         return 0.0
+    by_loading: float = mtow * G0 / disk_loading_n_m2(mtow)
     rotor_d: Optional[float] = design.hardware.lift_rotor_diameter_m if design.hardware else None
     if rotor_d is None:
-        return mtow * G0 / disk_loading_n_m2(mtow)
-    return VTOL_ROTOR_COUNT * math.pi * rotor_d**2 / 4.0
+        return by_loading
+    return max(VTOL_ROTOR_COUNT * math.pi * rotor_d**2 / 4.0, by_loading)
 
 
 def _propeller_diameter_m(design: _Design) -> Optional[float]:
