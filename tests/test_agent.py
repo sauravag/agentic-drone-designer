@@ -92,6 +92,14 @@ def test_hand_launch_with_vtol_requested_notes_the_conflict(db: Path) -> None:
     assert any("hand launch and VTOL" in note for note in outcome.assumptions)
 
 
+def test_runway_launch_with_vtol_requested_notes_the_conflict(db: Path) -> None:
+    draft = SRS_DRAFT.model_copy(update={"launch_method": "runway", "runway_available": None, "vtol_required": True})
+    outcome = to_requirements(draft, db)
+    assert outcome.requirements is not None and outcome.requirements.launch_method == "runway"
+    assert resolved_launch_method(outcome.requirements) == "runway"  # planned as a fixed-wing, as the note says
+    assert any("runway launch and VTOL" in note for note in outcome.assumptions)
+
+
 def test_parse_echo_names_layout(db: Path) -> None:
     draft = SRS_DRAFT.model_copy(update={"airframe_layout": "pod_boom_tractor"})
     outcome = to_requirements(draft, db)

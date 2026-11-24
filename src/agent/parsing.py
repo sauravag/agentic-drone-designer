@@ -147,6 +147,9 @@ def _topology_fields(draft: RequirementsDraft, notes: list[str]) -> dict[str, ob
         # A hand launch is its own fixed-wing mode: the runway stays false unless the user also stated one.
         return {"launch_method": "hand", "runway_available": bool(draft.runway_available)}
     if draft.launch_method == "runway":
+        if draft.vtol_required:
+            notes.append("Both a runway launch and VTOL were requested: planned as a runway-launched fixed-wing "
+                         "(a stated launch method wins over the VTOL request).")
         return {"launch_method": "runway", "runway_available": draft.runway_available is not False}
     return _runway_fields(draft, notes)
 
