@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Final, Optional
 
 import pytest
 
@@ -358,6 +358,12 @@ def _fill_form_widget(at: Any, key: str, value: object) -> None:
         at.number_input(key=key).set_value(value)
 
 
+# REQ_FAILED's closing options in the explorer's ranked order (2026-11-25 re-baseline: Li-ion specific energy now
+# closes with the smaller change and ranks first, the series hybrid second).
+LIION_OPTION: Final[str] = "select_option_0"  # Li-ion specific energy
+HYBRID_OPTION: Final[str] = "select_option_1"  # propulsion -> series hybrid (+ fuel reserve)
+
+
 def _form_app_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, req: OperationalRequirements,
                    llm: Optional[StructuredLLM] = None) -> Any:
     """Fill the structured form from `req`, aero/CAD off, (optionally) a scripted LLM; submit and return the app."""
@@ -488,7 +494,7 @@ def test_rerun_uses_the_stage_checkboxes_at_click_time(tmp_path: Path, monkeypat
 def test_an_out_of_bounds_review_value_is_rejected_without_running(tmp_path: Path,
                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
-    at.button(key="select_option_0").click()  # hybrid: propulsion + fuel reserve
+    at.button(key=HYBRID_OPTION).click()
     at.run()
     at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(5.0)
     at.button(key="rerun").click()
@@ -501,16 +507,16 @@ def test_an_out_of_bounds_review_value_is_rejected_without_running(tmp_path: Pat
 
 def test_selecting_another_option_reseeds_the_review_widgets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     at = _form_app_with(tmp_path, monkeypatch, REQ_FAILED)
-    at.button(key="select_option_0").click()
+    at.button(key=HYBRID_OPTION).click()
     at.run()
     at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(0.3)
     at.run()
-    at.button(key="select_option_0").click()  # same option again, panel still open: the edit must not stick
+    at.button(key=HYBRID_OPTION).click()  # same option again, panel still open: the edit must not stick
     at.run()
     assert at.number_input(key="review_assumptions_fuel_reserve_fraction").value == pytest.approx(0.15)
     at.number_input(key="review_assumptions_fuel_reserve_fraction").set_value(0.3)
     at.run()
-    at.button(key="select_option_1").click()  # Li-ion specific energy
+    at.button(key=LIION_OPTION).click()
     at.run()
     keys = {w.key for w in [*at.number_input, *at.selectbox] if (w.key or "").startswith("review_")}
     assert keys == {"review_assumptions_liion_specific_energy_wh_kg"}
@@ -518,7 +524,7 @@ def test_selecting_another_option_reseeds_the_review_widgets(tmp_path: Path, mon
     assert at.number_input(key="review_assumptions_liion_specific_energy_wh_kg").value == proposed
     at.button(key="cancel_change").click()
     at.run()
-    at.button(key="select_option_0").click()
+    at.button(key=HYBRID_OPTION).click()
     at.run()
     assert at.number_input(key="review_assumptions_fuel_reserve_fraction").value == pytest.approx(0.15)
 

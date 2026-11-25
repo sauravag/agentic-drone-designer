@@ -28,7 +28,8 @@ from src.tools.sizing.mission_solver import (
     size_aircraft,
 )
 from src.tools.sizing.topology import classify_group, select_airframe, select_propulsion
-from tests.reference_designs import CASES, G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL, REQ_FAILED
+from tests.reference_designs import (CASES, G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL, REQ_FAILED,
+                                     saved_kit_design)
 
 GROUP1_MAX_KG: float = 9.07
 GROUP2_MAX_KG: float = 24.95
@@ -298,14 +299,19 @@ def test_c_rate_drives_electric_vtol_battery_mass() -> None:
     req = REQ_FAILED.model_copy(update={"endurance_hours": 1.0, "combat_radius_km": 20.0, "cruise_speed_ms": 22.0})
     base = size_aircraft(req)
     fast = size_aircraft(req, None, DesignAssumptions(liion_max_c_rate=5))
-    assert base.mtow_kg == pytest.approx(46.7, rel=0.02)
-    assert fast.mtow_kg == pytest.approx(15.9, rel=0.05)
+    # 2026-11-25 matched-propulsion re-baseline: 46.7 -> 32.3 kg and 15.9 -> 16.7 kg (matched hover and climb
+    # efficiencies replace the fixed 0.72 x 0.85 and 0.68; see docs/superpowers/plans/
+    # 2026-11-24-propulsion-rebaseline-notes.md)
+    assert base.mtow_kg == pytest.approx(32.3, rel=0.02)
+    assert fast.mtow_kg == pytest.approx(16.7, rel=0.05)
+    assert fast.mtow_kg < base.mtow_kg
 
 
 def test_specific_energy_and_efficiency_change_the_design() -> None:
     req = REQ_FAILED.model_copy(update={"endurance_hours": 3.0, "combat_radius_km": 50.0, "cruise_speed_ms": 22.0})
     better = size_aircraft(req, None, DesignAssumptions(liion_specific_energy_wh_kg=300))
-    assert better.mtow_kg == pytest.approx(21.9, rel=0.03)  # 23.1 before the 2026-11-23 boom re-baseline
+    # 23.1 before the 2026-11-23 boom re-baseline, 21.9 before the 2026-11-25 matched-propulsion re-baseline
+    assert better.mtow_kg == pytest.approx(26.3, rel=0.03)
     # 200 Wh/kg: 3 h closed only after the 2026-11-23 boom re-baseline (46.7 kg; it spiralled before); 4 h spirals.
     assert size_aircraft(req).mtow_kg > 2 * better.mtow_kg
     with pytest.raises(SizingDivergenceError):
@@ -516,9 +522,13 @@ def test_lift_booms_replace_boom_fraction(g2: SizingOutput) -> None:
 
 
 def test_stopped_rotor_term_calibrated_on_g2(g2: SizingOutput) -> None:
-    # post-factor comparison: what the old lump contributed to total CD0 (~0.0092)
+    # post-factor comparison: what the old lump contributed to total CD0 (~0.0092), on the G2 the term was fitted to
+    # (master df94b76: 0.603 m rotors). The matched G2's 0.711 m rotors add more (0.0102 at the 2026-11-25 re-baseline).
     old_lump_in_cd0 = aero_model.MISC_DRAG_FACTOR * QUADPLANE_INCREMENT_BEFORE_MISC
-    assert quadplane_drag_increment(g2) == pytest.approx(old_lump_in_cd0, abs=1e-4)
+    _, calibration_g2, _ = saved_kit_design("g2")
+    assert quadplane_drag_increment(calibration_g2) == pytest.approx(old_lump_in_cd0, abs=1e-4)
+    assert g2.rotor_diameter_m > calibration_g2.rotor_diameter_m
+    assert quadplane_drag_increment(g2) > quadplane_drag_increment(calibration_g2)
     assert not hasattr(aero_model, "QUADPLANE_DRAG_PENALTY")
 
 

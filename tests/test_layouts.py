@@ -27,7 +27,7 @@ from src.ui import presenters
 from tests.reference_designs import G1_ELECTRIC_FW, G2_ELECTRIC_VTOL
 from tests.test_flight_control import load_design
 
-G1_SIZING_RECORD = Path(__file__).parent / "data" / "flight_control" / "g1" / "sizing.json"
+G1_SIZING_RECORD = Path(__file__).parent / "data" / "flight_control" / "legacy_g1" / "sizing.json"  # pre-layout
 
 FUSELAGE_LENGTH_M = 1.5
 EXPECTED_TAIL_ARM_M = 0.9
@@ -508,8 +508,9 @@ def test_flight_model_gear_uses_the_cad_propeller_station() -> None:
 
 def test_pusher_flight_model_needs_the_cad_propeller_station() -> None:
     req, sizing, bom, aero, cad = load_design("g1")
+    no_station = cad.model_copy(update={"propeller_x_m": None, "propeller_z_m": None})  # a record from before it
     with pytest.raises(ValueError, match="propeller station"):
-        build_flight_model(req, sizing.model_copy(update={"airframe_layout": VTAIL}), bom, aero, cad)
+        build_flight_model(req, sizing.model_copy(update={"airframe_layout": VTAIL}), bom, aero, no_station)
 
 
 # The catalog snaps the cruise propeller to discrete sizes (11 -> 13 in near G1 is an 18 % step), so a single ratio

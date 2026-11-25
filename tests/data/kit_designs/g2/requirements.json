@@ -1,0 +1,22 @@
+{
+  "mission_name": "G2 electric quadplane",
+  "group_constraint": null,
+  "propulsion_type": "electric",
+  "airframe_topology": "auto",
+  "airframe_layout": "pod_boom_tractor",
+  "payload_mass_kg": 3.0,
+  "payload_power_w": 30.0,
+  "endurance_hours": 3.0,
+  "combat_radius_km": 10.0,
+  "cruise_speed_ms": 22.0,
+  "service_ceiling_m": 500.0,
+  "max_stall_speed_ms": 16.0,
+  "design_wind_ms": 0.0,
+  "takeoff_altitude_m": 0.0,
+  "isa_temperature_offset_c": 0.0,
+  "runway_available": false,
+  "launch_method": "auto",
+  "flight_controller": "cube_orange_plus",
+  "companion_computer": false,
+  "payload_model": "custom"
+}

@@ -110,7 +110,8 @@ def test_g1_insertion_clears_three_spar_diameters():
     sizing, layout, depth, joint, boom_y = _wing_depth("g1")
     plan = plan_spar(sizing.mtow_kg, layout.wing.semi_span_m, joint, depth, boom_y, DEFAULT_FABRICATION)
     assert plan.insertion_m == pytest.approx(joint)
-    assert plan.insertion_m / plan.segments[0].tube.od_m == pytest.approx(3.88, abs=0.05)  # 54 mm / 14 mm
+    # 56 mm / 14 mm since the 2026-11-25 matched-propulsion re-baseline (3.88 = 54 mm / 14 mm before)
+    assert plan.insertion_m / plan.segments[0].tube.od_m == pytest.approx(4.00, abs=0.05)
 
 
 def test_insertion_shorter_than_three_diameters_is_unavailable():
@@ -186,7 +187,8 @@ def _wing_depth(case: str):
     return sizing, layout, depth, joint, boom_y
 
 
-@pytest.mark.parametrize("case, root_mm", [("g1", (14, 12)), ("g2", (28, 24))])
+# G2's root tube 28/24 -> 32/28 mm at the 2026-11-25 matched-propulsion re-baseline (19.9 -> 24.8 kg)
+@pytest.mark.parametrize("case, root_mm", [("g1", (14, 12)), ("g2", (32, 28))])
 def test_reference_designs_get_a_spar(case, root_mm):
     sizing, layout, depth, joint, boom_y = _wing_depth(case)
     semi = layout.wing.semi_span_m

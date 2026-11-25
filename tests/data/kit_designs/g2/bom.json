@@ -1,0 +1,75 @@
+{
+  "cruise_motor": {
+    "id": 6,
+    "name": "Outrunner 4325-400KV",
+    "mass_kg": 0.42,
+    "max_power_w": 2200.0,
+    "continuous_power_w": 1600.0,
+    "kv": 400.0,
+    "voltage_v": 22.2,
+    "diameter_m": 0.053,
+    "length_m": 0.045
+  },
+  "cruise_propeller": {
+    "id": 6,
+    "name": "Carbon cruise prop 16x10in",
+    "mass_kg": 0.065,
+    "diameter_m": 0.4064,
+    "pitch_m": 0.254,
+    "max_power_w": 2400.0,
+    "application": "cruise"
+  },
+  "battery": {
+    "id": 8,
+    "name": "Li-Ion 21700 12S10P",
+    "mass_kg": 10.8,
+    "chemistry": "li_ion",
+    "capacity_wh": 2160.0,
+    "max_c_rate": 3.0,
+    "voltage_v": 43.2,
+    "length_m": 0.3729,
+    "width_m": 0.1864,
+    "height_m": 0.1243
+  },
+  "payload": {
+    "id": 29,
+    "name": "Hyperspectral imager",
+    "mass_kg": 3.0,
+    "sensor_type": "hyperspectral",
+    "power_w": 45.0,
+    "length_m": 0.25,
+    "width_m": 0.15,
+    "height_m": 0.15,
+    "vendor": null,
+    "reference_price_usd": null
+  },
+  "vtol_motor": {
+    "id": 7,
+    "name": "Lift 6215-180KV",
+    "mass_kg": 0.38,
+    "max_thrust_n": 120.0,
+    "max_power_w": 1800.0,
+    "voltage_v": 44.4,
+    "diameter_m": 0.068,
+    "length_m": 0.036
+  },
+  "vtol_propeller": {
+    "id": 22,
+    "name": "Carbon vtol prop 22x7in",
+    "mass_kg": 0.08,
+    "diameter_m": 0.5588,
+    "pitch_m": 0.1778,
+    "max_power_w": 1900.0,
+    "application": "vtol"
+  },
+  "vtol_motor_count": 4,
+  "ice_generator": null,
+  "flight_controller": {
+    "id": null,
+    "name": "CubePilot Cube Orange+ (ADS-B carrier)",
+    "mass_kg": 0.073,
+    "power_w": null,
+    "reference_price_usd": "\u2248 $450\u2013546"
+  },
+  "companion_computer": null
+}
