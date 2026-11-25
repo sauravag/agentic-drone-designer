@@ -51,7 +51,8 @@ PROPULSION_ESTIMATES: Final[tuple[str, ...]] = (
     "Cell data (capacity, current limit, voltages) are generic estimates, not a manufacturer's datasheet.",
     "The hover figure of merit may be about 4-6 % optimistic against published large-rotor data (T-Motor 30-42 in).",
     "Windmilling drag is not modelled: a propeller gives zero thrust beyond its zero-thrust advance ratio.",
-    "Propeller tables cover tip Mach up to 0.80 and air from 4 km on an ISA+20 day to a -30 C sea-level day.",
+    "Propeller tables cover tip Mach up to 0.80 and air from 10 km on an ISA+40 day (the highest ceiling and hottest "
+    "day the requirements allow) to a -30 C sea-level day.",
 )
 
 

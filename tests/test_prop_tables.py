@@ -12,6 +12,7 @@ import aerosandbox as asb
 import numpy as np
 import pytest
 
+from src.schemas.requirements import OperationalRequirements
 from src.tools.propulsion import prop_tables
 from src.tools.propulsion.bemt import (PROP_AIRFOIL, PROP_MODEL_VERSION, PropBatch, PropModelError, bemt_point,
                                        generic_blade)
@@ -41,6 +42,15 @@ SEA_LEVEL: Final[Atmosphere] = _atmosphere(0.0, 0.0)
 FOUR_KM_HOT: Final[Atmosphere] = _atmosphere(HIGH_ALTITUDE_M, ISA_PLUS_20)
 COLD_DAY_OFFSET_C: Final[float] = -45.0  # sea level at -30 C: rho 1.45 kg/m^3, a 312.6 m/s
 COLD_DAY: Final[Atmosphere] = _atmosphere(0.0, COLD_DAY_OFFSET_C)
+# The schema's thinnest air: the highest service ceiling on the hottest allowed day (10 km ISA+40).
+CEILING_FIELDS = OperationalRequirements.model_fields
+SCHEMA_CEILING_M: Final[float] = next(m.le for m in CEILING_FIELDS["service_ceiling_m"].metadata if hasattr(m, "le"))
+SCHEMA_HOTTEST_C: Final[float] = next(m.le for m in CEILING_FIELDS["isa_temperature_offset_c"].metadata
+                                      if hasattr(m, "le"))
+SCHEMA_CORNER: Final[Atmosphere] = _atmosphere(SCHEMA_CEILING_M, SCHEMA_HOTTEST_C)
+THIN_END_MARGIN: Final[float] = 1.05  # the thin end reaches at least 5 % below the schema corner
+ATMOSPHERES: Final[list[Atmosphere]] = [SEA_LEVEL, FOUR_KM_HOT, COLD_DAY, SCHEMA_CORNER]
+ATMOSPHERE_IDS: Final[list[str]] = ["sea_level", "4000m_isa_plus_20", "minus_30c_sea_level", "10km_isa_plus_40"]
 
 
 @pytest.fixture(scope="module")
@@ -115,8 +125,7 @@ def _sample_envelope(table: PropellerTable, atmosphere: Atmosphere) -> Iterator[
     raise AssertionError(f"only {found} envelope samples found")
 
 
-@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT, COLD_DAY],
-                         ids=["sea_level", "4000m_isa_plus_20", "minus_30c_sea_level"])
+@pytest.mark.parametrize("atmosphere", ATMOSPHERES, ids=ATMOSPHERE_IDS)
 @pytest.mark.parametrize("which", ["small", "big"])
 def test_table_matches_bemt_within_two_percent(which: str, atmosphere: Atmosphere, small_table: PropellerTable,
                                                big_table: PropellerTable) -> None:
@@ -190,11 +199,16 @@ def test_density_axis_covers_cold_dense_air_at_the_mach_limit(small_table: Prope
     small_table.coefficients(0.1, prop_tables.TABLE_MAX_TIP_MACH * (1.0 - 1e-9), rho_cold)
 
 
-@pytest.mark.parametrize("atmosphere", [SEA_LEVEL, FOUR_KM_HOT, COLD_DAY],
-                         ids=["sea_level", "4000m_isa_plus_20", "minus_30c_sea_level"])
+@pytest.mark.parametrize("atmosphere", ATMOSPHERES, ids=ATMOSPHERE_IDS)
 def test_density_axis_covers_hot_high_and_sea_level(atmosphere: Atmosphere, small_table: PropellerTable) -> None:
     rho, mu, sound = atmosphere
     assert small_table.rho_eq[0] <= prop_tables.equivalent_density(rho, mu, sound) <= small_table.rho_eq[-1]
+
+
+def test_density_axis_reaches_past_the_schema_corner_with_margin(small_table: PropellerTable) -> None:
+    """10 km on an ISA+40 day (the schema's highest ceiling and hottest offset) is inside the axis with margin."""
+    corner: float = prop_tables.equivalent_density(*SCHEMA_CORNER)
+    assert small_table.rho_eq[0] * THIN_END_MARGIN <= corner
 
 
 def test_equivalent_density_matches_reynolds_at_the_same_mach_and_j() -> None:
@@ -293,6 +307,16 @@ def test_cache_round_trip(isolated_cache: Path, counted_build: list[tuple[float,
     second: PropellerTable = propeller_table(*SMALL_PROP)
     assert len(counted_build) == 1 and bemt_calls == []  # read from disk: no build, no BEMT
     assert second == first == small_table
+
+
+def test_an_on_demand_build_logs_one_progress_line_and_a_cache_hit_none(
+        counted_build: list[tuple[float, float]], caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger=prop_tables.__name__):
+        propeller_table(*SMALL_PROP)
+        propeller_table.cache_clear()
+        propeller_table(*SMALL_PROP)  # from disk: no build, no line
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[Tool] prop_tables")]
+    assert len(lines) == 1 and "building" in lines[0] and "0.254" in lines[0]
 
 
 def test_memory_cache_returns_same_object(counted_build: list[tuple[float, float]]) -> None:

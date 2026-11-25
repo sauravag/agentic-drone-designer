@@ -126,7 +126,14 @@ RUN for bin in /opt/openvsp/vspaero /usr/local/bin/arduplane /usr/local/bin/JSBS
  && python -c "import openvsp, jsbsim, pymavlink, build123d, aerosandbox" \
  && command -v vspaero && command -v arduplane && command -v JSBSim
 
-RUN useradd --create-home --uid 1000 forge && chown -R forge:forge /app
+# Propeller CT/CP tables (spec 6.1): built once here so the first sizing run in a container starts warm. They live
+# outside /app, so `docker run -v "$PWD":/app` and the compose volumes never shadow them, and the image's own source
+# always matches its tables (a source mount with a different grid builds the missing ones on demand, in the
+# container only).
+ENV PROP_TABLE_CACHE_DIR=/opt/prop_tables
+RUN python -m src.tools.propulsion.prop_tables --warm
+
+RUN useradd --create-home --uid 1000 forge && chown -R forge:forge /app "$PROP_TABLE_CACHE_DIR"
 USER forge
 
 # OpenVSP/VSPAERO run headless through the Python API, so no X server is needed. (xvfb-run is

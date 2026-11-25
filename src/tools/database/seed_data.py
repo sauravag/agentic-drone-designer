@@ -100,36 +100,36 @@ VTOL_MOTORS: Final[list[tuple]] = [
 # what max power delivers. ESTIMATES. "Axial-flux AX-90" keeps its listed values: no catalogue propeller absorbs
 # 90 kW static below tip Mach 0.80.
 DERIVED_MOTOR_RATINGS: Final[dict[str, tuple[float, float, Optional[float]]]] = {
-    'Lift 2306': (512, 12.2, 8),  # Carbon vtol prop 12x4in 6027 rpm 74 W
-    'Lift 2807': (397, 16.9, 12),  # Carbon vtol prop 15x5in 4668 rpm 104 W
-    'Lift 3110': (301, 18.1, 20),  # Carbon vtol prop 16x5.4in 5220 rpm 203 W
+    'Lift 2306': (512, 12.2, 8),  # Carbon vtol prop 12x4in 6030 rpm 74 W
+    'Lift 2807': (397, 16.9, 12),  # Carbon vtol prop 15x5in 4669 rpm 104 W
+    'Lift 3110': (301, 18.1, 20),  # Carbon vtol prop 16x5.4in 5221 rpm 203 W
     'Lift 4010': (299, 22.6, 30),  # Carbon vtol prop 18x6in 5059 rpm 325 W
-    'Lift 4114': (249, 33.8, 45),  # Carbon vtol prop 22x7in 4222 rpm 481 W
+    'Lift 4114': (249, 33.8, 45),  # Carbon vtol prop 22x7in 4222 rpm 482 W
     'Lift 5010': (242, 41.5, 60),  # Carbon vtol prop 24x8in 4013 rpm 673 W
     'Lift 6215': (111, 46.8, 120),  # Carbon vtol prop 30x10in 3619 rpm 1497 W
     'Lift 7215': (96, 72.4, 180),  # Carbon vtol prop 36x12in 3075 rpm 2277 W
     'Lift 8318': (113, 113.4, 240),  # Carbon vtol prop 36x12in 3532 rpm 3490 W
     'Lift 10025': (69, 153.1, 400),  # Carbon vtol prop 48x16in 2566 rpm 5601 W
-    'Lift 12030': (81, 247.6, 549),  # Carbon vtol prop 48x16in 2986 rpm 8984 W
+    'Lift 12030': (81, 247.6, 549),  # Carbon vtol prop 48x16in 2986 rpm 8986 W
     'Lift 13530': (38, 189.1, 779),  # Carbon vtol prop 56x18in 2647 rpm 12978 W
-    'Lift 15040': (36, 274.9, 1074),  # Carbon vtol prop 62x20in 2523 rpm 18986 W
-    'Lift 18050': (16, 200.8, 1501),  # Carbon vtol prop 72x24in 2181 rpm 26981 W
-    'Lift 20060': (9, 137.6, 1814),  # Carbon vtol prop 72x24in 2386 rpm 35983 W
-    'Lift 24070': (10, 187.4, 2154),  # Carbon vtol prop 72x24in 2596 rpm 47971 W
-    'Outrunner 1806': (2169, 29.5, None),  # Carbon cruise prop 8x6in 11188 rpm 150 W
-    'Outrunner 2212': (1288, 39.4, None),  # Carbon cruise prop 10x7in 9965 rpm 300 W
+    'Lift 15040': (36, 274.9, 1074),  # Carbon vtol prop 62x20in 2523 rpm 18987 W
+    'Lift 18050': (16, 200.8, 1501),  # Carbon vtol prop 72x24in 2181 rpm 26982 W
+    'Lift 20060': (9, 137.6, 1814),  # Carbon vtol prop 72x24in 2386 rpm 35982 W
+    'Lift 24070': (10, 187.4, 2154),  # Carbon vtol prop 72x24in 2596 rpm 47993 W
+    'Outrunner 1806': (2168, 29.5, None),  # Carbon cruise prop 8x6in 11186 rpm 150 W
+    'Outrunner 2212': (1288, 39.4, None),  # Carbon cruise prop 10x7in 9968 rpm 300 W
     'Outrunner 2814': (1009, 53.0, None),  # Carbon cruise prop 11x7in 10643 rpm 550 W
-    'Outrunner 3520': (502, 70.7, None),  # Carbon cruise prop 15x10in 7933 rpm 1100 W
-    'Outrunner 4120': (557, 96.3, None),  # Carbon cruise prop 15x10in 8820 rpm 1500 W
-    'Outrunner 4325': (574, 141.2, None),  # Carbon cruise prop 16x10in 9082 rpm 2200 W
+    'Outrunner 3520': (502, 70.7, None),  # Carbon cruise prop 15x10in 7935 rpm 1100 W
+    'Outrunner 4120': (557, 96.3, None),  # Carbon cruise prop 15x10in 8819 rpm 1500 W
+    'Outrunner 4325': (574, 141.3, None),  # Carbon cruise prop 16x10in 9082 rpm 2200 W
     'Outrunner 5025': (271, 96.4, None),  # Carbon cruise prop 18x10in 8570 rpm 3000 W
     'Outrunner 5330': (243, 128.0, None),  # Carbon cruise prop 20x12in 7717 rpm 4000 W
-    'Outrunner 6335': (257, 176.6, None),  # Carbon cruise prop 22x10in 8128 rpm 5500 W
-    'Outrunner 7050': (202, 216.1, None),  # Carbon cruise prop 24x12in 7606 rpm 8000 W
-    'Outrunner 8020': (175, 299.2, None),  # Carbon cruise prop 28x14in 6540 rpm 11000 W
+    'Outrunner 6335': (257, 176.7, None),  # Carbon cruise prop 22x10in 8127 rpm 5500 W
+    'Outrunner 7050': (202, 216.1, None),  # Carbon cruise prop 24x12in 7608 rpm 8000 W
+    'Outrunner 8020': (175, 299.1, None),  # Carbon cruise prop 28x14in 6542 rpm 11000 W
     'Axial-flux AX-15': (82, 215.5, None),  # Carbon cruise prop 32x16in 5797 rpm 15000 W
-    'Axial-flux AX-25': (34, 182.5, None),  # Carbon cruise prop 40x20in 4728 rpm 25000 W
-    'Axial-flux AX-40': (19, 199.2, None),  # Carbon cruise prop 50x24in 3874 rpm 40000 W
+    'Axial-flux AX-25': (34, 182.5, None),  # Carbon cruise prop 40x20in 4729 rpm 25000 W
+    'Axial-flux AX-40': (19, 199.3, None),  # Carbon cruise prop 50x24in 3873 rpm 40000 W
     'Axial-flux AX-60': (12, 227.6, None),  # Carbon cruise prop 60x30in 3212 rpm 60000 W
     # 'Axial-flux AX-90': listed values kept (no cruise propeller is rated for and absorbs 90000 W)
 }

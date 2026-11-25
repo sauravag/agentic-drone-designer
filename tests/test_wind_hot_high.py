@@ -15,6 +15,8 @@ from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import PhaseResult, SizingOutput
 from src.tools.sizing.aero_model import air_properties
 from src.tools.sizing.mission_profile import CLIMB_RATE_MS
+from src.tools.propulsion.match_types import PropulsionMatchError
+from src.tools.sizing.errors import SizingDivergenceError
 from src.tools.sizing.mission_solver import size_aircraft
 from src.units import G0
 from tests.agent_fakes import SRS_DRAFT
@@ -167,3 +169,23 @@ def test_vspaero_flies_the_design_day() -> None:
     standard = builder.flight_condition(layout, sizing, 2000.0)
     assert hot.rho == pytest.approx(air_properties(2000.0, 20.0)[0])
     assert hot.re_cref < standard.re_cref and hot.mach < standard.mach  # thinner, warmer air
+
+
+def test_an_8_km_service_ceiling_sizes() -> None:
+    """Thin air at 8 km lies inside the propeller tables (master sized this hybrid at 5.09 kg on fixed efficiencies;
+    the matched set's lower thin-air efficiency makes it heavier)."""
+    sized: SizingOutput = size_aircraft(G1_ELECTRIC_FW.model_copy(update={"service_ceiling_m": 8000.0}))
+    assert sized.mtow_kg > G1_ELECTRIC_FW.payload_mass_kg and sized.propulsion_match is not None
+
+
+def test_a_10_km_service_ceiling_is_never_refused_by_the_propeller_tables() -> None:
+    """At the schema's 10 km ceiling every flight point lies inside the tables, so the propulsion matching finds a
+    set. The G1 mission itself then mass-spirals on the matched (thin-air) efficiencies: a physical outcome, never
+    a propeller-range refusal."""
+    try:
+        sized: SizingOutput = size_aircraft(G1_ELECTRIC_FW.model_copy(update={"service_ceiling_m": 10_000.0}))
+    except SizingDivergenceError as exc:
+        assert not isinstance(exc, PropulsionMatchError) and "propeller" not in str(exc), str(exc)
+        assert "mass spiral" in str(exc)
+    else:
+        assert sized.propulsion_match is not None

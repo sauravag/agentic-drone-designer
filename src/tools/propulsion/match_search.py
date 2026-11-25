@@ -19,20 +19,21 @@ from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from typing import Final, Optional, Union
 
+from src.schemas.assumptions import Chemistry
 from src.schemas.components import CruiseMotor, Esc, Propeller, VtolMotor
+from src.tools.database.catalog_variants import VOLTAGE_EPS_V
 from src.tools.database.packs import LOADED_MIN_V_CELL
 from src.tools.propulsion.match_types import (
     ESC_CURRENT_MARGIN, MAX_MATCH_THROTTLE, MAX_SAGGED_THROTTLE, PROP_TIP_MACH_MAX, FlightPoint,
 )
 from src.tools.propulsion.bemt import PropModelError
 from src.tools.propulsion.motor import MotorPoint, motor_point
-from src.tools.propulsion.prop_tables import propeller_table
+from src.tools.propulsion.prop_tables import PropellerTable, equivalent_density, propeller_table
 from src.tools.propulsion.propulsor import shaft_for_thrust
 
 logger: logging.Logger = logging.getLogger(__name__)
 Motor = Union[CruiseMotor, VtolMotor]
 SECONDS_PER_MINUTE: Final[float] = 60.0
-VOLTAGE_EPS_V: Final[float] = 1e-6  # catalogue ratings are n x 4.2 V with float noise
 # Pruning before any table is built (builder's call, spec 8): a propeller or motor rated more than this many times
 # the ideal (momentum-theory) power of its hardest point is skipped as oversized. A real set runs at 1.2-2x ideal.
 PROP_OVERSIZE_FACTOR: Final[float] = 6.0
@@ -40,6 +41,7 @@ MOTOR_OVERSIZE_FACTOR: Final[float] = 6.0
 RULE_MODEL: Final[str] = "propeller model failed (no table)"
 RULE_OVERSIZE: Final[str] = "oversize prune"  # not a limit: a candidate skipped as rated above 6x ideal power
 RULE_TABLE: Final[str] = "thrust out of propeller range (tip Mach 0.80 or pitch speed)"
+RULE_AIR: Final[str] = "air outside the propeller tables"
 # A point this short (e.g. Hover_Peak, 0 s) is a transient the ESC's burst rating covers; longer points need the
 # continuous rating with ESC_CURRENT_MARGIN. 10 s is the usual ESC burst rating window (ESTIMATE).
 ESC_BURST_DURATION_S: Final[float] = 10.0
@@ -55,7 +57,7 @@ class Rejection:
 class Bus:
     """A pack voltage class (one chemistry and cell voltages) at one series count."""
 
-    chemistry: str
+    chemistry: Chemistry
     nominal_cell_v: float
     max_cell_v: float
     series: int
@@ -199,6 +201,16 @@ def _table_failure(diameter_m: float, pitch_m: float) -> Optional[str]:
     return None
 
 
+def _air_off_axis(table: PropellerTable, point: FlightPoint) -> Optional[str]:
+    """The off-axis rule text when the point's air (its equivalent density) lies outside the table's density axis,
+    else None. Every table shares the axis, so the text is the same for every propeller."""
+    rho_eq: float = equivalent_density(point.rho, point.mu, point.speed_of_sound_ms)
+    low, high = table.rho_eq[0], table.rho_eq[-1]
+    if low <= rho_eq <= high:
+        return None
+    return f"{RULE_AIR} (equivalent density {rho_eq:.3g} kg/m³ not in [{low:.3g}, {high:.3g}])"
+
+
 def propeller_shafts(propeller: Propeller, points: tuple[FlightPoint, ...],
                      installation_factor: float) -> Union[tuple[Shaft, ...], Rejection]:
     """The propeller's rpm and torque at each point from its table, or the first rule it breaks."""
@@ -207,6 +219,9 @@ def propeller_shafts(propeller: Propeller, points: tuple[FlightPoint, ...],
     table = propeller_table(propeller.diameter_m, propeller.pitch_m)
     shafts: list[Shaft] = []
     for p in points:
+        off_axis: Optional[str] = _air_off_axis(table, p)
+        if off_axis is not None:
+            return Rejection(off_axis, p.name)
         solved: Optional[tuple[float, float]] = shaft_for_thrust(
             table, p.thrust_n / installation_factor, p.airspeed_ms, p.rho, p.mu, p.speed_of_sound_ms)
         if solved is None:

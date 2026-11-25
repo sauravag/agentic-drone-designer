@@ -9,12 +9,12 @@ one vectorised batch), kept in memory and written to disk as JSON.
 
 Grid. Tip Mach and equivalent density are independent axes, so altitude and temperature are free, and EVERY cell is
 a physical operating state: rpm from M (at the reference speed of sound 340.3 m/s, which fixes the section Mach
-numbers exactly) and a real equivalent density between TABLE_THIN_RHO_EQ (thin, hot air: about 5 km ISA+20) and the
-cold-day value (sea level at -30 C: rho 1.46, mu 1.55e-5, a 312.6 m/s) with a margin. An earlier (M, Re75) grid
-implied rho = Re75 / (k rpm), so its corners asked BEMT for densities of 0.1 or 45 kg/m^3 and failed there. M runs
-from the tip Mach where Re75 at the thinnest density sits just above the BEMT floor of 1e4 up to 0.80; J runs from 0
-up to where CT <= 0 in every (M, rho_eq) row, so thrust rolls off to zero. Interpolation is trilinear in (J, log M,
-log rho_eq).
+numbers exactly) and a real equivalent density between TABLE_THIN_RHO_EQ (thin, hot air: 10 km ISA+40, the
+schema's highest ceiling on its hottest day) and the cold-day value (sea level at -30 C: rho 1.46, mu 1.55e-5,
+a 312.6 m/s), each with a margin. An earlier (M, Re75) grid implied rho = Re75 / (k rpm), so its corners asked BEMT
+for densities of 0.1 or 45 kg/m^3 and failed there. M runs from the tip Mach where Re75 at the thinnest density sits
+just above the BEMT floor of 1e4 up to 0.80; J runs from 0 up to where CT <= 0 in every (M, rho_eq) row, so thrust
+rolls off to zero. Interpolation is trilinear in (J, log M, log rho_eq).
 
 Out of range is an error, not a clamp: `coefficients` (and so `thrust_n` and `torque_nm`) raise ValueError for J, M
 or density outside the table. Thrust never goes below zero (CT is clamped at 0 in `thrust_n`). Past the J where BEMT
@@ -48,8 +48,15 @@ logger: logging.Logger = logging.getLogger(__name__)
 # from Re75, so the result is valid for any atmosphere inside the axes.
 TABLE_MU: Final[float] = 1.81e-5
 TABLE_SPEED_OF_SOUND: Final[float] = 340.3
-# Thinnest air tabulated (equivalent density): 4 km ISA+20 is about 0.85, 5 km ISA+20 about 0.72.
-TABLE_THIN_RHO_EQ: Final[float] = 0.6
+# Thin hot air (10 km on an ISA+40 day: the schema's highest service ceiling and hottest offset) sets the bottom of
+# the density axis. For scale, equivalent densities: 4 km ISA+20 0.773, 7.5 km ISA+20 0.541, 10 km ISA 0.451.
+TABLE_HOT_HIGH_RHO: Final[float] = 0.3500
+TABLE_HOT_HIGH_MU: Final[float] = 1.666e-5
+TABLE_HOT_HIGH_SPEED_OF_SOUND: Final[float] = 325.2
+THIN_AXIS_MARGIN: Final[float] = 1.1  # the density axis reaches this far below the hot-high corner
+# Equivalent density of the corner (about 0.363) over the margin: the bottom of the density axis (about 0.330).
+TABLE_THIN_RHO_EQ: Final[float] = (TABLE_HOT_HIGH_RHO * TABLE_MU / TABLE_HOT_HIGH_MU
+                                   * TABLE_HOT_HIGH_SPEED_OF_SOUND / TABLE_SPEED_OF_SOUND / THIN_AXIS_MARGIN)
 # Cold dense air (sea level at -30 C) sets the top of the density axis.
 TABLE_COLD_RHO: Final[float] = 1.46
 TABLE_COLD_MU: Final[float] = 1.55e-5
@@ -60,7 +67,7 @@ TABLE_DENSE_RHO_EQ: Final[float] = (DENSE_AXIS_MARGIN * TABLE_COLD_RHO * TABLE_M
                                     * TABLE_COLD_SPEED_OF_SOUND / TABLE_SPEED_OF_SOUND)
 TABLE_MAX_TIP_MACH: Final[float] = 0.80
 RE_FLOOR_MARGIN: Final[float] = 1.1  # lowest table Re75 sits this far above the BEMT floor
-N_RHO_NODES: Final[int] = 8  # geometric in equivalent density (about 15 % apart)
+N_RHO_NODES: Final[int] = 11  # geometric in equivalent density (about 17 % apart)
 N_J_NODES: Final[int] = 33
 # Geometric tip-Mach nodes about this far apart: along a fixed-density row Re75 is proportional to rpm, so this axis
 # also carries the Reynolds effect (strongest at low rpm) and needs the old Re75 axis's spacing.
@@ -112,7 +119,7 @@ class PropellerTable:
         """Cells and fractions along (M, rho_eq, J); ValueError when any coordinate lies outside its axis."""
         j_axis, mach_axis, log_rho_axis = self._arrays[:3]
         where: str = f"for {self.diameter_m} x {self.pitch_m} m"
-        if not (math.isfinite(j) and j_axis[0] <= j <= j_axis[-1]):
+        if not (math.isfinite(j) and j_axis[0] <= j <= j_axis[-1] * (1.0 + AXIS_TOLERANCE)):
             raise ValueError(f"J={j:.4g} outside the table range [{j_axis[0]:.4g}, {j_axis[-1]:.4g}] {where}")
         if not (math.isfinite(tip_mach) and mach_axis[0] <= tip_mach <= mach_axis[-1]):
             raise ValueError(f"tip Mach {tip_mach:.4g} outside the table range [{mach_axis[0]:.4g}, "
@@ -123,7 +130,8 @@ class PropellerTable:
                              f"[{self.rho_eq[0]:.4g}, {self.rho_eq[-1]:.4g}] {where}")
         log_rho: float = min(max(math.log(rho_eq), log_rho_axis[0]), log_rho_axis[-1])
         # log M: along a fixed-density row Re75 is proportional to M, and the Reynolds effect is ~linear in log Re
-        return (_cell(np.log(mach_axis), math.log(tip_mach)), _cell(log_rho_axis, log_rho), _cell(j_axis, j))
+        return (_cell(np.log(mach_axis), math.log(tip_mach)), _cell(log_rho_axis, log_rho),
+                _cell(j_axis, min(j, float(j_axis[-1]))))  # J at the axis end within float noise
 
     def coefficients(self, j: float, tip_mach: float, rho_eq: float) -> tuple[float, float]:
         """(CT, CP) by trilinear interpolation; ValueError when J, tip Mach or density lies outside the table."""
@@ -436,6 +444,8 @@ def propeller_table(diameter_m: float, pitch_m: float) -> PropellerTable:
     path: Path = _cache_path(diameter_m, pitch_m)
     table: PropellerTable | None = _load(path, diameter_m, pitch_m)
     if table is None:
+        logger.info("[Tool] prop_tables: building the %g x %g m propeller table (not in %s, a few seconds)",
+                    diameter_m, pitch_m, path.parent)
         table = _build_table(float(diameter_m), float(pitch_m))
         _save(path, table)
     return table

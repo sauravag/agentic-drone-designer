@@ -15,6 +15,8 @@ from src.units import INCH_TO_M
 
 NOMINAL_CELL_V: Final[float] = 3.7
 MAX_CELL_V: Final[float] = 4.2
+# Voltage ratings are n x 4.2 V (or rounded to 0.1 V): comparisons and cell counts allow this much float noise.
+VOLTAGE_EPS_V: Final[float] = 1e-6
 
 # Winding factors f: KV x f at rated voltage / f (same power, same no-load rpm at rated voltage).
 WINDING_FACTORS: Final[tuple[float, ...]] = (0.75, 1.33)
@@ -44,7 +46,6 @@ ESC_BURST_FACTOR: Final[float] = 1.5
 ESC_EFFICIENCY_SMALL: Final[float] = 0.95
 ESC_EFFICIENCY_HV: Final[float] = 0.97
 ESC_HV_THRESHOLD_V: Final[float] = 60.0
-_VOLTAGE_EPS_V: Final[float] = 1e-6  # n*4.2 and round(n*4.2, 1) differ by float noise
 ESC_BASE_MASS_KG: Final[float] = 0.01
 ESC_MASS_KG_PER_KW: Final[float] = 0.025  # of continuous power (current x max voltage)
 ESC_DENSITY_KG_M3: Final[float] = 1200.0
@@ -193,7 +194,7 @@ def esc_rows(motors: list[CruiseMotor | VtolMotor]) -> list[Esc]:
     previous_v: float = 0.0
     for class_v, label in classes:
         in_class: list[CruiseMotor | VtolMotor] = [
-            m for m in motors if previous_v + _VOLTAGE_EPS_V < m.voltage_v <= class_v + _VOLTAGE_EPS_V
+            m for m in motors if previous_v + VOLTAGE_EPS_V < m.voltage_v <= class_v + VOLTAGE_EPS_V
         ]
         need: float = max((ESC_CURRENT_MARGIN * (m.max_current_a or 0.0) for m in in_class), default=0.0)
         for rung in ESC_CURRENT_LADDER_A:
