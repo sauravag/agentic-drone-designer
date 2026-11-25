@@ -17,9 +17,9 @@ EXACT: Final[float] = 1e-9
 BASELINE_MISSIONS: Final[tuple] = (G1_ELECTRIC_FW, G2_ELECTRIC_VTOL, G3_HYBRID_VTOL)
 
 
-# Recorded from the code before the avionics change (re-recorded once at the 2026-11-23 boom re-baseline): Cube
-# Orange+ without a Jetson at default assumptions
-# must size every reference design exactly as before.
+# Recorded from the code before the avionics change (re-recorded at the 2026-11-23 boom re-baseline and the
+# 2026-11-25 matched-propulsion re-baseline, scripts/regenerate_avionics_baseline.py): Cube Orange+ without a
+# Jetson at default assumptions must size every reference design exactly as before.
 # (The baseline holds the designs that existed then; later examples have no "before".)
 @pytest.mark.parametrize("req", BASELINE_MISSIONS, ids=lambda r: r.mission_name)
 def test_reference_designs_unchanged_without_jetson(req) -> None:
