@@ -139,3 +139,13 @@ Reference designs through the full Docker `--spec` pipeline:
   which VSPAERO does not see.
 
 Both follow from the accepted kit regression or pre-date this branch. They are left for the kit-fix branch.
+
+## Addendum (final review fixes, 2026-11-25): thin-air table axis
+
+The propeller tables' density axis was extended down to 10 km on an ISA+40 day (the schema's corner) so high
+service ceilings are no longer refused (11 density nodes instead of 8). The new node positions change the
+interpolated sea-level and low-altitude coefficients in the fourth to fifth digit, so the goldens and the avionics
+baseline were regenerated with their scripts. Every reference design keeps its matched set; MTOW moves by at most
+0.03 %: g1 4.4462 -> 4.4460, g2 24.826 -> 24.824, g3 273.649 -> 273.724 (still 6 matching passes), g1_vtail 5.074,
+g2_vtail 26.498 and g1_hand 7.104 unchanged to the gram. Five derived motor ratings moved by rounding (1 KV or
+0.1 A). The genset margin fix in the matcher does not move any reference design.

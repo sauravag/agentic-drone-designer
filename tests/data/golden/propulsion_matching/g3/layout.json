@@ -1,79 +1,79 @@
 {
  "airfoil": "naca4415",
- "fuselage_diameter_m": 0.51010867,
- "fuselage_length_m": 3.57076069,
+ "fuselage_diameter_m": 0.51015518,
+ "fuselage_length_m": 3.57108626,
  "htail": {
   "dihedral_deg": 0.0,
   "is_symmetric": true,
-  "root_chord_m": 0.53180004,
-  "semi_span_m": 0.850880063,
-  "tip_chord_m": 0.319080024,
-  "x_le_root_m": 3.27026696,
+  "root_chord_m": 0.531884895,
+  "semi_span_m": 0.851015833,
+  "tip_chord_m": 0.319130937,
+  "x_le_root_m": 3.27056524,
   "z_root_m": 0.0
  },
  "rotor_diameter_m": 1.5748,
  "rotor_positions": [
   [
-   -0.392720359,
-   1.19993434,
-   0.190413061
+   -0.39269368,
+   1.19995759,
+   0.190425908
   ],
   [
-   2.86549314,
-   1.19993434,
-   0.190413061
+   2.86570697,
+   1.19995759,
+   0.190425908
   ],
   [
-   -0.392720359,
-   -1.19993434,
-   0.190413061
+   -0.39269368,
+   -1.19995759,
+   0.190425908
   ],
   [
-   2.86549314,
-   -1.19993434,
-   0.190413061
+   2.86570697,
+   -1.19995759,
+   0.190425908
   ]
  ],
  "tail_boom": {
-  "diameter_m": 0.127527168,
-  "length_m": 0.842316897,
-  "x_start_m": 3.21368462,
+  "diameter_m": 0.127538795,
+  "length_m": 0.842447536,
+  "x_start_m": 3.21397763,
   "y_m": 0.0,
   "z_m": 0.0
  },
  "vtail": {
   "dihedral_deg": 0.0,
   "is_symmetric": false,
-  "root_chord_m": 0.850880063,
-  "semi_span_m": 1.02105608,
-  "tip_chord_m": 0.510528038,
-  "x_le_root_m": 3.20512146,
+  "root_chord_m": 0.851015833,
+  "semi_span_m": 1.021219,
+  "tip_chord_m": 0.5106095,
+  "x_le_root_m": 3.20540934,
   "z_root_m": 0.0
  },
  "vtol_booms": [
   {
    "diameter_m": 0.125984,
-   "length_m": 3.7306535,
-   "x_start_m": -0.628940359,
-   "y_m": 1.19993434,
-   "z_m": 0.127421061
+   "length_m": 3.73084065,
+   "x_start_m": -0.62891368,
+   "y_m": 1.19995759,
+   "z_m": 0.127433908
   },
   {
    "diameter_m": 0.125984,
-   "length_m": 3.7306535,
-   "x_start_m": -0.628940359,
-   "y_m": -1.19993434,
-   "z_m": 0.127421061
+   "length_m": 3.73084065,
+   "x_start_m": -0.62891368,
+   "y_m": -1.19995759,
+   "z_m": 0.127433908
   }
  ],
  "wing": {
   "dihedral_deg": 3.0,
   "is_symmetric": true,
-  "root_chord_m": 0.849384928,
-  "semi_span_m": 3.82223218,
-  "tip_chord_m": 0.424692464,
-  "x_le_root_m": 1.07122821,
-  "z_root_m": 0.127527168
+  "root_chord_m": 0.849501096,
+  "semi_span_m": 3.82275493,
+  "tip_chord_m": 0.424750548,
+  "x_le_root_m": 1.07132588,
+  "z_root_m": 0.127538795
  },
  "wing_station": 0.3
 }
