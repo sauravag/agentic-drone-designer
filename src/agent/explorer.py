@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Final, Literal, Optional
 
+from src.agent.critic import PROPULSION_STAGE
 from src.agent.evaluator import Evaluation, evaluate, round_fact, with_reserve_floor
 from src.schemas.assumptions import SERIES_HYBRID, DesignAssumptions
 from src.schemas.changes import (FIELD_LABELS, AssumptionChanges, ChangeSet, KnobChanges, RequirementChanges,
@@ -43,6 +44,8 @@ COLLISIONS_AND_GROUP_GATE: Final[str] = "collisions_and_group"
 RESERVE_GATE: Final[str] = "reserve"
 REFERENCE_LABEL: Final[str] = "Unchanged design"
 UNCHANGED_CLOSES_NOTE: Final[str] = "Sizing + catalog close unchanged; the failure is in {where}"
+# Readable names for stage_error stages whose code name is not plain words (others read "the <stage> stage").
+STAGE_LABELS: Final[dict[str, str]] = {PROPULSION_STAGE: "the propulsion matching step"}
 BATTERY_LEVERS: Final[frozenset[str]] = frozenset({"liion_specific_energy", "liion_max_c_rate"})
 
 
@@ -146,11 +149,16 @@ def unchanged_closes_note(state: DesignState) -> str:
     stage_error = state.get("stage_error")
     failed = [f"{gate['name']} ({gate['detail']})" if gate.get("detail") else gate["name"]
               for gate in state.get("gate_results") or [] if not gate["passed"]]
-    where = f"the {stage_error['stage']} stage" if stage_error else "; ".join(failed) or "the final checks"
+    where = _stage_label(stage_error["stage"]) if stage_error else "; ".join(failed) or "the final checks"
     return UNCHANGED_CLOSES_NOTE.format(where=where)
 
 
 # --------------------------------------------------------------- helpers ---
+def _stage_label(stage: str) -> str:
+    """The failed stage in words: "the propulsion matching step", else "the <stage> stage"."""
+    return STAGE_LABELS.get(stage, f"the {stage} stage")
+
+
 def _change(label: str, requirements: Optional[dict] = None, assumptions: Optional[dict] = None) -> ChangeSet:
     return ChangeSet(label=label, requirements=RequirementChanges(**(requirements or {})),
                      assumptions=AssumptionChanges(**(assumptions or {})), knobs=KnobChanges())

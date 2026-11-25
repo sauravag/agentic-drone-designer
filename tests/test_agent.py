@@ -1004,15 +1004,33 @@ def test_critic_names_propulsion_constraint(monkeypatch: pytest.MonkeyPatch, tmp
     assert critic.unfixable(gates, None, update["stage_error"]["stage"], band=None, sm_knob=TAILED_KNOB) == ["pipeline"]
 
 
+class _SitlReached(Exception):
+    """Stops a run at the SITL stage once the spy has seen its arguments."""
+
+
 def test_run_design_threads_custom_assumptions(tmp_path: Path, db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     custom = DesignAssumptions(liion_max_c_rate=6.0)
     seen: dict[str, DesignAssumptions] = {}
-    real = pipeline.size_aircraft
+    real_size, real_bom = pipeline.size_aircraft, pipeline.select_bom
+    _, _, _, saved_aero, saved_cad = load_design("g1")
 
-    def spy(req: Any, overrides: Any = None, assumptions: DesignAssumptions = DesignAssumptions()) -> Any:
+    def size_spy(req: Any, overrides: Any = None, assumptions: DesignAssumptions = DesignAssumptions()) -> Any:
         seen["sizing"] = assumptions
-        return real(req, overrides, assumptions)
+        return real_size(req, overrides, assumptions)
 
-    monkeypatch.setattr(pipeline, "size_aircraft", spy)
-    pipeline.run_design(G1_ELECTRIC_FW, tmp_path / "o", db, with_aero_cad=False, with_sitl=False, assumptions=custom)
-    assert seen["sizing"] == custom
+    def bom_spy(db_path: Path, needs: Any, assumptions: DesignAssumptions = DesignAssumptions()) -> Any:
+        seen["select_bom"] = assumptions
+        return real_bom(db_path, needs, assumptions)
+
+    def sitl_spy(*args: Any) -> Any:
+        seen["run_sitl"] = args[-1]
+        raise _SitlReached
+
+    monkeypatch.setattr(pipeline, "size_aircraft", size_spy)
+    monkeypatch.setattr(pipeline, "select_bom", bom_spy)
+    monkeypatch.setattr(pipeline, "resolve_stages", lambda *_: {"aero_cad": True, "sitl": True})
+    monkeypatch.setattr(pipeline, "run_aero_cad", lambda *_: (saved_aero, saved_cad))  # no OpenVSP on the host
+    monkeypatch.setattr(pipeline, "run_sitl", sitl_spy)
+    with pytest.raises(_SitlReached):
+        pipeline.run_design(G1_ELECTRIC_FW, tmp_path / "o", db, assumptions=custom)
+    assert seen == {"sizing": custom, "select_bom": custom, "run_sitl": custom}

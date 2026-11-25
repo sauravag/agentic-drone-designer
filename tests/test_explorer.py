@@ -3,10 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.agent.critic import RESERVE_MIN
+from src.agent.critic import PROPULSION_STAGE, RESERVE_MIN
 from src.agent.evaluator import evaluate
 from src.agent.explorer import (CRUISE_MAX_MS, CRUISE_MIN_MS, OUT_OF_RANGE_REASON, explore_closure,
-                                explore_improvement, explorer_mode, unchanged_closes)
+                                explore_improvement, explorer_mode, unchanged_closes, unchanged_closes_note)
 from src.agent.graph import initial_state
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.changes import apply_changes
@@ -75,6 +75,13 @@ def test_closure_explorer_offers_nothing_when_the_unchanged_design_closes(db: Pa
     assert unchanged_closes(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db)
     assert not unchanged_closes(REQ_FAILED, DEFAULT_ASSUMPTIONS, db)
     assert explore_closure(G1_ELECTRIC_FW, DEFAULT_ASSUMPTIONS, db) == []
+
+
+def test_unchanged_closes_note_names_the_propulsion_step_in_words() -> None:
+    state = {"stage_error": {"stage": PROPULSION_STAGE, "message": "no propeller reaches the climb thrust"}}
+    note = unchanged_closes_note(state)
+    assert "the propulsion matching step" in note and PROPULSION_STAGE not in note
+    assert "the aero_cad stage" in unchanged_closes_note({"stage_error": {"stage": "aero_cad", "message": "x"}})
 
 
 def test_cruise_scan_limits_come_from_the_requirements_schema() -> None:
