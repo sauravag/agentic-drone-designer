@@ -40,9 +40,9 @@ from typing import Final, Mapping, Optional, Sequence
 
 from src.schemas.components import SelectedBOM
 from src.schemas.state import SizingOutput
+from src.tools.database.packs import loaded_min_voltage_v
 from src.tools.flight_control.control_channels import (ELEVATOR_SURFACE, LIFT_MOTOR_SERVOS, RUDDERVATOR_SURFACES,
                                                        THROTTLE_SERVO, THROTTLE_SERVO_FUNCTION, ControlChannel)
-from src.tools.database.packs import loaded_min_voltage_v
 from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
                                                    FlightModel, transition_time_s)
 from src.tools.flight_control.propulsion_plant import pack_series
