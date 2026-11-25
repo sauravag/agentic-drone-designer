@@ -52,7 +52,7 @@ def g2() -> tuple[DesignInputs, FlightModel]:
 
 
 def load_vtail_design() -> DesignInputs:
-    """The saved V-tail G1 design (scripts/generate_vtail_g1_fixture.py)."""
+    """The saved V-tail G1 design (scripts/generate_flight_control_fixtures.py)."""
     return load_design("g1_vtail")
 
 
@@ -73,7 +73,12 @@ def test_cruise_trims_with_zero_elevator(design: Any) -> None:
 
 def test_cruise_thrust_falls_with_speed_and_rises_with_throttle(design: Any) -> None:
     _, _, m = design
-    assert m.cruise_thrust_n(1.0, m.v_cruise_ms) < m.cruise_thrust_n(1.0, 5.0) < m.cruise_thrust_n(1.0, 0.0)
+    # Above a few m/s full-throttle thrust falls with speed. Near zero it need not: the matched G2 18x12.6 in
+    # (pitch/D 0.7) gives less static thrust than at 5 m/s (94 vs 98 N), as a high-pitch blade does at J = 0.
+    speeds = [5.0 + i * (m.v_cruise_ms - 5.0) / 10 for i in range(11)]
+    full = [m.cruise_thrust_n(1.0, v) for v in speeds]
+    assert all(b < a for a, b in zip(full, full[1:]))
+    assert m.cruise_thrust_n(1.0, m.v_cruise_ms) < m.cruise_thrust_n(1.0, 0.0)
     thrusts = [m.cruise_thrust_n(i / 10, 10.0) for i in range(11)]
     assert all(b >= a for a, b in zip(thrusts, thrusts[1:])) and thrusts[0] == 0.0 < thrusts[-1]
     assert m.cruise_thrust_n(2.0, 10.0) == m.cruise_thrust_n(1.0, 10.0)
@@ -91,11 +96,12 @@ def test_quadplane_rotors_follow_ardupilot_quad_x_numbering(g2: Any) -> None:
 
 def test_underpowered_design_is_rejected(g2: Any) -> None:
     (req, sizing, bom, aero, cad), _ = g2
-    weak = bom.model_copy(update={"vtol_motor": bom.vtol_motor.model_copy(update={"max_power_w": 100.0})})
+    # matched motors: the winding's max current bounds the thrust (the power rating no longer does)
+    weak = bom.model_copy(update={"vtol_motor": bom.vtol_motor.model_copy(update={"max_current_a": 1.0})})
     with pytest.raises(FlightModelError, match="lift rotors"):
         build_flight_model(req, sizing, weak, aero, cad)
     slow = bom.model_copy(update={"cruise_motor": bom.cruise_motor.model_copy(
-        update={"max_power_w": 10.0, "continuous_power_w": 10.0})})
+        update={"max_current_a": 0.5})})
     with pytest.raises(FlightModelError, match="cruise propeller"):
         build_flight_model(req, sizing, slow, aero, cad)
 

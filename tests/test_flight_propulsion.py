@@ -135,7 +135,7 @@ def test_battery_failsafe_voltages_follow_series_count(matched_g2: Any) -> None:
 
 
 def test_legacy_battery_series_comes_from_the_pack_voltage() -> None:
-    _, sizing, bom, _, _ = load_design("g1")  # 21.6 V Li-ion, no cell build: 6S
+    _, sizing, bom, _, _ = load_design("legacy_g1")  # 21.6 V Li-ion, no cell build: 6S
     assert bom.battery.series is None
     assert pg.battery_params(sizing, bom, False)["BATT_CRT_VOLT"] == pytest.approx(6 * LI_ION_LOADED_MIN_V_CELL,
                                                                                     abs=0.01)
@@ -152,7 +152,7 @@ def test_trim_throttle_solves_the_thrust_curve(matched_g2: Any) -> None:
 
 
 def test_flat_topped_thrust_trims_at_the_lowest_saturating_throttle() -> None:
-    model = build_flight_model(*load_design("g1"))  # legacy 4S motor on a 6S pack: tip Mach caps the rpm
+    model = build_flight_model(*load_design("legacy_g1"))  # legacy 4S motor on a 6S pack: tip Mach caps the rpm
     v: float = model.v_cruise_ms
     t_full: float = model.cruise_thrust_n(1.0, v)
     assert model.cruise_thrust_n(0.9, v) == pytest.approx(t_full)  # the flat top
@@ -179,9 +179,9 @@ def test_no_prop_efficiency_constant_left() -> None:
 
 # ----------------------------------------------------------------------------------- legacy path ---
 def test_legacy_record_estimates_motor_constants_and_esc_class() -> None:
-    _, _, bom, _, _ = load_design("g2")
+    _, _, bom, _, _ = load_design("legacy_g2")
     assert bom.cruise_esc is None and bom.cruise_motor.rm_ohm is None and bom.vtol_motor.kv is None
-    model = build_flight_model(*load_design("g2"))
+    model = build_flight_model(*load_design("legacy_g2"))
     motor = bom.cruise_motor
     expected = Propulsor(
         table=propeller_table(bom.cruise_propeller.diameter_m, bom.cruise_propeller.pitch_m), kv=motor.kv,
@@ -193,7 +193,7 @@ def test_legacy_record_estimates_motor_constants_and_esc_class() -> None:
 
 
 def test_pack_series_refuses_an_unknown_chemistry() -> None:
-    _, _, bom, _, _ = load_design("g1")
+    _, _, bom, _, _ = load_design("legacy_g1")  # a pack without a cell build
     unknown = bom.battery.model_construct(**{**dict(bom.battery), "chemistry": "nimh"})
     with pytest.raises(ValueError, match="nimh"):
         pack_series(unknown)

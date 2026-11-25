@@ -1,0 +1,14 @@
+{
+ "airframe_topology": "auto",
+ "combat_radius_km": 15.0,
+ "cruise_speed_ms": 18.0,
+ "endurance_hours": 2.0,
+ "group_constraint": null,
+ "max_stall_speed_ms": 13.0,
+ "mission_name": "G1 electric fixed-wing",
+ "payload_mass_kg": 1.0,
+ "payload_power_w": 15.0,
+ "propulsion_type": "auto",
+ "runway_available": true,
+ "service_ceiling_m": 500.0
+}

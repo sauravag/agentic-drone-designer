@@ -1,0 +1,89 @@
+{
+ "airfoil": "mh32",
+ "airframe_topology": "quadplane_vtol",
+ "aspect_ratio": 12.0,
+ "assumed_ld_cruise": 17.10611324064332,
+ "avionics_mass_kg": 0.493602630782656,
+ "avionics_power_w": 17.74410523130624,
+ "battery_energy_j": 6029854.978622372,
+ "battery_mass_kg": 8.374798581419961,
+ "battery_peak_power_w": 4550.0470403131085,
+ "cd0": 0.021752168385164947,
+ "cl_max": 1.1091091807399516,
+ "cruise_motor_power_w": 1006.5762278968416,
+ "cruise_power_w": 406.82670028635465,
+ "dod_group": 2,
+ "empty_mass_kg": 7.985464496845639,
+ "energy_reserve_fraction": 0.2,
+ "fuel_mass_kg": 0.0,
+ "fuselage_diameter_m": 0.21097697810710322,
+ "fuselage_length_m": 1.4768388467497227,
+ "generator_power_w": 0.0,
+ "horizontal_tail_area_m2": 0.18580732410172662,
+ "hover_power_w": 4550.0470403131085,
+ "mean_chord_m": 0.3016235951460371,
+ "mtow_kg": 19.3602630782656,
+ "oswald_e": 0.7060139564214812,
+ "payload_mass_kg": 3.0,
+ "phases": [
+  {
+   "duration_s": 60.0,
+   "energy_j": 157580.19432366473,
+   "fuel_burned_kg": 0.0,
+   "name": "VTOL_Takeoff",
+   "propulsive_power_w": 2578.5924668370867,
+   "total_power_w": 2626.336572061077
+  },
+  {
+   "duration_s": 200.0,
+   "energy_j": 210864.06662416647,
+   "fuel_burned_kg": 0.0,
+   "name": "Climb",
+   "propulsive_power_w": 1006.5762278968417,
+   "total_power_w": 1054.3203331208326
+  },
+  {
+   "duration_s": 454.54545454545456,
+   "energy_j": 184921.22740288847,
+   "fuel_burned_kg": 0.0,
+   "name": "Ingress",
+   "propulsive_power_w": 359.0825950623638,
+   "total_power_w": 406.82670028635476
+  },
+  {
+   "duration_s": 10800.0,
+   "energy_j": 3928017.0728206257,
+   "fuel_burned_kg": 0.0,
+   "name": "Loiter",
+   "propulsive_power_w": 315.9611792964371,
+   "total_power_w": 363.70528452042805
+  },
+  {
+   "duration_s": 454.54545454545456,
+   "energy_j": 184921.22740288847,
+   "fuel_burned_kg": 0.0,
+   "name": "Egress",
+   "propulsive_power_w": 359.0825950623638,
+   "total_power_w": 406.82670028635476
+  },
+  {
+   "duration_s": 60.0,
+   "energy_j": 157580.19432366473,
+   "fuel_burned_kg": 0.0,
+   "name": "VTOL_Land",
+   "propulsive_power_w": 2578.5924668370867,
+   "total_power_w": 2626.336572061077
+  }
+ ],
+ "propulsion_type": "electric",
+ "rotor_diameter_m": 0.5975247981024507,
+ "tail_arm_m": 0.8861033080498336,
+ "v_loiter_ms": 19.792544861854296,
+ "v_stall_ms": 16.000000007556977,
+ "vertical_tail_area_m2": 0.1783750311376576,
+ "vtol_thrust_per_motor_n": 68.82400491972157,
+ "wing_area_m2": 1.091721517785846,
+ "wingspan_m": 3.619483141752445,
+ "cl_cruise": 0.6158591454844388,
+ "cl_loiter": 0.7608928107873549
+}

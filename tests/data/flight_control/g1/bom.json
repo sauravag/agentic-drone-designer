@@ -1,48 +1,78 @@
 {
- "battery": {
-  "capacity_wh": 432.0,
-  "chemistry": "li_ion",
-  "height_m": 0.0727,
-  "id": 4,
-  "length_m": 0.2181,
-  "mass_kg": 2.16,
-  "max_c_rate": 3.0,
-  "name": "Li-Ion 21700 6S4P",
-  "voltage_v": 21.6,
-  "width_m": 0.109
- },
- "cruise_motor": {
-  "continuous_power_w": 400.0,
-  "diameter_m": 0.035,
-  "id": 3,
-  "kv": 900.0,
-  "length_m": 0.03,
-  "mass_kg": 0.105,
-  "max_power_w": 550.0,
-  "name": "Outrunner 2814-900KV",
-  "voltage_v": 14.8
- },
- "cruise_propeller": {
-  "application": "cruise",
-  "diameter_m": 0.2794,
-  "id": 3,
-  "mass_kg": 0.025,
-  "max_power_w": 600.0,
-  "name": "Carbon cruise prop 11x7in",
-  "pitch_m": 0.1778
- },
- "ice_generator": null,
- "payload": {
-  "height_m": 0.1,
-  "id": 5,
-  "length_m": 0.15,
-  "mass_kg": 1.2,
-  "name": "LiDAR mapping unit",
-  "power_w": 25.0,
-  "sensor_type": "lidar",
-  "width_m": 0.1
- },
- "vtol_motor": null,
- "vtol_motor_count": 0,
- "vtol_propeller": null
+  "cruise_motor": {
+    "id": 20,
+    "name": "Outrunner 2212-1713KV",
+    "mass_kg": 0.056,
+    "max_power_w": 300.0,
+    "continuous_power_w": 200.0,
+    "kv": 1713.0,
+    "voltage_v": 8.4,
+    "diameter_m": 0.028,
+    "length_m": 0.026,
+    "rm_ohm": 0.02438,
+    "i0_a": 0.718902,
+    "max_current_a": 52.400776
+  },
+  "cruise_propeller": {
+    "id": 40,
+    "name": "Carbon cruise prop 10x8in",
+    "mass_kg": 0.02,
+    "diameter_m": 0.254,
+    "pitch_m": 0.2032,
+    "max_power_w": 450.0,
+    "application": "cruise",
+    "is_folding": false
+  },
+  "battery": {
+    "id": null,
+    "name": "Li-ion 18650 energy 3.5Ah 2S13P",
+    "mass_kg": 1.639,
+    "chemistry": "li_ion",
+    "capacity_wh": 327.59999999999997,
+    "max_c_rate": 2.857142857142857,
+    "voltage_v": 7.2,
+    "length_m": 0.1988,
+    "width_m": 0.0994,
+    "height_m": 0.0663,
+    "cell_name": "Li-ion 18650 energy 3.5Ah",
+    "series": 2,
+    "parallel": 13
+  },
+  "payload": {
+    "id": 24,
+    "name": "LiDAR mapping unit",
+    "mass_kg": 1.2,
+    "sensor_type": "lidar",
+    "power_w": 25.0,
+    "length_m": 0.15,
+    "width_m": 0.1,
+    "height_m": 0.1,
+    "vendor": null,
+    "reference_price_usd": null
+  },
+  "cruise_esc": {
+    "id": 5,
+    "name": "ESC 60A 2S",
+    "mass_kg": 0.0226,
+    "continuous_current_a": 60.0,
+    "burst_current_a": 90.0,
+    "max_voltage_v": 8.4,
+    "efficiency": 0.95,
+    "length_m": 0.0439,
+    "width_m": 0.0293,
+    "height_m": 0.0146
+  },
+  "vtol_motor": null,
+  "vtol_propeller": null,
+  "vtol_esc": null,
+  "vtol_motor_count": 0,
+  "ice_generator": null,
+  "flight_controller": {
+    "id": null,
+    "name": "CubePilot Cube Orange+ (ADS-B carrier)",
+    "mass_kg": 0.073,
+    "power_w": null,
+    "reference_price_usd": "\u2248 $450\u2013546"
+  },
+  "companion_computer": null
 }

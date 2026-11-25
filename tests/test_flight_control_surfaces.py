@@ -7,7 +7,7 @@ import json
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -25,6 +25,8 @@ from src.tools.sizing.layouts import TAILED_BAND
 from src.tools.sizing.topology import HAND_LAUNCH_HEIGHT_M, HAND_LAUNCH_PITCH_DEG, HAND_LAUNCH_SPEED_MS
 from tests.test_flight_control import (KNOWN_PARAMS, DesignInputs, g2, load_design,  # noqa: F401 (g2 is a fixture)
                                        load_vtail_design)
+
+XML_REL: Final[float] = 1e-5  # the JSBSim export writes numbers to 6 significant digits ("%.6g")
 
 
 # ------------------------------------------- per-servo surfaces, steering, servo allocation (phase 2, Task 4) ---
@@ -53,9 +55,9 @@ def _zero_derivative_vtail() -> tuple[ControlSurfaceDerivatives, ...]:
 
 
 def test_legacy_aero_record_gives_tractor_channels() -> None:
-    _, sizing, bom, aero, cad = load_design("g1")  # saved before phase 2: no control_surfaces
+    _, sizing, bom, aero, cad = load_design("legacy_g1")  # saved before phase 2: no control_surfaces
     assert aero.control_surfaces == ()
-    model = build_flight_model(*load_design("g1"))
+    model = build_flight_model(*load_design("legacy_g1"))
     assert [(c.surface, c.servo, c.servo_function) for c in model.channels] == [
         ("aileron", 1, 4), ("elevator", 2, 19), ("rudder", 4, 21)]
 
@@ -198,10 +200,11 @@ def test_export_without_gear_writes_belly_contacts(tmp_path: Path) -> None:
         return tuple(float(loc.find(axis).text) for axis in "xyz")  # type: ignore[union-attr,return-value]
 
     belly_z = -model.fuselage_diameter_m / 2
-    assert at("BELLY_CG") == pytest.approx((model.x_cg_m, 0.0, belly_z))
-    assert at("BELLY_AFT") == pytest.approx((0.8 * model.fuselage_length_m, 0.0, belly_z))
+    assert at("BELLY_CG") == pytest.approx((model.x_cg_m, 0.0, belly_z), rel=XML_REL)
+    assert at("BELLY_AFT") == pytest.approx((0.8 * model.fuselage_length_m, 0.0, belly_z), rel=XML_REL)
     for name, side in (("LEFT_WINGTIP", -1), ("RIGHT_WINGTIP", 1)):  # the tips keep it from rolling inverted
-        assert at(name) == pytest.approx((model.x_cg_m, side * model.wingspan_m / 2, model.wing_tip_z_m))
+        assert at(name) == pytest.approx((model.x_cg_m, side * model.wingspan_m / 2, model.wing_tip_z_m),
+                                         rel=XML_REL)
     assert all(float(c.find("max_steer").text) == 0.0 for c in contacts.values())  # type: ignore[union-attr]
 
 
