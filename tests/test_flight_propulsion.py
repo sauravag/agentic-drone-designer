@@ -165,6 +165,20 @@ def test_flat_topped_thrust_trims_at_the_lowest_saturating_throttle() -> None:
     assert model.cruise_throttle_for(1.01 * t_full, v) is None
 
 
+def test_a_flat_top_with_float_noise_still_trims_where_the_saturation_starts(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A current-limited top is flat only up to the rpm solve's noise: full throttle may come out a few ulps above
+    the rest of the plateau (seen on Linux libm). The trim must still find where the plateau starts."""
+    model = build_flight_model(*load_design("legacy_g1"))
+    plateau: float = 14.5
+
+    def noisy_flat_top(self: FlightModel, throttle: float, speed_ms: float) -> float:
+        return min(throttle / 0.7, 1.0) * plateau * (1.0 + (1e-15 if throttle == 1.0 else 0.0))
+    monkeypatch.setattr(FlightModel, "cruise_thrust_n", noisy_flat_top)
+    throttle = model.cruise_throttle_for(model.cruise_thrust_n(1.0, 18.0), 18.0)
+    assert throttle is not None and throttle == pytest.approx(0.7, abs=1e-3)
+
+
 def test_unreachable_cruise_is_a_readable_error(matched_g2: Any) -> None:
     (req, sizing, bom, aero, cad), model = matched_g2
     weak = replace(model.cruise_propulsor, max_current_a=0.5)

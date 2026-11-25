@@ -55,6 +55,9 @@ MOTOR_LAG_BASE_S: Final[float] = 0.03  # first-order spin-up time constant = bas
 MOTOR_LAG_PER_DIAMETER_S_M: Final[float] = 0.06
 ROTOR_TORQUE_PER_THRUST_DIAMETER: Final[float] = 0.05  # Q / (T D) ~ C_Q / C_T
 THROTTLE_SOLVE_TOL: Final[float] = 1e-4  # throttle bracket at which the thrust -> throttle bisection stops
+# Thrust within this relative margin of the target counts as reaching it: a flat (current-limited) top is flat
+# only up to the rpm solve's tolerance (propulsor ROOT_RTOL 1e-9), so its last digits must not move the trim.
+THRUST_MATCH_RTOL: Final[float] = 1e-9
 LIFT_CURVE_POINTS: Final[int] = 21  # lift-rotor throttle samples the Q_M_THST_EXPO fit uses
 TRANSITION_SPEED_FACTOR: Final[float] = 1.2  # SRS: accelerate 0 -> 1.2 Vs
 TRANSITION_DT_S: Final[float] = 0.01
@@ -179,10 +182,11 @@ class FlightModel:
         cannot. Bisection, so a flat (saturated) top resolves to where the saturation starts."""
         if self.cruise_thrust_n(1.0, speed_ms) < thrust_n:
             return None
+        reached: float = thrust_n * (1.0 - THRUST_MATCH_RTOL)
         lo, hi = 0.0, 1.0
         while hi - lo > THROTTLE_SOLVE_TOL:
             mid: float = 0.5 * (lo + hi)
-            lo, hi = (lo, mid) if self.cruise_thrust_n(mid, speed_ms) >= thrust_n else (mid, hi)
+            lo, hi = (lo, mid) if self.cruise_thrust_n(mid, speed_ms) >= reached else (mid, hi)
         return hi
 
     def lift_thrust_n(self, throttle: float) -> float:
