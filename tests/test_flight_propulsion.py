@@ -13,7 +13,7 @@ import pytest
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.components import SelectedBOM
-from src.tools.database.catalog_variants import ESC_EFFICIENCY_HV, ESC_EFFICIENCY_SMALL, motor_constants
+from src.tools.database.catalog_variants import ESC_EFFICIENCY_HV, ESC_EFFICIENCY_SMALL, MAX_CELL_V, motor_constants
 from src.tools.database.packs import LI_ION_LOADED_MIN_V_CELL, LIPO_LOADED_MIN_V_CELL
 from src.tools.database.seed_data import catalog_rows
 from src.tools.flight_control import flight_model as fm
@@ -260,3 +260,16 @@ def test_pipeline_and_agent_hand_the_assumptions_to_sitl(monkeypatch: pytest.Mon
     ctx = type("Ctx", (), {"progress": staticmethod(lambda _: None)})()
     assert nodes.generate_and_verify_fcs(state, ctx) == {"fcs_artifacts": "fcs"}
     assert seen == [lossy, lossy]
+
+
+def test_quadplane_thrust_voltage_compensation_spans_the_pack(matched_g2: Any) -> None:
+    (_, sizing, bom, _, _), model = matched_g2
+    params = pg.generate_params(model, sizing, bom)
+    cell = next(c for c in catalog_rows("cells") if c.name == bom.battery.cell_name)
+    assert params["Q_M_BAT_VOLT_MAX"] == pytest.approx(12 * cell.max_voltage_v, abs=0.01)
+    assert params["Q_M_BAT_VOLT_MIN"] == pytest.approx(12 * LI_ION_LOADED_MIN_V_CELL, abs=0.01)
+    legacy_g2 = load_design("g2")  # no cell build: 12S Li-ion from 43.2 V, catalogue max cell voltage
+    legacy = pg.generate_params(build_flight_model(*legacy_g2), legacy_g2[1], legacy_g2[2])
+    assert legacy["Q_M_BAT_VOLT_MAX"] == pytest.approx(12 * MAX_CELL_V, abs=0.01)
+    fixed_wing = load_design("g1")
+    assert "Q_M_BAT_VOLT_MAX" not in pg.generate_params(build_flight_model(*fixed_wing), fixed_wing[1], fixed_wing[2])

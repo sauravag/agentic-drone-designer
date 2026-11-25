@@ -32,6 +32,10 @@ Gain design (all at the cruise speed, which becomes SCALING_SPEED so ArduPilot's
   end-of-reserve voltage the matching checked the sagged points at), BATT_LOW_VOLT = BATT_LOW_VOLT_MARGIN x that.
   ArduPilot compares them against the raw (loaded) voltage (BATT_FS_VOLTSRC 0). They belong in the hardware file;
   SITL keeps BATT_MONITOR 0 (the JSON backend reports no battery), so they never trigger there.
+* QuadPlane thrust voltage compensation: Q_M_BAT_VOLT_MAX = series x the charged cell voltage, Q_M_BAT_VOLT_MIN =
+  series x the loaded minimum cell voltage (ArduPilot recommends ~4.2 V and ~3.3 V per cell; 0 disables). ArduPilot
+  scales the lift-motor output by the measured voltage between them; with no battery reading (SITL, BATT_MONITOR 0)
+  the compensation stays off (lift_max = 1), matching the unsagged SITL plant.
 """
 
 import math
@@ -45,7 +49,7 @@ from src.tools.flight_control.control_channels import (ELEVATOR_SURFACE, LIFT_MO
                                                        THROTTLE_SERVO, THROTTLE_SERVO_FUNCTION, ControlChannel)
 from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
                                                    FlightModel, transition_time_s)
-from src.tools.flight_control.propulsion_plant import pack_series
+from src.tools.flight_control.propulsion_plant import charged_cell_voltage_v, pack_series
 
 ParamSet = dict[str, float]
 
@@ -298,6 +302,14 @@ def battery_params(sizing: SizingOutput, bom: SelectedBOM, is_quadplane: bool) -
             "BATT_FS_CRT_ACT": 4 if is_quadplane else 2}  # QLand / Land
 
 
+def quadplane_battery_params(bom: SelectedBOM) -> ParamSet:
+    """Q_M_BAT_VOLT_MAX / MIN: the lift motors' thrust voltage compensation spans the charged and the end-of-reserve
+    loaded pack voltage."""
+    series: int = pack_series(bom.battery)
+    return {"Q_M_BAT_VOLT_MAX": round(series * charged_cell_voltage_v(bom.battery), VOLT_DIGITS),
+            "Q_M_BAT_VOLT_MIN": round(loaded_min_voltage_v(bom.battery.chemistry, series), VOLT_DIGITS)}
+
+
 def generate_params(model: FlightModel, sizing: SizingOutput, bom: SelectedBOM, gain_scale: float = 1.0) -> ParamSet:
     """Complete vehicle parameter set. gain_scale multiplies the rate P/I gains (SITL damping retry); the fixed-wing
     rate D is only ever scaled down."""
@@ -305,7 +317,7 @@ def generate_params(model: FlightModel, sizing: SizingOutput, bom: SelectedBOM, 
         raise ParamGenerationError(f"gain_scale must be positive, got {gain_scale}")
     params: ParamSet = envelope_params(model) | fixed_wing_gains(model, gain_scale) | ruddervator_params(model)
     if model.is_quadplane:
-        params |= quadplane_params(model, gain_scale)
+        params |= quadplane_params(model, gain_scale) | quadplane_battery_params(bom)
     return params | battery_params(sizing, bom, model.is_quadplane)
 
 

@@ -21,7 +21,8 @@ from typing import Final, Optional
 
 from src.schemas.components import Battery, CruiseMotor, Esc, Propeller, VtolMotor
 from src.tools.database.catalog_variants import (ESC_EFFICIENCY_HV, ESC_EFFICIENCY_SMALL, ESC_HV_THRESHOLD_V,
-                                                 VTOL_CONTINUOUS_FRACTION, kv_from_name, motor_constants)
+                                                 MAX_CELL_V, VTOL_CONTINUOUS_FRACTION, kv_from_name, motor_constants)
+from src.tools.database.seed_data import catalog_rows
 from src.tools.propulsion.prop_tables import propeller_table
 from src.tools.propulsion.propulsor import MOTOR_PARAMS, Propulsor, propulsor_from_parts
 
@@ -43,6 +44,13 @@ def pack_series(battery: Battery) -> int:
         raise ValueError(f"pack {battery.name!r} has no cell build and no nominal cell voltage is known for chemistry "
                          f"{battery.chemistry!r} (known: {', '.join(sorted(LEGACY_NOMINAL_V_CELL))})")
     return max(1, round(battery.voltage_v / nominal_v))
+
+
+def charged_cell_voltage_v(battery: Battery) -> float:
+    """Fully charged cell voltage: the pack's catalogue cell, or (legacy pack / cell not in the catalogue) the
+    catalogue's MAX_CELL_V."""
+    cell = next((c for c in catalog_rows("cells") if c.name == battery.cell_name), None)
+    return MAX_CELL_V if cell is None else cell.max_voltage_v
 
 
 def is_legacy_motor(motor: CruiseMotor | VtolMotor) -> bool:
