@@ -67,7 +67,7 @@ P_FLOOR_TO_FF: Final[float] = 0.25  # minimum rate P as a fraction of FF (ArduPi
 # Anchored on the reference tractors, which fly the hot corner cleanly: G1 roll 0.728, G2 0.626 (G1 ~3 % under the
 # cap); the V-tail kit's light roll inertia (|L_p| ~ 80 1/s) gives ~2.0 and rings the rate loop at ~13 Hz. A value
 # derived with more headroom (e.g. from the servo bandwidth, 1/lag = 20 rad/s) would cap G1 itself, changing the
-# reference tractors' gains: that shows as a golden params change (tests/data/golden/layouts_phase2/*/params.json).
+# reference tractors' gains: that shows as a golden params change (tests/data/golden/propulsion_matching/*/params.json).
 D_LOOP_GAIN_MAX: Final[float] = 0.75
 INTEGRAL_CORNER_FRACTION: Final[float] = 1.0 / 3.0  # PI zero at 1/3 of the angle-loop bandwidth 1/tau
 Q_BANDWIDTH_MAX_RAD_S: Final[float] = 18.0

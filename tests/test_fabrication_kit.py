@@ -1,6 +1,7 @@
 """Task 6: `build_kit` assembles every part, tube and strip of the laser-cut kit; `kit_mass_items` weighs it."""
 
 import dataclasses
+import json
 import math
 import re
 
@@ -487,11 +488,13 @@ def _vtail_surface(layout):
 
 def test_tractor_kit_unchanged_after_generalisation():
     """The tractor kit (parts, positions, labels, tubes) still matches its golden snapshot after the tail
-    generalisation (the same gate as tests/test_layout_golden.py)."""
+    generalisation (the same gate as tests/test_layout_golden.py). Since the 2026-11-25 re-baseline the G1 and G2
+    references build no kit (their snapshot is the reason); the lighter g1_kit variant carries the kit geometry."""
     from tests.golden import GOLDEN_DIR, _kit_text
 
-    for case in ("g1", "g2"):
+    for case in ("g1_kit", "g1", "g2"):
         assert _kit_text(case) == (GOLDEN_DIR / case / "kit.json").read_text(), case
+    assert json.loads(_kit_text("g1_kit"))["parts"]
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])

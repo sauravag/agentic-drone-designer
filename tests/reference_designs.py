@@ -16,5 +16,13 @@ CASES: dict[str, OperationalRequirements] = {
     "g1_vtail": G1_VTAIL_PUSHER_FW, "g2_vtail": G2_VTAIL_PUSHER_VTOL, "g1_hand": G1_HAND_LAUNCH,
 }
 
-__all__ = ["CASES", "REQ_FAILED", "G1_ELECTRIC_FW", "G2_ELECTRIC_VTOL", "G3_HYBRID_VTOL", "G1_VTAIL_PUSHER_FW",
+# Lighter variants that still build a laser-cut kit, so the kit code stays under test while the reference designs'
+# kits are refused (user, 2026-11-25: "accept, kit fixes later"). Not reference missions: test inputs only.
+G1_KIT_ENDURANCE_H: float = 1.75  # G1 at 1.75 h (4.12 kg) builds the tractor kit; the 2 h reference (4.45 kg) does not
+KIT_VARIANTS: dict[str, OperationalRequirements] = {
+    "g1_kit": G1_ELECTRIC_FW.model_copy(update={"mission_name": "G1 kit variant (1.75 h)",
+                                                "endurance_hours": G1_KIT_ENDURANCE_H}),
+}
+
+__all__ = ["CASES", "KIT_VARIANTS", "REQ_FAILED", "G1_ELECTRIC_FW", "G2_ELECTRIC_VTOL", "G3_HYBRID_VTOL", "G1_VTAIL_PUSHER_FW",
            "G2_VTAIL_PUSHER_VTOL", "G1_HAND_LAUNCH"]

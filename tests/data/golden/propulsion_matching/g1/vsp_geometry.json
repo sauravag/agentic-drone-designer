@@ -10,46 +10,46 @@
  {
   "name": "Wing",
   "parms": {
-   "XForm.X_Rel_Location": 0.265328578,
-   "XForm.Z_Rel_Location": 0.0315867355,
+   "XForm.X_Rel_Location": 0.27131818,
+   "XForm.Z_Rel_Location": 0.0322997833,
    "XSec_1.Dihedral": 3.0,
-   "XSec_1.Root_Chord": 0.222306634,
-   "XSec_1.Span": 1.00037985,
+   "XSec_1.Root_Chord": 0.229876576,
+   "XSec_1.Span": 1.03444459,
    "XSec_1.Sweep": 0.0,
-   "XSec_1.Tip_Chord": 0.111153317
+   "XSec_1.Tip_Chord": 0.114938288
   },
   "type": "Wing"
  },
  {
   "name": "HTail",
   "parms": {
-   "XForm.X_Rel_Location": 0.810000515,
+   "XForm.X_Rel_Location": 0.828277501,
    "XForm.Z_Rel_Location": 0.0,
    "XSec_1.Dihedral": 0.0,
-   "XSec_1.Root_Chord": 0.14307678,
-   "XSec_1.Span": 0.228922849,
+   "XSec_1.Root_Chord": 0.148776786,
+   "XSec_1.Span": 0.238042857,
    "XSec_1.Sweep": 0.0,
-   "XSec_1.Tip_Chord": 0.0858460683
+   "XSec_1.Tip_Chord": 0.0892660716
   },
   "type": "Wing"
  },
  {
   "name": "VTail",
   "parms": {
-   "XForm.X_Rel_Location": 0.792473609,
+   "XForm.X_Rel_Location": 0.810052345,
    "XForm.Z_Rel_Location": 0.0,
    "XSec_1.Dihedral": 0.0,
-   "XSec_1.Root_Chord": 0.228922849,
-   "XSec_1.Span": 0.274707418,
+   "XSec_1.Root_Chord": 0.238042857,
+   "XSec_1.Span": 0.285651429,
    "XSec_1.Sweep": 0.0,
-   "XSec_1.Tip_Chord": 0.137353709
+   "XSec_1.Tip_Chord": 0.142825714
   },
   "type": "Wing"
  },
  {
   "name": "TailBoom",
   "parms": {
-   "XForm.X_Rel_Location": 0.795985734,
+   "XForm.X_Rel_Location": 0.813954539,
    "XForm.Z_Rel_Location": 0.0
   },
   "type": "Pod"

@@ -1,8 +1,12 @@
-"""Golden snapshots of the reference designs' outputs, re-baselined once in phase 2 (2026-11-23: explicit tail/lift
-boom tubes, boom drag and a stopped-rotor term) after the phase-1 airframe-layout refactor.
+"""Golden snapshots of the reference designs' outputs. Re-baselined deliberately twice: airframe-layout phase 2
+(2026-11-23: explicit tail/lift boom tubes, boom drag and a stopped-rotor term) and propulsion matching phase 1
+(2026-11-25: matched propeller + motor, ESCs, cell-built packs; docs/superpowers/plans/
+2026-11-24-propulsion-rebaseline-notes.md).
 
 `snapshot(case)` returns one canonical text per output key; `tests/test_layout_golden.py` compares each with the file
-stored under `tests/data/golden/layouts_phase2/<case>/<key>.json`. A changed snapshot means the code is wrong.
+stored under `tests/data/golden/propulsion_matching/<case>/<key>.json`. A changed snapshot means the code is wrong.
+A reference design whose laser-cut kit is refused stores the readable reason as its `kit` snapshot; `g1_kit` (a
+lighter G1 that still builds a tractor kit) keeps the kit geometry itself under the gate.
 """
 
 import dataclasses
@@ -21,17 +25,18 @@ from src.tools.flight_control.flight_model import build_flight_model
 from src.tools.flight_control.jsbsim_exporter import export_jsbsim
 from src.tools.flight_control.param_generator import generate_params
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
-from tests.reference_designs import CASES
+from tests.reference_designs import CASES, KIT_VARIANTS
 
-GOLDEN_DIR: Final[Path] = Path(__file__).parent / "data" / "golden" / "layouts_phase2"
+GOLDEN_DIR: Final[Path] = Path(__file__).parent / "data" / "golden" / "propulsion_matching"
 SIG_DIGITS: Final[int] = 12  # `canonical` default
 SNAPSHOT_DIGITS: Final[int] = 9  # snapshots: the last digits of a float differ between macOS and Linux libm/BLAS
 KIT_DECIMALS: Final[int] = 6  # micron: the CAD kernel differs from the 12th digit between macOS and Linux
 # SizingOutput keys added after the stored snapshots were taken (left out of the comparison until the next deliberate
-# re-baseline). Empty since the phase-2 re-baseline stored every key.
-NEW_SIZING_KEYS: Final[frozenset[str]] = frozenset({"gear_kind"})
+# re-baseline). Empty since the 2026-11-25 re-baseline stored every key.
+NEW_SIZING_KEYS: Final[frozenset[str]] = frozenset()
 SIZING_CASES: Final[tuple[str, ...]] = ("g1", "g2", "g3")
 DESIGN_CASES: Final[tuple[str, ...]] = ("g1", "g2")  # the cases with a saved flight-control design
+KIT_CASES: Final[tuple[str, ...]] = ("g1_kit",)  # kit-only snapshots of designs outside the reference set
 VSP_PARMS: Final[tuple[tuple[str, str], ...]] = (
     ("Span", "XSec_1"), ("Root_Chord", "XSec_1"), ("Tip_Chord", "XSec_1"), ("Sweep", "XSec_1"),
     ("Dihedral", "XSec_1"), ("X_Rel_Location", "XForm"), ("Z_Rel_Location", "XForm"))
@@ -117,17 +122,22 @@ def _jsbsim_text(case: str) -> str:
 
 def _kit_text(case: str) -> str:
     from src.tools.fabrication.build_kit import build_kit
+    from src.tools.fabrication.tubes import KitUnavailable
     from src.schemas.fabrication import DEFAULT_FABRICATION
     from tests.cad_helpers import _fitted_layout
     from tests.test_fabrication_fuselage import _real_components
     from src.tools.aero_cad.airfoil_geometry import load_airfoil
 
+    req = {**CASES, **KIT_VARIANTS}[case]
+    sizing = size_aircraft(req)
     with tempfile.TemporaryDirectory() as tmp:
-        req, sizing = CASES[case], _sizing(case)
         bom = select_bom(seed_database(Path(tmp) / "cots_catalog.db"), component_needs(sizing, req))
     layout = _fitted_layout(sizing, bom)
     placed = (*_real_components({case: (sizing, bom)}, case, layout), *components.vtol_motors(bom, layout))
-    kit = build_kit(sizing, layout, load_airfoil(layout.airfoil), placed, DEFAULT_FABRICATION)
+    try:
+        kit = build_kit(sizing, layout, load_airfoil(layout.airfoil), placed, DEFAULT_FABRICATION)
+    except KitUnavailable as exc:  # the design builds no kit: the readable reason is the snapshot
+        return canonical({"no_kit": str(exc)})
     parts = [{"name": p.label, "role": p.family, "quantity": p.quantity,
               "vertices": sorted((round(v.X, KIT_DECIMALS), round(v.Y, KIT_DECIMALS), round(v.Z, KIT_DECIMALS))
                                for v in p.outline.vertices()),  # kernel vertex order differs per platform
@@ -159,6 +169,8 @@ def snapshot(case: str) -> dict[str, str]:
     out: dict[str, str] = {}
     if case in SIZING_CASES:
         out["sizing"], out["layout"] = _sizing_text(case), _layout_text(case)
+    if case in KIT_CASES:
+        out["kit"] = _kit_text(case)
     if case in DESIGN_CASES:
         out["params"], out["jsbsim"], out["kit"] = _params_text(case), _jsbsim_text(case), _kit_text(case)
         try:

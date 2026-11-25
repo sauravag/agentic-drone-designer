@@ -1,7 +1,9 @@
-"""Gate: every reference output is unchanged by the airframe-layout work.
+"""Gate: every reference output is unchanged.
 
-The stored snapshots were re-baselined once, deliberately, in phase 2 (scripts/regenerate_layout_golden.py; explicit
-boom tubes and boom drag). If one of these fails, the code is wrong: fix the code, never the snapshot.
+The stored snapshots were re-baselined deliberately in airframe-layout phase 2 (explicit boom tubes and boom drag)
+and again on 2026-11-25 for propulsion matching (scripts/regenerate_layout_golden.py; what moved and why:
+docs/superpowers/plans/2026-11-24-propulsion-rebaseline-notes.md). If one of these fails, the code is wrong: fix the
+code, never the snapshot.
 """
 
 import pytest
@@ -9,7 +11,7 @@ import pytest
 from tests.golden import GOLDEN_DIR, snapshot
 
 VSP_KEYS = ("sizing", "layout", "params", "jsbsim", "kit", "vsp_geometry")
-EXPECTED = {**{case: set(VSP_KEYS) for case in ("g1", "g2")}, "g3": {"sizing", "layout"}}
+EXPECTED = {**{case: set(VSP_KEYS) for case in ("g1", "g2")}, "g3": {"sizing", "layout"}, "g1_kit": {"kit"}}
 STORED = sorted(GOLDEN_DIR.glob("*/*.json"))
 
 

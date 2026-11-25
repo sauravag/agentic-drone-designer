@@ -398,10 +398,12 @@ def test_reversed_elevator_fails_sitl(tmp_path: Path) -> None:
     assert baseline.passed and baseline.error is None, baseline  # same harness and plant flies fine unreversed
     reversed_, _ = sv._attempt(model, params, tmp_path / "reversed", 1.0,
                                sv.SitlConfig(extra_params={"SERVO2_REVERSED": 1}))
-    # a diverged or crashed flight is a failed attempt, and the error names a flight failure, not a setup problem
-    assert not reversed_.passed and reversed_.error is not None
-    assert "SitlFlightError" in reversed_.error
-    assert "Floating point exception" in reversed_.error or "timed out" in reversed_.error  # divergence / no climb
+    assert not reversed_.passed
+    if reversed_.error is not None:  # diverged or crashed: the error names a flight failure, not a setup problem
+        assert "SitlFlightError" in reversed_.error
+        assert "Floating point exception" in reversed_.error or "timed out" in reversed_.error  # divergence / no climb
+    else:  # flew the sequence tumbling (matched G1, 2026-11-25): the pitch step went against the demand
+        assert reversed_.pitch is not None and reversed_.pitch.step_deg * reversed_.pitch.target_deg < 0
 
 
 @pytest.mark.docker
