@@ -39,9 +39,9 @@ def ribs(g1_kit_inputs):
 
 
 @pytest.fixture(scope="module")
-def g1_tail_spars(designs, g1_kit_inputs):
+def g1_tail_spars(kit_designs, g1_kit_inputs):
     layout, _, _, settings = g1_kit_inputs
-    return tail_spar_tubes(designs["g1"][0], layout, load_airfoil(TAIL_AIRFOIL_NAME), settings)
+    return tail_spar_tubes(kit_designs["g1"][0], layout, load_airfoil(TAIL_AIRFOIL_NAME), settings)
 
 
 @pytest.fixture(scope="module")
@@ -431,12 +431,12 @@ def test_dbox_ribs_are_smaller_than_the_plain_ones(g2_kit_inputs):
     assert sum(p.area_m2 * p.quantity for p in boxed) < sum(p.area_m2 * p.quantity for p in plain)
 
 
-def test_tail_ribs_are_not_inset(g2_kit_inputs, designs):
+def test_tail_ribs_are_not_inset(g2_kit_inputs, kit_designs):
     # Arrange: a wing with a D-box; the tail must stay plain
     layout, _, spar, settings = g2_kit_inputs
     assert spar.dbox
     tail_airfoil = load_airfoil(TAIL_AIRFOIL_NAME)
-    spars = tail_spar_tubes(designs["g2"][0], layout, tail_airfoil, settings)
+    spars = tail_spar_tubes(kit_designs["g2"][0], layout, tail_airfoil, settings)
     # Act
     root = next(p for p in tail_ribs(layout, tail_airfoil, spars, settings) if p.label == "HR-01")
     chord = layout.htail.chord_at(tail_root_radius_m(layout))

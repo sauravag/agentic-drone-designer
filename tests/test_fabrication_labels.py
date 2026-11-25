@@ -27,8 +27,8 @@ EXTENT_TOL_MM = 1e-6
 
 
 @pytest.fixture(scope="module")
-def kit(designs, g1_kit_inputs):
-    return _build(designs, g1_kit_inputs, "g1")
+def kit(kit_designs, g1_kit_inputs):
+    return _build(kit_designs, g1_kit_inputs, "g1")
 
 
 def _groups(paths: tuple[Path, ...]) -> list[tuple[str, list]]:

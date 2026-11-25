@@ -147,17 +147,17 @@ def test_part_with_no_clear_joint_is_unavailable():
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_split_crutch_stays_clear_of_every_fuselage_part(case, designs, request):
+def test_split_crutch_stays_clear_of_every_fuselage_part(case, kit_designs, request):
     """Both crutches exceed the 590 mm usable bed; g1's joint is hemmed in by the battery opening and a former slot,
     so its doubler gets the shorter lap."""
     layout, _, spar, settings = request.getfixturevalue(f"{case}_kit_inputs")
-    parts = fuselage_parts(layout, spar, _real_components(designs, case, layout), settings, loads=NO_PLATE_LOADS)
+    parts = fuselage_parts(layout, spar, _real_components(kit_designs, case, layout), settings, loads=NO_PLATE_LOADS)
     crutch = ribs_by_label(parts)["C-1"]
     split = split_to_bed(crutch, settings)
     assert len(_pieces(split)) >= 2
     assert sum(p.area_m2 for p in _pieces(split)) == pytest.approx(crutch.area_m2, abs=1e-9)
     others = [p for p in parts if p.label != "C-1"]
-    placed = _real_components(designs, case, layout)
+    placed = _real_components(kit_designs, case, layout)
     trays = component_plates(placed, layout, settings, spar)
     extras = _socket_tubes(layout, spar) + _pin_rods(layout, spar, parts, settings) + [_boom_solid(layout, settings)]
     extras += [(c.name, c.solid()) for c in placed]
@@ -200,9 +200,9 @@ def _avionics(layout) -> PlacedComponent:
     return PlacedComponent("avionics_tray", "box", 0.3, (0.08, 0.06, 0.03), (x, 0.0, -0.01))
 
 
-def test_one_tray_per_internal_component_directly_under_it(g1_kit_inputs, designs):
+def test_one_tray_per_internal_component_directly_under_it(g1_kit_inputs, kit_designs):
     layout, _, _, settings = g1_kit_inputs
-    placed = (*_real_components(designs, "g1", layout), _avionics(layout))
+    placed = (*_real_components(kit_designs, "g1", layout), _avionics(layout))
     trays = ribs_by_label(component_plates(placed, layout, settings))
     internal = [c for c in placed if c.is_internal]
     assert sorted(trays) == sorted(f"P-{c.name}" for c in internal)
@@ -219,9 +219,9 @@ def test_one_tray_per_internal_component_directly_under_it(g1_kit_inputs, design
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_trays_intersect_no_fuselage_part_tube_or_component(case, designs, request):
+def test_trays_intersect_no_fuselage_part_tube_or_component(case, kit_designs, request):
     layout, _, spar, settings = request.getfixturevalue(f"{case}_kit_inputs")
-    placed = (*_real_components(designs, case, layout), _avionics(layout))
+    placed = (*_real_components(kit_designs, case, layout), _avionics(layout))
     parts = fuselage_parts(layout, spar, placed, settings, loads=NO_PLATE_LOADS)
     trays = component_plates(placed, layout, settings, spar)
     extras = _socket_tubes(layout, spar) + _pin_rods(layout, spar, parts, settings) + [_boom_solid(layout, settings)]
@@ -231,16 +231,17 @@ def test_trays_intersect_no_fuselage_part_tube_or_component(case, designs, reque
         _assert_no_intersections([(label, tray)] + [s for s in solids if s[0] != label] + extras)
 
 
-def test_tray_thicker_than_half_the_gap_is_unavailable(g1_kit_inputs, designs):
+def test_tray_thicker_than_half_the_gap_is_unavailable(g1_kit_inputs, kit_designs):
     layout, _, _, settings = g1_kit_inputs
     thick = [s.model_copy(update={"thickness_m": 0.006}) for s in settings.sheets]
     with pytest.raises(KitUnavailable, match="P-battery"):
-        component_plates(_real_components(designs, "g1", layout), layout, settings.model_copy(update={"sheets": tuple(thick)}))
+        component_plates(_real_components(kit_designs, "g1", layout), layout,
+                         settings.model_copy(update={"sheets": tuple(thick)}))
 
 
-def test_tray_hitting_another_component_is_unavailable(g1_kit_inputs, designs):
+def test_tray_hitting_another_component_is_unavailable(g1_kit_inputs, kit_designs):
     layout, _, _, settings = g1_kit_inputs
-    battery = _real_components(designs, "g1", layout)[2]
+    battery = _real_components(kit_designs, "g1", layout)[2]
     below = PlacedComponent("gps", "box", 0.05, (0.03, 0.03, 0.02),
                             (battery.center_m[0], 0.0, battery.center_m[2] - battery.size_m[2] / 2 - 0.011))
     with pytest.raises(KitUnavailable, match="P-battery.*gps"):
@@ -268,9 +269,9 @@ def _assert_motor_pattern(plate: KitPart) -> None:
         assert reach == pytest.approx(list(MOTOR_SLOT_RADII_M), abs=TOL_M)
 
 
-def test_cruise_motor_plate_is_glued_to_the_firewall_front(g1_kit_inputs, designs):
+def test_cruise_motor_plate_is_glued_to_the_firewall_front(g1_kit_inputs, kit_designs):
     layout, _, spar, settings = g1_kit_inputs
-    placed = _real_components(designs, "g1", layout)
+    placed = _real_components(kit_designs, "g1", layout)
     motor = next(c for c in placed if c.name == "cruise_motor")
     (plate,) = cruise_motor_plate(placed, layout, settings)
     assert plate.label == "MP-C" and plate.family == "plate"
@@ -290,18 +291,18 @@ def test_no_cruise_motor_gives_no_motor_plate(g1_kit_inputs):
 
 
 # ----------------------------------------------------------------------------------- booms and clamps ---
-def _lift_motors(designs, layout):
-    return tuple(cad_components.vtol_motors(designs["g2"][1], layout))
+def _lift_motors(kit_designs, layout):
+    return tuple(cad_components.vtol_motors(kit_designs["g2"][1], layout))
 
 
 @pytest.fixture(scope="module")
-def g2_booms(g2_kit_inputs, designs):
+def g2_booms(g2_kit_inputs, kit_designs):
     layout, _, spar, settings = g2_kit_inputs
-    return boom_parts(layout, spar, settings, _lift_motors(designs, layout), lift_thrust_n=_thrust(designs))
+    return boom_parts(layout, spar, settings, _lift_motors(kit_designs, layout), lift_thrust_n=_thrust(kit_designs))
 
 
-def _thrust(designs) -> float:
-    return designs["g2"][0].vtol_thrust_per_motor_n
+def _thrust(kit_designs) -> float:
+    return kit_designs["g2"][0].vtol_thrust_per_motor_n
 
 
 @pytest.mark.parametrize("thrust", [None, 0.0, -5.0])
@@ -323,7 +324,7 @@ def test_fixed_wing_has_no_boom_clamps(g1_kit_inputs):
     assert tail.length_m == pytest.approx(layout.tail_boom.length_m)
 
 
-def test_lift_boom_is_the_r21_strength_sized_tube(g2_kit_inputs, g2_booms, designs):
+def test_lift_boom_is_the_r21_strength_sized_tube(g2_kit_inputs, g2_booms, kit_designs):
     """R21: sized for one motor's thrust at the farthest hub from the clamp; lighter than R13's widest tube."""
     from src.tools.fabrication.tubes import lift_boom_tube
     layout, _, _, settings = g2_kit_inputs
@@ -334,7 +335,7 @@ def test_lift_boom_is_the_r21_strength_sized_tube(g2_kit_inputs, g2_booms, desig
         clamp_x = socket_axis_m(layout, abs(boom.y_m))[0]
         arm = max(abs(x - clamp_x) for x, y, _ in layout.rotor_positions if (y > 0) == (boom.y_m > 0))
         assert tube.tube in settings.tubes
-        assert tube.tube == lift_boom_tube(_thrust(designs), arm, boom.diameter_m, settings)
+        assert tube.tube == lift_boom_tube(_thrust(kit_designs), arm, boom.diameter_m, settings)
         assert tube.tube.area_m2 < boom_tube(boom.diameter_m, settings).area_m2
         assert tube.start_m[:2] == pytest.approx((boom.x_start_m, boom.y_m))
         assert tube.axis == (1.0, 0.0, 0.0) and tube.length_m == pytest.approx(boom.length_m)
@@ -371,14 +372,14 @@ def _tube_solid(tube):
     return _rod(start, start + bd.Vector(*tube.axis) * tube.length_m, tube.tube.od_m)
 
 
-def test_boom_assembly_intersects_nothing(g2_kit_inputs, g2_booms, designs):
+def test_boom_assembly_intersects_nothing(g2_kit_inputs, g2_booms, kit_designs):
     layout, airfoil, spar, settings = g2_kit_inputs
     parts, tubes = g2_booms
     y_boom = abs(layout.vtol_booms[0].y_m)
     solids = [(p.label, part_solid(p, settings)) for p in (*parts, *wing_ribs(layout, airfoil, spar, settings))]
     solids += [(t.label, _tube_solid(t)) for t in tubes if t.role == "lift_boom"]
     solids += [(f"spar{side:+.0f}", _spar_rod(layout, spar, side, y_boom)) for side in (1.0, -1.0)]
-    solids += [(c.name, c.solid()) for c in _lift_motors(designs, layout)]
+    solids += [(c.name, c.solid()) for c in _lift_motors(kit_designs, layout)]
     _assert_no_intersections(solids)
     for part in parts:
         holes = part.outline.inner_wires()
@@ -423,13 +424,13 @@ def _lowered_quadplane(layout, drop_m: float):
 
 
 @pytest.mark.parametrize("drop_m", [round(float(d), 6) for d in np.linspace(0.0045, 0.054, 25)])
-def test_lift_boom_keeps_its_layout_height_when_the_spar_allows(drop_m, g2_kit_inputs, g2_booms, designs):
+def test_lift_boom_keeps_its_layout_height_when_the_spar_allows(drop_m, g2_kit_inputs, g2_booms, kit_designs):
     """Every drop builds. The boom sits one plate under the hub unless the spar forces it lower (g2's forced height,
     unchanged by the drop; it stops forcing at about a 5 mm drop); then the motor plates carry the motors exactly."""
     layout, _, spar, settings = g2_kit_inputs
     forced_z = next(t_ for t_ in g2_booms[1] if t_.role == "lift_boom").start_m[2]
     low = _lowered_quadplane(layout, drop_m)
-    parts, tubes = boom_parts(low, spar, settings, _lift_motors(designs, low), lift_thrust_n=_thrust(designs))
+    parts, tubes = boom_parts(low, spar, settings, _lift_motors(kit_designs, low), lift_thrust_n=_thrust(kit_designs))
     t = settings.sheet_for("plate").thickness_m
     od = next(t_ for t_ in tubes if t_.role == "lift_boom").tube.od_m
     under_hub = low.vtol_booms[0].z_m + low.vtol_booms[0].diameter_m / 2 - t - od / 2
@@ -451,11 +452,11 @@ def test_g2_motor_plates_carry_their_motors(g2_kit_inputs, g2_booms):
         assert part_solid(by[f"MP-{k}"], settings).bounding_box().max.Z <= z_hub + 1e-9
 
 
-def test_one_sided_boom_set_is_unavailable(g2_kit_inputs, designs):
+def test_one_sided_boom_set_is_unavailable(g2_kit_inputs, kit_designs):
     layout, _, spar, settings = g2_kit_inputs
     one = dataclasses.replace(layout, vtol_booms=layout.vtol_booms[:1])
     with pytest.raises(KitUnavailable, match="MP-"):
-        boom_parts(one, spar, settings, lift_thrust_n=_thrust(designs))
+        boom_parts(one, spar, settings, lift_thrust_n=_thrust(kit_designs))
 
 
 def test_join_notes_ignore_labels_that_merely_contain_d():
@@ -529,12 +530,12 @@ def _boom_beside_rib(layout, spar, offset_m: float):
     return dataclasses.replace(layout, vtol_booms=booms, rotor_positions=rotors)
 
 
-def test_lift_boom_inside_a_nominal_rib_clamp_zone_still_builds(g2_kit_inputs, designs):
+def test_lift_boom_inside_a_nominal_rib_clamp_zone_still_builds(g2_kit_inputs, kit_designs):
     layout, airfoil, spar, settings = g2_kit_inputs
-    sizing, thrust = designs["g2"][0], _thrust(designs)
+    sizing, thrust = kit_designs["g2"][0], _thrust(kit_designs)
     shifted = _boom_beside_rib(layout, spar, offset_m=0.005)
     spar_shifted = stiffened_spar_plan(sizing, shifted, airfoil, settings)
-    parts, tubes = boom_parts(shifted, spar_shifted, settings, _lift_motors(designs, shifted), lift_thrust_n=thrust)
+    parts, tubes = boom_parts(shifted, spar_shifted, settings, _lift_motors(kit_designs, shifted), lift_thrust_n=thrust)
     assert {p.label for p in parts} >= set(CLAMP_LABELS[::2])
     nominal = panel_rib_stations(spar_shifted.joint_y_m, shifted.wing.semi_span_m)
     stations = wing_rib_stations(spar_shifted, shifted.wing.semi_span_m)

@@ -53,8 +53,8 @@ def test_selig_dat_round_trip(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------------------------------------ layout ---
 @pytest.mark.parametrize("case", ["g1", "g2", "g3"])
-def test_layout_reproduces_sizing_geometry(case: str, designs: dict) -> None:
-    sizing, _ = designs[case]
+def test_layout_reproduces_sizing_geometry(case: str, kit_designs: dict) -> None:
+    sizing, _ = kit_designs[case]
     lay = layout_from_sizing(sizing)
     assert lay.wing.area_m2 == pytest.approx(sizing.wing_area_m2, rel=1e-9)
     assert 2 * lay.wing.semi_span_m == pytest.approx(sizing.wingspan_m, rel=1e-9)
@@ -64,14 +64,14 @@ def test_layout_reproduces_sizing_geometry(case: str, designs: dict) -> None:
     assert lay.vtail.x_ac_m - lay.wing.x_ac_m == pytest.approx(sizing.tail_arm_m, rel=1e-9)
 
 
-def test_tapered_mac_formula(designs: dict) -> None:
-    lay = layout_from_sizing(designs["g1"][0])
+def test_tapered_mac_formula(kit_designs: dict) -> None:
+    lay = layout_from_sizing(kit_designs["g1"][0])
     lam = lay.wing.taper_ratio
     assert lay.wing.mac_m == pytest.approx(2 / 3 * lay.wing.root_chord_m * (1 + lam + lam**2) / (1 + lam))
 
 
-def test_quadplane_rotors_clear_fuselage_and_wing(designs: dict) -> None:
-    sizing, _ = designs["g2"]
+def test_quadplane_rotors_clear_fuselage_and_wing(kit_designs: dict) -> None:
+    sizing, _ = kit_designs["g2"]
     lay = layout_from_sizing(sizing)
     r: float = lay.rotor_diameter_m / 2
     assert len(lay.rotor_positions) == 4 and len(lay.vtol_booms) == 2
@@ -83,16 +83,16 @@ def test_quadplane_rotors_clear_fuselage_and_wing(designs: dict) -> None:
     assert centroid_x == pytest.approx(lay.wing.x_ac_m, rel=1e-9)  # hover thrust centred near the CG
 
 
-def test_fixed_wing_has_no_rotors(designs: dict) -> None:
-    lay = layout_from_sizing(designs["g1"][0])
+def test_fixed_wing_has_no_rotors(kit_designs: dict) -> None:
+    lay = layout_from_sizing(kit_designs["g1"][0])
     assert lay.rotor_positions == () and lay.vtol_booms == ()
     assert lay.tail_boom is not None
 
 
 @pytest.mark.parametrize("station", [0.0, 0.95])
-def test_layout_rejects_unphysical_wing_station(station: float, designs: dict) -> None:
+def test_layout_rejects_unphysical_wing_station(station: float, kit_designs: dict) -> None:
     with pytest.raises(ValueError, match="wing_station"):
-        layout_from_sizing(designs["g1"][0], wing_station=station)
+        layout_from_sizing(kit_designs["g1"][0], wing_station=station)
 
 
 # --------------------------------------------------------------------------------- stability math ---
@@ -261,8 +261,8 @@ def _synthetic_analyser(tmp_path: Path, np_offset_mac: float = 0.25):
 
 
 @pytest.mark.parametrize("case", ["g1", "g2", "g3"])
-def test_balancing_hits_static_margin_without_collisions(case: str, designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs[case]
+def test_balancing_hits_static_margin_without_collisions(case: str, kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs[case]
     design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
     result = design.packing
     assert TAILED_BAND.minimum <= result.static_margin <= TAILED_BAND.maximum
@@ -273,15 +273,15 @@ def test_balancing_hits_static_margin_without_collisions(case: str, designs: dic
     assert ("fuel_tank" in names) == (sizing.propulsion_type == "series_hybrid")
 
 
-def test_wing_slides_aft_when_battery_cannot_balance(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g3"]  # 28 kg catalog turret + conformal tank leave no forward battery slot at 0.30
+def test_wing_slides_aft_when_battery_cannot_balance(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g3"]  # 28 kg catalog turret + conformal tank leave no forward battery slot at 0.30
     design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
     assert design.iterations > 1
     assert design.layout.wing_station > layout_from_sizing(sizing).wing_station
 
 
-def test_unbalanceable_design_is_returned_for_the_critic(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_unbalanceable_design_is_returned_for_the_critic(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g1"]
 
     def nose_np(layout: AircraftLayout) -> build.OmlAnalysis:
         aero = _synthetic_aero(layout).model_copy(update={"x_np_m": 0.02})  # NP pinned at the nose
@@ -315,8 +315,8 @@ def no_kit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cad_packer, "build_kit", unavailable)
 
 
-def test_as_built_mass_counts_every_part(designs: dict, tmp_path: Path, no_kit: None) -> None:
-    sizing, bom = designs["g2"]
+def test_as_built_mass_counts_every_part(kit_designs: dict, tmp_path: Path, no_kit: None) -> None:
+    sizing, bom = kit_designs["g2"]
     lay = _fitted_layout(sizing, bom)
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "o.step"))
     airframe: float = cad_packer.sized_airframe_mass_kg(sizing)
@@ -335,16 +335,16 @@ def test_part_poking_through_the_skin_is_counted(tmp_path: Path) -> None:
     assert components.containment_violations((outside,), oml) == 1
 
 
-def test_radial_fit_follows_the_pod_profile(designs: dict) -> None:
-    sizing, bom = designs["g2"]
+def test_radial_fit_follows_the_pod_profile(kit_designs: dict) -> None:
+    sizing, bom = kit_designs["g2"]
     lay = _fitted_layout(sizing, bom)
     battery, _ = components.sliders(sizing, bom)
     assert components.fits_radially(battery.at_x(0.5 * lay.fuselage_length_m), lay)
     assert not components.fits_radially(battery.at_x(battery.size_m[0] / 2 + 0.001), lay)  # nose cone
 
 
-def test_pod_is_widened_to_house_the_cots_parts(designs: dict) -> None:
-    sizing, bom = designs["g1"]  # catalog battery is wider than the fineness-ratio fuselage
+def test_pod_is_widened_to_house_the_cots_parts(kit_designs: dict) -> None:
+    sizing, bom = kit_designs["g1"]  # catalog battery is wider than the fineness-ratio fuselage
     required: float = components.required_fuselage_diameter_m(sizing, bom)
     assert required > sizing.fuselage_diameter_m
     kit_pod: float = kit_fuselage_diameter_m(sizing, bom)  # R23: then widened so the battery passes under the wing box
@@ -352,15 +352,15 @@ def test_pod_is_widened_to_house_the_cots_parts(designs: dict) -> None:
     assert _fitted_layout(sizing, bom).fuselage_diameter_m == pytest.approx(kit_pod)
 
 
-def test_pod_is_lengthened_to_hold_the_hybrid_stack(designs: dict) -> None:
-    sizing, bom = designs["g3"]  # battery + tray + tank + generator overflow the sized 3.1 m pod
+def test_pod_is_lengthened_to_hold_the_hybrid_stack(kit_designs: dict) -> None:
+    sizing, bom = kit_designs["g3"]  # battery + tray + tank + generator overflow the sized 3.1 m pod
     lay = _fitted_layout(sizing, bom)
     assert lay.fuselage_length_m > sizing.fuselage_length_m
     assert layout_from_sizing(sizing).fuselage_length_m == pytest.approx(sizing.fuselage_length_m)
 
 
-def test_part_through_a_boom_is_a_collision(designs: dict) -> None:
-    sizing, bom = designs["g1"]
+def test_part_through_a_boom_is_a_collision(kit_designs: dict) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     booms = components.boom_obstacles(lay)
     boom = booms[0]
@@ -368,8 +368,8 @@ def test_part_through_a_boom_is_a_collision(designs: dict) -> None:
     assert components.count_collisions((blocking,), booms) == 1
 
 
-def test_open_oml_surface_is_rejected(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_open_oml_surface_is_rejected(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     open_shell = tmp_path / "open.step"
     build123d.export_step(build123d.Box(1, 1, 1).faces()[0], str(open_shell), unit=build123d.Unit.M)
@@ -377,14 +377,14 @@ def test_open_oml_surface_is_rejected(designs: dict, tmp_path: Path) -> None:
         cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, open_shell)
 
 
-def test_search_does_not_extrapolate_across_a_packing_jump(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g3"]  # battery flips fore/aft of the tank as the wing moves
+def test_search_does_not_extrapolate_across_a_packing_jump(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g3"]  # battery flips fore/aft of the tank as the wing moves
     design = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
     assert design.packing.is_balanced
     assert design.total_iterations <= build.MAX_BALANCE_ITERATIONS
 
-def test_fuel_tank_centroid_sits_on_neutral_point(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g3"]
+def test_fuel_tank_centroid_sits_on_neutral_point(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g3"]
     lay = _fitted_layout(sizing, bom)
     aero = _synthetic_aero(lay)
     result = cad_packer.pack_layout(sizing, bom, aero, lay, _synthetic_oml(lay, tmp_path / "oml.step"))
@@ -392,8 +392,8 @@ def test_fuel_tank_centroid_sits_on_neutral_point(designs: dict, tmp_path: Path)
     assert tank.center_m[0] == pytest.approx(aero.x_np_m)
 
 
-def test_unreachable_margin_is_reported_not_hidden(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_unreachable_margin_is_reported_not_hidden(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     aero = _synthetic_aero(lay, np_offset_mac=-1.0)  # NP ahead of anything the battery can balance
     result = cad_packer.pack_layout(sizing, bom, aero, lay, _synthetic_oml(lay, tmp_path / "oml.step"))
@@ -401,22 +401,22 @@ def test_unreachable_margin_is_reported_not_hidden(designs: dict, tmp_path: Path
     assert not result.is_balanced
 
 
-def test_sized_airframe_excludes_propulsion_and_systems(designs: dict) -> None:
-    sizing, _ = designs["g2"]
+def test_sized_airframe_excludes_propulsion_and_systems(kit_designs: dict) -> None:
+    sizing, _ = kit_designs["g2"]
     airframe: float = cad_packer.sized_airframe_mass_kg(sizing)
     assert 0 < airframe < sizing.empty_mass_kg
 
 
-def test_airframe_lighter_than_ribs_and_spars_raises(designs: dict, tmp_path: Path, no_kit: None) -> None:
-    sizing, bom = designs["g1"]
+def test_airframe_lighter_than_ribs_and_spars_raises(kit_designs: dict, tmp_path: Path, no_kit: None) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     starved = sizing.model_copy(update={"empty_mass_kg": 0.01})
     with pytest.raises(cad_packer.CADPackingError, match="no mass left for the airframe"):
         cad_packer.pack_layout(starved, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
 
 
-def test_pack_aircraft_exports_assembly(designs: dict, tmp_path: Path, no_kit: None) -> None:
-    sizing, bom = designs["g1"]
+def test_pack_aircraft_exports_assembly(kit_designs: dict, tmp_path: Path, no_kit: None) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     oml = _synthetic_oml(lay, tmp_path / "oml.step")
     art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3", oml, tmp_path)
@@ -436,20 +436,20 @@ SLIDERS: tuple[str, ...] = ("battery", "avionics_tray")
 SOLID_TOL_M3: float = 1e-12
 
 
-def _pack(designs: dict, case: str, out_dir: Path) -> cad_packer.PackingResult:
-    sizing, bom = designs[case]
+def _pack(kit_designs: dict, case: str, out_dir: Path) -> cad_packer.PackingResult:
+    sizing, bom = kit_designs[case]
     lay = _fitted_layout(sizing, bom)
     return cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, out_dir / "oml.step"))
 
 
 @pytest.fixture(scope="module")
-def packed(designs: dict, tmp_path_factory: pytest.TempPathFactory):
+def packed(kit_designs: dict, tmp_path_factory: pytest.TempPathFactory):
     """Pack a reference design once per module (the kit is rebuilt inside every pack)."""
     cache: dict[str, cad_packer.PackingResult] = {}
 
     def get(case: str) -> cad_packer.PackingResult:
         if case not in cache:
-            cache[case] = _pack(designs, case, tmp_path_factory.mktemp(f"pack_{case}"))
+            cache[case] = _pack(kit_designs, case, tmp_path_factory.mktemp(f"pack_{case}"))
         return cache[case]
     return get
 
@@ -469,9 +469,9 @@ def test_kit_replaces_the_shell_mass(case: str, packed) -> None:
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_as_built_mass_is_kit_plus_gear_plus_components(case: str, designs: dict, packed) -> None:
+def test_as_built_mass_is_kit_plus_gear_plus_components(case: str, kit_designs: dict, packed) -> None:
     r = packed(case)
-    sizing, bom = designs[case]
+    sizing, bom = kit_designs[case]
     gear = residual_gear_item(sizing, _fitted_layout(sizing, bom), sizing_output_gear(sizing)).mass_kg
     expected = kit_mass_kg(r.kit, DEFAULT_FABRICATION) + gear + sum(c.mass_kg for c in r.components)
     assert r.mass.mass_kg == pytest.approx(expected, rel=1e-9)
@@ -541,7 +541,7 @@ def test_structure_boxes_block_in_3d_not_by_x_alone() -> None:
     assert cad_packer._clear_of_structure(through, ())
 
 
-def test_kit_rebuild_failure_falls_back_to_the_shell(designs: dict, tmp_path: Path,
+def test_kit_rebuild_failure_falls_back_to_the_shell(kit_designs: dict, tmp_path: Path,
                                                     monkeypatch: pytest.MonkeyPatch) -> None:
     real = cad_packer.build_kit
     calls: list[int] = []
@@ -553,7 +553,7 @@ def test_kit_rebuild_failure_falls_back_to_the_shell(designs: dict, tmp_path: Pa
         return real(*args, **kwargs)
 
     monkeypatch.setattr(cad_packer, "build_kit", second_fails)
-    r = _pack(designs, "g1", tmp_path)
+    r = _pack(kit_designs, "g1", tmp_path)
     assert len(calls) == 2
     assert r.kit is None and r.kit_warning == "No laser kit: F-04U: the opening for the battery leaves less than 2 mm of the former"
     names = {i.name for i in r.mass_items}
@@ -563,7 +563,7 @@ def test_kit_rebuild_failure_falls_back_to_the_shell(designs: dict, tmp_path: Pa
     assert all(c.center_m[2] == 0.0 for c in sliders)  # re-solved for the shell model: on the axis, not seated
 
 
-def test_unexpected_kit_error_falls_back_to_the_shell(designs: dict, tmp_path: Path,
+def test_unexpected_kit_error_falls_back_to_the_shell(kit_designs: dict, tmp_path: Path,
                                                      monkeypatch: pytest.MonkeyPatch,
                                                      caplog: pytest.LogCaptureFixture) -> None:
     """Kit failure never fails the run, whatever the geometry kernel raises."""
@@ -571,23 +571,23 @@ def test_unexpected_kit_error_falls_back_to_the_shell(designs: dict, tmp_path: P
         raise ValueError("BRep_API: command not done")
 
     monkeypatch.setattr(cad_packer, "build_kit", broken)
-    r = _pack(designs, "g1", tmp_path)
+    r = _pack(kit_designs, "g1", tmp_path)
     assert r.kit is None and r.structure is not None
     assert r.kit_warning == "No laser kit: unexpected error building the kit (ValueError: BRep_API: command not done)"
     assert "oml_shell" in {i.name for i in r.mass_items}
     assert any(rec.levelname == "ERROR" and rec.exc_info for rec in caplog.records)  # logged with its traceback
 
 
-def test_group_3_fallback_is_logged_at_info_not_warning(designs: dict, tmp_path: Path,
+def test_group_3_fallback_is_logged_at_info_not_warning(kit_designs: dict, tmp_path: Path,
                                                        caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO", logger=cad_packer.__name__)
-    r = _pack(designs, "g3", tmp_path)
+    r = _pack(kit_designs, "g3", tmp_path)
     no_kit = [rec for rec in caplog.records if NO_KIT_PREFIX in rec.getMessage()]
     assert r.kit is None and no_kit and all(rec.levelname == "INFO" for rec in no_kit)
 
 
-def test_kit_design_exports_assembly_and_viewer(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_kit_design_exports_assembly_and_viewer(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     oml = _synthetic_oml(lay, tmp_path / "oml.step")
     art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3", oml, tmp_path)
@@ -597,11 +597,11 @@ def test_kit_design_exports_assembly_and_viewer(designs: dict, tmp_path: Path) -
 
 # ------------------------------------------------------------------ end-to-end (Docker toolchain) ---
 @pytest.fixture(scope="module", params=["g1", "g2", "g3"])
-def built(request: pytest.FixtureRequest, designs: dict, tmp_path_factory: pytest.TempPathFactory):
+def built(request: pytest.FixtureRequest, kit_designs: dict, tmp_path_factory: pytest.TempPathFactory):
     pytest.importorskip("openvsp")
     from src.tools.aero_cad.build import build_aero_cad
 
-    sizing, bom = designs[request.param]
+    sizing, bom = kit_designs[request.param]
     out_dir: Path = tmp_path_factory.mktemp(f"aero_cad_{request.param}")
     altitude: float = CASES[request.param].service_ceiling_m
     aero, cad = build_aero_cad(sizing, bom, altitude, out_dir)
@@ -636,8 +636,8 @@ def test_e2e_balanced_collision_free_and_inertia(built) -> None:
     assert mass_properties.is_positive_definite(tensor)
 
 
-def test_tray_mass_follows_sized_avionics(designs: dict) -> None:
-    sizing, bom = designs["g1"]
+def test_tray_mass_follows_sized_avionics(kit_designs: dict) -> None:
+    sizing, bom = kit_designs["g1"]
     tray = components.sliders(sizing, bom)[1]
     assert tray.mass_kg == pytest.approx(sizing.avionics_mass_kg + mm_systems_fraction() * sizing.mtow_kg)
     heavier = sizing.model_copy(update={"avionics_mass_kg": sizing.avionics_mass_kg + 1.0})
@@ -650,8 +650,8 @@ def mm_systems_fraction() -> float:
 
 
 # ------------------------------------------------------------------------- kit files and 3D export ---
-def test_artifacts_carry_kit_paths(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_artifacts_carry_kit_paths(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3",
                                    _synthetic_oml(lay, tmp_path / "oml.step"), tmp_path)
@@ -857,8 +857,8 @@ def test_jump_bisection_is_capped() -> None:
     assert min(b - a for a, b in zip(stations, stations[1:])) >= build.JUMP_MIN_WIDTH / 2 - 1e-12
 
 
-def test_hand_launched_design_has_no_residual_gear_item(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_hand_launched_design_has_no_residual_gear_item(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, bom = kit_designs["g1"]
     hand = sizing.model_copy(update={"launch_method": "hand", "gear_kind": "none"})
     lay = _fitted_layout(hand, bom)
     assert residual_gear_item(hand, lay, sizing_output_gear(hand)) is None
@@ -893,8 +893,8 @@ def _pack_pusher(sizing, bom, tmp_path: Path) -> cad_packer.PackingResult:
     return cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
 
 
-def test_cruise_motor_sits_ahead_of_its_station(designs: dict, vtail_g1) -> None:
-    sizing, bom = designs["g1"]
+def test_cruise_motor_sits_ahead_of_its_station(kit_designs: dict, vtail_g1) -> None:
+    sizing, bom = kit_designs["g1"]
     tractor = components.cruise_motor(bom, layout_from_sizing(sizing))
     assert tractor.x_max == pytest.approx(-components.COMPONENT_GAP_M) and tractor.center_m[1:] == (0.0, 0.0)
     vsizing, vbom = vtail_g1
@@ -902,7 +902,8 @@ def test_cruise_motor_sits_ahead_of_its_station(designs: dict, vtail_g1) -> None
     pusher = components.cruise_motor(vbom, lay)
     assert pusher.x_max == pytest.approx(lay.propeller.x_m)
     assert pusher.x_min >= lay.tail_boom.x_end_m and pusher.center_m[2] == lay.tail_boom.z_m
-    assert pusher.mass_kg == pytest.approx(vbom.cruise_motor.mass_kg + vbom.cruise_propeller.mass_kg)
+    esc_kg = vbom.cruise_esc.mass_kg if vbom.cruise_esc is not None else 0.0  # matched BOMs carry the cruise ESC
+    assert pusher.mass_kg == pytest.approx(vbom.cruise_motor.mass_kg + vbom.cruise_propeller.mass_kg + esc_kg)
     assert not pusher.is_internal
 
 
@@ -944,9 +945,9 @@ def test_hand_launched_pusher_needs_folding_prop(vtail_g1) -> None:
     assert clearance.needs_folding_prop
 
 
-def test_belly_line_is_taken_at_the_landing_pitch(designs: dict) -> None:
+def test_belly_line_is_taken_at_the_landing_pitch(kit_designs: dict) -> None:
     """Hand-launched tractor with a tiny propeller: clear of the belly line at BELLY_LANDING_PITCH_DEG, no fold."""
-    sizing, _ = designs["g1"]
+    sizing, _ = kit_designs["g1"]
     lay = layout_from_sizing(sizing, propeller_diameter_m=0.02)
     clearance = prop_clearance(lay, GearGeometry("none", (), 0.0), "hand")
     pitch = math.radians(BELLY_LANDING_PITCH_DEG)
@@ -1004,6 +1005,9 @@ def test_vtail_pusher_g1_balances_on_host(vtail_g1, tmp_path: Path) -> None:
 
 
 VTAIL_SCAN_STATIONS: tuple[float, ...] = (0.30, 0.35, 0.40, 0.45, 0.50)  # the balance scan's span for this design
+# Stations where the matched G1 V-tail (5.07 kg, 2026-11-25) gets no kit, with the readable reason (user: "accept,
+# kit fixes later"); the balanced station the pipeline picks still builds one.
+VTAIL_NO_KIT_STATIONS: dict[float, str] = {0.45: "C-1 cannot be split to fit the 600 x 400 mm bed"}
 
 
 @pytest.mark.parametrize("station", VTAIL_SCAN_STATIONS)
@@ -1013,6 +1017,9 @@ def test_vtail_pusher_kit_builds_across_the_balance_scan(vtail_g1, station: floa
     sizing, bom = vtail_g1
     lay = _pusher_layout(sizing, bom, station)
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(lay), lay, _synthetic_oml(lay, tmp_path / "oml.step"))
+    if station in VTAIL_NO_KIT_STATIONS:
+        assert result.kit is None and VTAIL_NO_KIT_STATIONS[station] in (result.kit_warning or "")
+        return
     assert result.kit is not None, result.kit_warning
     assert BOOM_MOTOR_WIRING_NOTE in result.kit.notes and FOLDING_PROP_NOTE not in result.kit.notes
 
@@ -1047,9 +1054,9 @@ def test_packed_kit_notes_the_folding_prop_when_the_clearance_needs_one(vtail_g1
     assert result.kit.notes == (BOOM_MOTOR_WIRING_NOTE, TAIL_CONE_SLOT_NOTE, FOLDING_PROP_NOTE)
 
 
-def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> None:
+def test_packing_carries_the_real_gear_and_clearance(kit_designs: dict, packed) -> None:
     r = packed("g1")
-    sizing, bom = designs["g1"]
+    sizing, bom = kit_designs["g1"]
     lay = _fitted_layout(sizing, bom)
     assert r.propeller == _replace(lay.propeller, diameter_m=bom.cruise_propeller.diameter_m)
     assert r.gear.kind == "tricycle" and isinstance(r.clearance, PropClearance)
@@ -1060,9 +1067,10 @@ def test_packing_carries_the_real_gear_and_clearance(designs: dict, packed) -> N
 
 def test_motor_longer_than_its_mount_is_a_readable_packing_error(vtail_g1, tmp_path: Path,
                                                                monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sizing_layouts, "PUSHER_MOTOR_MOUNT_FRACTION", 0.05)  # 14 mm mount for a 30 mm motor
+    monkeypatch.setattr(sizing_layouts, "PUSHER_MOTOR_MOUNT_FRACTION", 0.05)  # 13 mm mount for the 26 mm motor
     sizing, bom = vtail_g1
-    with pytest.raises(cad_packer.CADPackingError, match=r"cruise motor .*0\.030 m.* mount .*0\.014 m"):
+    motor_m = rf"{bom.cruise_motor.length_m:.3f}".replace(".", r"\.")
+    with pytest.raises(cad_packer.CADPackingError, match=rf"cruise motor .*{motor_m} m.* mount .*0\.01\d m"):
         _pack_pusher(sizing, bom, tmp_path)
 
 
@@ -1148,14 +1156,14 @@ def test_vtail_gate_rejects_a_case_with_both_panels_deflected_symmetrically(g1_l
         stability.derive_stability(bad, _VTAIL_REF, g1_layout, cd0=0.03, cl_cruise=0.6)
 
 
-def test_live_tractor_thrust_station_matches_the_legacy_path(designs: dict, tmp_path: Path) -> None:
+def test_live_tractor_thrust_station_matches_the_legacy_path(kit_designs: dict, tmp_path: Path) -> None:
     """A tractor CAD record that carries the packed propeller station (Task 6) exports exactly the JSBSim file the
     legacy record (no station: nose hub) gives, so the golden reference tractor is unchanged."""
     from src.tools.flight_control.flight_model import build_flight_model
     from src.tools.flight_control.jsbsim_exporter import export_jsbsim
     from tests.test_flight_control import load_design
 
-    sizing, bom = designs["g1"]
+    sizing, bom = kit_designs["g1"]
     packing = build.balance_design(sizing, bom, _synthetic_analyser(tmp_path)).packing
     assert (packing.propeller.x_m, packing.propeller.z_m) == (0.0, 0.0) and not packing.propeller.is_pusher
     req, fsizing, fbom, aero, cad = load_design("g1")
@@ -1170,38 +1178,38 @@ def test_live_tractor_thrust_station_matches_the_legacy_path(designs: dict, tmp_
 # ------------------------------------- reference V-tail pushers and hand launch close (phase 2, Task 9) ---
 
 
-def _close(case: str, designs: dict, tmp_path: Path) -> build.BalancedDesign:
+def _close(case: str, kit_designs: dict, tmp_path: Path) -> build.BalancedDesign:
     """A reference design closed on the host: sizing + BOM (the `designs` fixture), the balance search with the
     synthetic aero, and the kit."""
-    sizing, bom = designs[case]
+    sizing, bom = kit_designs[case]
     return build.balance_design(sizing, bom, _synthetic_analyser(tmp_path))
 
 
 @pytest.mark.parametrize("case", ["g1_vtail", "g2_vtail"])
-def test_vtail_pusher_closes_sizing_and_cad(case: str, designs: dict, tmp_path: Path) -> None:
-    design = _close(case, designs, tmp_path)
+def test_vtail_pusher_closes_sizing_and_cad(case: str, kit_designs: dict, tmp_path: Path) -> None:
+    design = _close(case, kit_designs, tmp_path)
     assert design.layout.propeller.is_pusher
     assert design.packing.is_balanced and design.packing.interference_count == 0
     assert design.packing.kit is not None or NO_KIT_PREFIX in (design.packing.kit_warning or "")
     assert design.packing.clearance.ground_m is None or design.packing.clearance.ground_m >= 0
 
 
-def test_g1_vtail_reference_builds_its_kit(designs: dict, tmp_path: Path) -> None:
-    packing = _close("g1_vtail", designs, tmp_path).packing
+def test_g1_vtail_reference_builds_its_kit(kit_designs: dict, tmp_path: Path) -> None:
+    packing = _close("g1_vtail", kit_designs, tmp_path).packing
     assert packing.kit is not None, packing.kit_warning
 
 
-def test_g2_vtail_reference_has_no_kit_on_default_stock(designs: dict, tmp_path: Path) -> None:
+def test_g2_vtail_reference_has_no_kit_on_default_stock(kit_designs: dict, tmp_path: Path) -> None:
     """Task 8 ruling: the G2 V-tail's wing-root torque overloads the default anti-rotation pin stock, so the run says
     why instead of building a kit."""
-    packing = _close("g2_vtail", designs, tmp_path).packing
+    packing = _close("g2_vtail", kit_designs, tmp_path).packing
     assert packing.kit is None and (packing.kit_warning or "").startswith(NO_KIT_PREFIX)
 
 
-def test_hand_launched_g1_closes(designs: dict, tmp_path: Path) -> None:
-    sizing, _ = designs["g1_hand"]
+def test_hand_launched_g1_closes(kit_designs: dict, tmp_path: Path) -> None:
+    sizing, _ = kit_designs["g1_hand"]
     assert sizing.launch_method == "hand" and sizing.gear_kind == "none"
-    packing = _close("g1_hand", designs, tmp_path).packing
+    packing = _close("g1_hand", kit_designs, tmp_path).packing
     assert packing.is_balanced and packing.interference_count == 0
     assert packing.gear.kind == "none" and GEAR_NAME not in {i.name for i in packing.mass_items}
     assert packing.clearance.ground_m is None and packing.clearance.belly_m is not None
@@ -1219,10 +1227,10 @@ def openvsp():
     return pytest.importorskip("openvsp")
 
 
-def _parasite(case: str, designs: dict, tmp_path: Path, laminar_fraction: Optional[float]) -> tuple[object, float]:
+def _parasite(case: str, kit_designs: dict, tmp_path: Path, laminar_fraction: Optional[float]) -> tuple[object, float]:
     from src.tools.aero_cad import openvsp_builder as ob  # imports openvsp: only after the fixture's skip check
 
-    sizing, bom = designs[case]
+    sizing, bom = kit_designs[case]
     layout = _fitted_layout(sizing, bom)
     model = ob.build_model(layout, tmp_path, laminar_fraction)
     ob.vsp.SetVSP3FileName(str(tmp_path / "model.vsp3"))  # ParasiteDrag writes its tables next to this file
@@ -1236,26 +1244,26 @@ def _surface_laminar_percent(vsp) -> dict[str, float]:
 
 
 def test_hand_launched_vspaero_cd0_takes_the_30_percent_laminar_surfaces_and_matches_sizing(
-        openvsp, designs: dict, tmp_path: Path) -> None:
-    sizing, laminar = _parasite("g1_hand", designs, tmp_path / "lam", surface_laminar_fraction("hand"))
-    _, turbulent = _parasite("g1_hand", designs, tmp_path / "turb", None)
+        openvsp, kit_designs: dict, tmp_path: Path) -> None:
+    sizing, laminar = _parasite("g1_hand", kit_designs, tmp_path / "lam", surface_laminar_fraction("hand"))
+    _, turbulent = _parasite("g1_hand", kit_designs, tmp_path / "turb", None)
     assert laminar < turbulent
     assert laminar == pytest.approx(sizing.cd0, rel=SIZING_VSPAERO_CD0_TOLERANCE)
 
 
-def test_runway_design_keeps_the_fully_turbulent_parasite_build_up(openvsp, designs: dict, tmp_path: Path) -> None:
-    sizing, _ = designs["g1"]
+def test_runway_design_keeps_the_fully_turbulent_parasite_build_up(openvsp, kit_designs: dict, tmp_path: Path) -> None:
+    sizing, _ = kit_designs["g1"]
     assert surface_laminar_fraction(sizing.launch_method) is None
-    _, cd0 = _parasite("g1", designs, tmp_path, None)
+    _, cd0 = _parasite("g1", kit_designs, tmp_path, None)
     assert cd0 > 0.0 and set(_surface_laminar_percent(openvsp).values()) == {0.0}
 
 
-def test_exported_vsp3_of_a_hand_launched_design_carries_its_laminar_fraction(openvsp, designs: dict,
+def test_exported_vsp3_of_a_hand_launched_design_carries_its_laminar_fraction(openvsp, kit_designs: dict,
                                                                               tmp_path: Path) -> None:
     """The saved oml.vsp3 reproduces the ParasiteDrag analysis: 30 % laminar on the wing and tails only."""
     from src.tools.aero_cad import openvsp_builder as ob
 
-    sizing, bom = designs["g1_hand"]
+    sizing, bom = kit_designs["g1_hand"]
     ob.build_model(_fitted_layout(sizing, bom), tmp_path, surface_laminar_fraction(sizing.launch_method))
     vsp3, _ = ob.export_oml(tmp_path)
     openvsp.VSPRenew()

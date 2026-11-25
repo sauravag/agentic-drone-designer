@@ -1,0 +1,22 @@
+{
+  "mission_name": "G1 hand-launched fixed-wing",
+  "group_constraint": null,
+  "propulsion_type": "auto",
+  "airframe_topology": "auto",
+  "airframe_layout": "pod_boom_tractor",
+  "payload_mass_kg": 1.0,
+  "payload_power_w": 15.0,
+  "endurance_hours": 2.0,
+  "combat_radius_km": 15.0,
+  "cruise_speed_ms": 18.0,
+  "service_ceiling_m": 500.0,
+  "max_stall_speed_ms": 13.0,
+  "design_wind_ms": 0.0,
+  "takeoff_altitude_m": 0.0,
+  "isa_temperature_offset_c": 0.0,
+  "runway_available": false,
+  "launch_method": "hand",
+  "flight_controller": "cube_orange_plus",
+  "companion_computer": false,
+  "payload_model": "custom"
+}

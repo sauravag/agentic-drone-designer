@@ -21,7 +21,7 @@ from src.tools.aero_cad.layout import AircraftLayout, layout_from_sizing
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import seed_database
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
-from tests.reference_designs import CASES
+from tests.reference_designs import CASES, KIT_DESIGN_CASES, saved_kit_design
 
 if TYPE_CHECKING:  # the kit fixtures need build123d; sizing-only tests must collect without it (M5)
     from src.tools.fabrication.tubes import SparPlan
@@ -52,9 +52,18 @@ def designs(catalog: Path) -> dict[str, tuple[SizingOutput, SelectedBOM]]:
     return out
 
 
+@pytest.fixture(scope="module")
+def kit_designs(designs: dict[str, tuple[SizingOutput, SelectedBOM]]) -> dict[str, tuple[SizingOutput, SelectedBOM]]:
+    """The designs the kit / CAD-packing / fabrication tests build: the reference designs, with the ones whose kit the
+    matched propulsion refuses (g1, g2, g2_vtail, g1_hand) replaced by their saved pre-matching records, which still
+    build one (tests/data/kit_designs/README.txt). The refusals themselves are pinned in test_fabrication_kit."""
+    saved = {case: saved_kit_design(case)[1:] for case in KIT_DESIGN_CASES}
+    return {**designs, **saved}
+
+
 @pytest.fixture()
-def g1_layout(designs: dict) -> AircraftLayout:
-    return layout_from_sizing(designs["g1"][0])
+def g1_layout(kit_designs: dict) -> AircraftLayout:
+    return layout_from_sizing(kit_designs["g1"][0])
 
 
 KitInputs = tuple[AircraftLayout, AirfoilShape, "SparPlan", FabricationSettings]
@@ -74,25 +83,25 @@ def _kit_inputs(designs: dict, case: str) -> KitInputs:
 
 
 @pytest.fixture(scope="module")
-def g1_kit_inputs(designs: dict) -> KitInputs:
-    return _kit_inputs(designs, "g1")
+def g1_kit_inputs(kit_designs: dict) -> KitInputs:
+    return _kit_inputs(kit_designs, "g1")
 
 
 @pytest.fixture(scope="module")
-def g2_kit_inputs(designs: dict) -> KitInputs:
-    return _kit_inputs(designs, "g2")
+def g2_kit_inputs(kit_designs: dict) -> KitInputs:
+    return _kit_inputs(kit_designs, "g2")
 
 
 @pytest.fixture(scope="module")
-def vtail_g1(designs: dict) -> tuple[SizingOutput, SelectedBOM]:
+def vtail_g1(kit_designs: dict) -> tuple[SizingOutput, SelectedBOM]:
     """The G1 mission sized as a single-boom V-tail pusher with its matched BOM."""
-    return designs["g1_vtail"]
+    return kit_designs["g1_vtail"]
 
 
 @pytest.fixture(scope="module")
-def vtail_g2(designs: dict) -> tuple[SizingOutput, SelectedBOM]:
-    """The G2 mission (quadplane) sized as a single-boom V-tail pusher with its matched BOM."""
-    return designs["g2_vtail"]
+def vtail_g2(kit_designs: dict) -> tuple[SizingOutput, SelectedBOM]:
+    """The G2 mission (quadplane) as a single-boom V-tail pusher: its saved pre-matching record (kit_designs)."""
+    return kit_designs["g2_vtail"]
 
 
 @pytest.fixture(scope="module")

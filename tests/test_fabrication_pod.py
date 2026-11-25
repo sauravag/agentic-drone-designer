@@ -32,49 +32,49 @@ STEEP_CONE_DIAMETER_M = 0.33  # g2 pod this wide: tail-cone slope ~0.37, beyond 
 AREA_TOL_M2 = 1e-9
 
 
-def _layout(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION):
-    sizing, bom = designs[case]
+def _layout(kit_designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION):
+    sizing, bom = kit_designs[case]
     length = components.required_fuselage_length_m(sizing, bom, diameter_m)
     return layout_from_sizing(sizing, station, diameter_m, length)
 
 
-def _floor(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION) -> float:
-    layout = _layout(designs, case, diameter_m, station)
-    plan = kit_spar_plan(designs[case][0], layout, load_airfoil(layout.airfoil), SETTINGS)
-    return wing_box_floor_m(layout, plan, SETTINGS, plate_loads(designs[case][0], SETTINGS))
+def _floor(kit_designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION) -> float:
+    layout = _layout(kit_designs, case, diameter_m, station)
+    plan = kit_spar_plan(kit_designs[case][0], layout, load_airfoil(layout.airfoil), SETTINGS)
+    return wing_box_floor_m(layout, plan, SETTINGS, plate_loads(kit_designs[case][0], SETTINGS))
 
 
-def _battery_top(designs, case: str, diameter_m: float) -> float:
-    battery = seat_low(components.sliders(*designs[case])[0], diameter_m, SETTINGS)
+def _battery_top(kit_designs, case: str, diameter_m: float) -> float:
+    battery = seat_low(components.sliders(*kit_designs[case])[0], diameter_m, SETTINGS)
     return battery.center_m[2] + battery.size_m[2] / 2
 
 
 # ------------------------------------------------------------------------------------ pod diameter ---
-def test_group_3_pod_is_unchanged(designs):
-    sizing, bom = designs["g3"]
+def test_group_3_pod_is_unchanged(kit_designs):
+    sizing, bom = kit_designs["g3"]
     assert kit_fuselage_diameter_m(sizing, bom, SETTINGS) == components.required_fuselage_diameter_m(sizing, bom)
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_kit_pod_seats_the_battery_under_the_wing_box(case, designs):
-    sizing, bom = designs[case]
+def test_kit_pod_seats_the_battery_under_the_wing_box(case, kit_designs):
+    sizing, bom = kit_designs[case]
     d = kit_fuselage_diameter_m(sizing, bom, SETTINGS)
     assert d > max(sizing.fuselage_diameter_m, components.required_fuselage_diameter_m(sizing, bom))
-    assert _battery_top(designs, case, d) + STRUCTURE_CLEARANCE_M <= _floor(designs, case, d) + 1e-9
+    assert _battery_top(kit_designs, case, d) + STRUCTURE_CLEARANCE_M <= _floor(kit_designs, case, d) + 1e-9
     assert pod_fits_kit(sizing, bom, d, SETTINGS)
     assert not pod_fits_kit(sizing, bom, d - 0.001, SETTINGS)  # the smallest such pod (to 1 mm)
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
 @pytest.mark.parametrize("station", WING_STATION_SCAN)
-def test_battery_clears_the_wing_box_at_every_station_the_balance_may_pick(case, station, designs):
-    sizing, bom = designs[case]
+def test_battery_clears_the_wing_box_at_every_station_the_balance_may_pick(case, station, kit_designs):
+    sizing, bom = kit_designs[case]
     d = kit_fuselage_diameter_m(sizing, bom, SETTINGS)
     try:
-        floor = _floor(designs, case, d, station)
+        floor = _floor(kit_designs, case, d, station)
     except KitUnavailable:
         pytest.skip("no wing box can be built at this station (no kit there)")
-    assert _battery_top(designs, case, d) + STRUCTURE_CLEARANCE_M <= floor + 1e-9
+    assert _battery_top(kit_designs, case, d) + STRUCTURE_CLEARANCE_M <= floor + 1e-9
 
 
 # The hand-launched G1's pod before pod sizing checked the overwrap: wide enough for the battery under the wing box,
@@ -82,19 +82,19 @@ def test_battery_clears_the_wing_box_at_every_station_the_balance_may_pick(case,
 HAND_POD_BEFORE_OVERWRAP_RULE_M = 0.172
 
 
-def _plan_and_loads(designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION):
-    layout = _layout(designs, case, diameter_m, station)
-    sizing = designs[case][0]
+def _plan_and_loads(kit_designs, case: str, diameter_m: float, station: float = DEFAULT_WING_STATION):
+    layout = _layout(kit_designs, case, diameter_m, station)
+    sizing = kit_designs[case][0]
     return layout, kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), SETTINGS), plate_loads(sizing, SETTINGS)
 
 
 @pytest.mark.parametrize("case", ["g1", "g1_hand"])
 @pytest.mark.parametrize("bossed", [True, False])
-def test_plate_gap_matches_the_built_plates(case, bossed, designs):
+def test_plate_gap_matches_the_built_plates(case, bossed, kit_designs):
     """The overwrap's plate gap is the clear width between the built plates, or their socket bosses when the plate
     loads need them (both reference designs do; unloaded plates have none)."""
-    d = kit_fuselage_diameter_m(*designs[case], SETTINGS)
-    layout, plan, design_loads = _plan_and_loads(designs, case, d)
+    d = kit_fuselage_diameter_m(*kit_designs[case], SETTINGS)
+    layout, plan, design_loads = _plan_and_loads(kit_designs, case, d)
     loads = design_loads if bossed else NO_PLATE_LOADS
     built = fuselage_parts(layout, plan, (), SETTINGS, loads=loads)
     t = SETTINGS.sheet_for("plate").thickness_m  # plates and bosses extrude toward -y from their origin
@@ -102,16 +102,16 @@ def test_plate_gap_matches_the_built_plates(case, bossed, designs):
     assert wing_box_plate_gap_m(layout, plan, SETTINGS, loads) == pytest.approx(measured)
 
 
-def test_wing_box_floor_refuses_an_overwrap_longer_than_the_plate_gap(designs):
+def test_wing_box_floor_refuses_an_overwrap_longer_than_the_plate_gap(kit_designs):
     with pytest.raises(KitUnavailable, match="centreline overwrap .* does not fit between the wing-box plates"):
-        _floor(designs, "g1_hand", HAND_POD_BEFORE_OVERWRAP_RULE_M)
+        _floor(kit_designs, "g1_hand", HAND_POD_BEFORE_OVERWRAP_RULE_M)
 
 
-def test_kit_pod_widens_until_the_overwrap_fits_between_the_plates(designs):
-    sizing, bom = designs["g1_hand"]
+def test_kit_pod_widens_until_the_overwrap_fits_between_the_plates(kit_designs):
+    sizing, bom = kit_designs["g1_hand"]
     d = kit_fuselage_diameter_m(sizing, bom, SETTINGS)
     assert d > HAND_POD_BEFORE_OVERWRAP_RULE_M and pod_fits_kit(sizing, bom, d, SETTINGS)
-    layout, plan, loads = _plan_and_loads(designs, "g1_hand", d)
+    layout, plan, loads = _plan_and_loads(kit_designs, "g1_hand", d)
     size_overwrap(plan.centre_moment_nm, plan.socket, wing_box_plate_gap_m(layout, plan, SETTINGS, loads), SETTINGS)
 
 
@@ -121,10 +121,10 @@ def test_structure_clearance_is_half_the_component_gap():
 
 # --------------------------------------------------------------------------------------- seat low ---
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_sliders_seat_as_low_as_the_former_openings_allow(case, designs):
-    sizing, bom = designs[case]
+def test_sliders_seat_as_low_as_the_former_openings_allow(case, kit_designs):
+    sizing, bom = kit_designs[case]
     d = kit_fuselage_diameter_m(sizing, bom, SETTINGS)
-    layout = _layout(designs, case, d)
+    layout = _layout(kit_designs, case, d)
     for item in components.sliders(sizing, bom):
         low = seat_low(item, d, SETTINGS)
         assert low.center_m[2] <= 0.0 and low.center_m[:2] == item.center_m[:2]  # the pod-sizing slider sits at 0
@@ -142,9 +142,9 @@ def test_seat_low_never_raises_a_part_that_cannot_drop():
 
 
 # ---------------------------------------------------------------------------------- crutch slots ---
-def test_crutch_slots_survive_a_steep_tail_cone(designs):
-    layout = _layout(designs, "g2", STEEP_CONE_DIAMETER_M)
-    plan = kit_spar_plan(designs["g2"][0], layout, load_airfoil(layout.airfoil), SETTINGS)
+def test_crutch_slots_survive_a_steep_tail_cone(kit_designs):
+    layout = _layout(kit_designs, "g2", STEEP_CONE_DIAMETER_M)
+    plan = kit_spar_plan(kit_designs["g2"][0], layout, load_airfoil(layout.airfoil), SETTINGS)
     crutch = next(p for p in fuselage_parts(layout, plan, (), SETTINGS, loads=NO_PLATE_LOADS) if p.label == "C-1")
     x0 = crutch.location.position.X
     for wire in crutch.outline.inner_wires():  # every tab slot keeps MIN_WEB_M to the edge at its aft face

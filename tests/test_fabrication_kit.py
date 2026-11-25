@@ -46,23 +46,23 @@ USABLE_LONG_M, USABLE_SHORT_M = sorted(DEFAULT_FABRICATION.usable_bed_m, reverse
 RIM_ALLOWANCE_M = 0.003  # a square-cut tube end may stop this far short so its leaning rim clears a rib
 
 
-def _placed(designs, case: str, layout):
-    return (*_real_components(designs, case, layout), *components.vtol_motors(designs[case][1], layout))
+def _placed(kit_designs, case: str, layout):
+    return (*_real_components(kit_designs, case, layout), *components.vtol_motors(kit_designs[case][1], layout))
 
 
-def _build(designs, inputs, case: str):
+def _build(kit_designs, inputs, case: str):
     layout, airfoil = inputs[0], inputs[1]
-    return build_kit(designs[case][0], layout, airfoil, _placed(designs, case, layout), SETTINGS)
+    return build_kit(kit_designs[case][0], layout, airfoil, _placed(kit_designs, case, layout), SETTINGS)
 
 
 @pytest.fixture(scope="module")
-def g1_kit(designs, g1_kit_inputs):
-    return _build(designs, g1_kit_inputs, "g1")
+def g1_kit(kit_designs, g1_kit_inputs):
+    return _build(kit_designs, g1_kit_inputs, "g1")
 
 
 @pytest.fixture(scope="module")
-def g2_kit(designs, g2_kit_inputs):
-    return _build(designs, g2_kit_inputs, "g2")
+def g2_kit(kit_designs, g2_kit_inputs):
+    return _build(kit_designs, g2_kit_inputs, "g2")
 
 
 def _items(kit) -> dict[str, mp.MassItem]:
@@ -78,8 +78,8 @@ def _assert_item_matches(item: mp.MassItem, oracle: mp.MassItem, label: str) -> 
 
 
 # ------------------------------------------------------------------------------------------ group ---
-def test_group_3_is_unavailable(designs, g1_kit_inputs):
-    sizing = designs["g3"][0]
+def test_group_3_is_unavailable(kit_designs, g1_kit_inputs):
+    sizing = kit_designs["g3"][0]
     assert sizing.dod_group == 3
     layout, airfoil = g1_kit_inputs[0], g1_kit_inputs[1]
     with pytest.raises(KitUnavailable, match="Group 1–2"):
@@ -131,8 +131,8 @@ def test_joins_describe_every_split(g2_kit):
     assert len({p.label for p in g2_kit.parts}) == len(g2_kit.parts)
 
 
-def test_kit_is_deterministic(designs, g1_kit_inputs, g1_kit):
-    again = _build(designs, g1_kit_inputs, "g1")
+def test_kit_is_deterministic(kit_designs, g1_kit_inputs, g1_kit):
+    again = _build(kit_designs, g1_kit_inputs, "g1")
     assert [p.label for p in again.parts] == [p.label for p in g1_kit.parts]
     assert [p.area_m2 for p in again.parts] == [p.area_m2 for p in g1_kit.parts]
     assert [t.label for t in again.tubes] == [t.label for t in g1_kit.tubes]
@@ -224,9 +224,9 @@ def test_tail_spars_run_out_as_far_as_the_tail_depth_admits(case, request):
 
 
 # ----------------------------------------------------------------------------------------- linear ---
-def test_stringers_run_between_the_first_and_last_former(designs, g1_kit, g1_kit_inputs):
+def test_stringers_run_between_the_first_and_last_former(kit_designs, g1_kit, g1_kit_inputs):
     layout, _, spar, _ = g1_kit_inputs
-    stations = former_stations(layout, spar, SETTINGS, _placed(designs, "g1", layout))
+    stations = former_stations(layout, spar, SETTINGS, _placed(kit_designs, "g1", layout))
     stringers = [s for s in g1_kit.linear if s.kind == "stringer"]
     assert len(stringers) == STRINGER_COUNT
     t_former, side = SETTINGS.sheet_for("former").thickness_m, SETTINGS.stringer_side_m
@@ -331,8 +331,8 @@ def test_film_sits_on_the_exposed_wing_planform_centroid(g1_kit, g1_kit_inputs):
     assert item.cg_m[1] == pytest.approx(0.0, abs=1e-12)
 
 
-def test_residual_gear_item_is_the_gear_fraction_over_the_pod(designs, g2_kit_inputs):
-    sizing, layout = designs["g2"][0], g2_kit_inputs[0]
+def test_residual_gear_item_is_the_gear_fraction_over_the_pod(kit_designs, g2_kit_inputs):
+    sizing, layout = kit_designs["g2"][0], g2_kit_inputs[0]
     item = residual_gear_item(sizing, layout, sizing_output_gear(sizing))
     assert item.name == "landing_gear"
     assert item.mass_kg == pytest.approx(GEAR_FRACTION[sizing.airframe_topology] * sizing.mtow_kg)
@@ -383,11 +383,11 @@ def test_g2_lift_booms_are_stiff_enough(g2_kit):
 
 
 # ------------------------------------------------------------------------------------------- D-box (R45) ---
-def test_dbox_covering_area_and_mass(designs, g2_kit_inputs):
+def test_dbox_covering_area_and_mass(kit_designs, g2_kit_inputs):
     # Arrange: a non-default wood density, so a missing areal-density mapping cannot pass by coincidence
     layout, airfoil, _, _ = g2_kit_inputs
     settings = SETTINGS.model_copy(update={"stringer_density_kg_m3": 200.0})
-    kit = build_kit(designs["g2"][0], layout, airfoil, _placed(designs, "g2", layout), settings)
+    kit = build_kit(kit_designs["g2"][0], layout, airfoil, _placed(kit_designs, "g2", layout), settings)
     # Act
     by = {i.name: i for i in kit_mass_items(kit, settings)}
     # Assert: the area is the D-box material area (independently integrated in test_wing_stiffness)
@@ -635,7 +635,7 @@ def test_folding_prop_note_follows_the_flag_for_a_tractor_too(g1_kit):
 
 @pytest.mark.parametrize("change", [{"booms": "twin"}, {"propeller": "pusher_pod"}, {"tail": "inverted_v"},
                                     {"propeller": "pusher_boom_end"}, {"tail": "v"}])
-def test_unbuilt_layouts_still_get_no_kit(change, designs, g1_kit_inputs, monkeypatch):
+def test_unbuilt_layouts_still_get_no_kit(change, kit_designs, g1_kit_inputs, monkeypatch):
     """The kit cuts exactly two (tail, propeller, booms) combinations, the tractor's and the V-tail pusher's; any
     other, even one mixing their parts (a V-tail tractor, a conventional boom-end pusher), gets a clean refusal naming
     the layout and its parts."""
@@ -647,7 +647,7 @@ def test_unbuilt_layouts_still_get_no_kit(change, designs, g1_kit_inputs, monkey
     spec = dataclasses.replace(real("pod_boom_tractor"), **change)
     parts = f"({spec.tail} tail, {spec.propeller} propeller, {spec.booms} booms)"
     with pytest.raises(KitUnavailable, match=re.escape(f"no parts for the Pod-and-boom tractor layout yet {parts}")):
-        build_kit(designs["g1"][0], layout, airfoil, (), SETTINGS)
+        build_kit(kit_designs["g1"][0], layout, airfoil, (), SETTINGS)
 
 
 def test_built_layout_parts_are_the_tractor_and_the_vtail_pusher():
@@ -719,3 +719,22 @@ def test_tail_root_clashing_with_a_fuselage_part_refuses_the_kit(label, vtail_ki
     former = KitPart("F-9", "former", rect_face(-1.0, -1.0, 1.0, 1.0), station_location((box.min.X + box.max.X) / 2.0))
     with pytest.raises(KitUnavailable, match=rf"{re.escape(label)}: the V-tail root inside the tail cone runs into F-9"):
         _check_tail_root_clear(((label, solid),), (former,), SETTINGS)
+
+
+# The matched-propulsion reference designs whose kit is refused (user, 2026-11-25: "accept, kit fixes later"); the kit
+# tests above run on their saved pre-matching records (conftest `kit_designs`). Kit limits are fixed in a later branch.
+MATCHED_NO_KIT_REASONS: dict[str, str] = {
+    "g1": "C-1: the slot for F-07 leaves less than 2 mm of crutch",
+    "g2": "anti-rotation pin: .* overloads even a 5 mm rod",
+    "g2_vtail": "laser-cut construction covers Group 1",
+    "g1_hand": "aileron reversal at .* m/s",
+}
+
+
+@pytest.mark.parametrize("case", sorted(MATCHED_NO_KIT_REASONS))
+def test_matched_reference_designs_build_no_kit_and_say_why(case, designs):
+    sizing, bom = designs[case]
+    layout = _fitted_layout(sizing, bom, with_propeller=sizing.airframe_layout != "pod_boom_tractor")
+    placed = (*_real_components(designs, case, layout), *components.vtol_motors(bom, layout))
+    with pytest.raises(KitUnavailable, match=MATCHED_NO_KIT_REASONS[case]):
+        build_kit(sizing, layout, load_airfoil(layout.airfoil), placed, SETTINGS)

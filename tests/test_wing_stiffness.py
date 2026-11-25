@@ -138,9 +138,9 @@ def test_spar_sits_on_the_aerodynamic_centre():  # the reversal model's assumpti
     assert SPAR_CHORD_STATION == QUARTER_CHORD
 
 
-def test_wing_stiffness_uses_the_user_limits(g1_kit_inputs, designs):
+def test_wing_stiffness_uses_the_user_limits(g1_kit_inputs, kit_designs):
     layout, airfoil, spar, settings = g1_kit_inputs
-    sizing = designs["g1"][0]
+    sizing = kit_designs["g1"][0]
     w = wing_stiffness(spar, airfoil, False, sizing.mtow_kg, layout.wing.semi_span_m, layout.wing.chord_at,
                        sizing.aspect_ratio, sizing.v_cruise_ms, settings)
     assert w.tip_deflection_limit_m == pytest.approx(0.05 * layout.wing.semi_span_m)
@@ -149,9 +149,9 @@ def test_wing_stiffness_uses_the_user_limits(g1_kit_inputs, designs):
     assert w.deflection_ok  # whether g1 needs a D-box is not pinned here (its tube-only margin is thin)
 
 
-def test_dbox_raises_reversal_speed_and_leaves_deflection(g2_kit_inputs, designs):
+def test_dbox_raises_reversal_speed_and_leaves_deflection(g2_kit_inputs, kit_designs):
     layout, airfoil, spar, settings = g2_kit_inputs
-    sizing = designs["g2"][0]
+    sizing = kit_designs["g2"][0]
 
     def run(with_dbox: bool):
         return wing_stiffness(spar, airfoil, with_dbox, sizing.mtow_kg, layout.wing.semi_span_m,
@@ -217,25 +217,25 @@ def test_dbox_that_still_reverses_is_refused():
     assert calls == [False, True]
 
 
-def test_kit_spar_plan_stays_strength_only(designs):
-    sizing, bom = designs["g2"]
+def test_kit_spar_plan_stays_strength_only(kit_designs):
+    sizing, bom = kit_designs["g2"]
     layout = _fitted_layout(sizing, bom)
     spar = kit_spar_plan(sizing, layout, load_airfoil(layout.airfoil), DEFAULT_FABRICATION)
     assert spar.stiffness is None and spar.dbox is False  # kit_pod relies on it
 
 
-def test_sizing_without_cruise_speed_is_refused(designs):
-    sizing, bom = designs["g1"]
+def test_sizing_without_cruise_speed_is_refused(kit_designs):
+    sizing, bom = kit_designs["g1"]
     layout = _fitted_layout(sizing, bom)
     old = sizing.model_copy(update={"v_cruise_ms": None})
     with pytest.raises(KitUnavailable, match="re-run"):
         stiffened_spar_plan(old, layout, load_airfoil(layout.airfoil), DEFAULT_FABRICATION)
 
 
-def test_a_chord_too_small_for_the_spar_refuses_the_dbox_naming_the_station(g2_kit_inputs, designs):
+def test_a_chord_too_small_for_the_spar_refuses_the_dbox_naming_the_station(g2_kit_inputs, kit_designs):
     # Arrange: a 25 mm chord puts the D-box web ahead of the leading edge for any stock tube
     layout, airfoil, spar, settings = g2_kit_inputs
-    sizing = designs["g2"][0]
+    sizing = kit_designs["g2"][0]
     tiny_chord = 0.025
     # Act / Assert: the cell and the full stiffness path both refuse in words, not with a ValueError
     with pytest.raises(KitUnavailable, match=r"too large for a leading-edge D-box at y = 0\.\d{3} m"):

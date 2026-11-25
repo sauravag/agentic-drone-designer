@@ -29,9 +29,10 @@ KIT_VARIANTS: dict[str, OperationalRequirements] = {
                                                 "endurance_hours": G1_KIT_ENDURANCE_H}),
 }
 
-# Saved quadplane records that still build the laser-cut kit: no G2-class quadplane sized by the matched propulsion
-# does (anti-rotation pin above ~20 kg, spar tube stock below), so the quadplane kit code is tested on G2 as master
-# df94b76 sized it (19.88 kg, before propulsion matching; written with tests/data/kit_designs/README.txt's command).
+# Saved records that still build the laser-cut kit: the reference missions as master df94b76 sized them (before
+# propulsion matching). The kit, CAD-packing and fabrication tests run on these while the matched references' kits
+# are refused (provenance and the command that wrote them: tests/data/kit_designs/README.txt).
+KIT_DESIGN_CASES: tuple[str, ...] = ("g1", "g2", "g2_vtail", "g1_hand")
 KIT_DESIGN_DIR: Path = Path(__file__).parent / "data" / "kit_designs"
 
 
@@ -46,5 +47,6 @@ def saved_kit_design(case: str) -> tuple[OperationalRequirements, SizingOutput, 
             SelectedBOM.model_validate(read("bom")))
 
 
-__all__ = ["CASES", "KIT_VARIANTS", "KIT_DESIGN_DIR", "saved_kit_design", "REQ_FAILED", "G1_ELECTRIC_FW", "G2_ELECTRIC_VTOL", "G3_HYBRID_VTOL",
-           "G1_VTAIL_PUSHER_FW", "G2_VTAIL_PUSHER_VTOL", "G1_HAND_LAUNCH"]
+__all__ = ["CASES", "KIT_VARIANTS", "KIT_DESIGN_CASES", "KIT_DESIGN_DIR", "saved_kit_design", "REQ_FAILED",
+           "G1_ELECTRIC_FW", "G2_ELECTRIC_VTOL", "G3_HYBRID_VTOL", "G1_VTAIL_PUSHER_FW", "G2_VTAIL_PUSHER_VTOL",
+           "G1_HAND_LAUNCH"]

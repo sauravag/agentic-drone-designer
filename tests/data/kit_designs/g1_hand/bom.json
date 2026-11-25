@@ -1,0 +1,58 @@
+{
+  "cruise_motor": {
+    "id": 3,
+    "name": "Outrunner 2814-900KV",
+    "mass_kg": 0.105,
+    "max_power_w": 550.0,
+    "continuous_power_w": 400.0,
+    "kv": 900.0,
+    "voltage_v": 14.8,
+    "diameter_m": 0.035,
+    "length_m": 0.03
+  },
+  "cruise_propeller": {
+    "id": 3,
+    "name": "Carbon cruise prop 11x7in",
+    "mass_kg": 0.025,
+    "diameter_m": 0.2794,
+    "pitch_m": 0.1778,
+    "max_power_w": 600.0,
+    "application": "cruise"
+  },
+  "battery": {
+    "id": 4,
+    "name": "Li-Ion 21700 6S4P",
+    "mass_kg": 2.16,
+    "chemistry": "li_ion",
+    "capacity_wh": 432.0,
+    "max_c_rate": 3.0,
+    "voltage_v": 21.6,
+    "length_m": 0.2181,
+    "width_m": 0.109,
+    "height_m": 0.0727
+  },
+  "payload": {
+    "id": 24,
+    "name": "LiDAR mapping unit",
+    "mass_kg": 1.2,
+    "sensor_type": "lidar",
+    "power_w": 25.0,
+    "length_m": 0.15,
+    "width_m": 0.1,
+    "height_m": 0.1,
+    "vendor": null,
+    "reference_price_usd": null
+  },
+  "vtol_motor": null,
+  "vtol_propeller": null,
+  "vtol_motor_count": 0,
+  "ice_generator": null,
+  "flight_controller": {
+    "id": null,
+    "name": "CubePilot Cube Orange+ (ADS-B carrier)",
+    "mass_kg": 0.073,
+    "power_w": null,
+    "reference_price_usd": "\u2248 $450\u2013546"
+  },
+  "companion_computer": null
+}

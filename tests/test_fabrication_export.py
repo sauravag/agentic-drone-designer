@@ -74,13 +74,13 @@ def _assert_on_bed_and_apart(placements: tuple[Placement, ...]) -> None:
 
 
 @pytest.fixture(scope="module")
-def kit(designs, g1_kit_inputs):
-    return _build(designs, g1_kit_inputs, "g1")
+def kit(kit_designs, g1_kit_inputs):
+    return _build(kit_designs, g1_kit_inputs, "g1")
 
 
 @pytest.fixture(scope="module")
-def g2_kit(designs, g2_kit_inputs):
-    return _build(designs, g2_kit_inputs, "g2")
+def g2_kit(kit_designs, g2_kit_inputs):
+    return _build(kit_designs, g2_kit_inputs, "g2")
 
 
 # ------------------------------------------------------------------------------------------- nesting ---

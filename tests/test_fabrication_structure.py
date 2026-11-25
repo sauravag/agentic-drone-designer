@@ -66,13 +66,13 @@ WIDE_GAP_M = 0.5
 
 
 @pytest.fixture(scope="module")
-def g1_kit(designs, g1_kit_inputs):
-    return _build(designs, g1_kit_inputs, "g1")
+def g1_kit(kit_designs, g1_kit_inputs):
+    return _build(kit_designs, g1_kit_inputs, "g1")
 
 
 @pytest.fixture(scope="module")
-def g2_kit(designs, g2_kit_inputs):
-    return _build(designs, g2_kit_inputs, "g2")
+def g2_kit(kit_designs, g2_kit_inputs):
+    return _build(kit_designs, g2_kit_inputs, "g2")
 
 
 # ------------------------------------------------------------------------------------- formulas ---
@@ -175,17 +175,17 @@ def test_overwrap_is_a_packing_obstacle_at_its_wrapped_od(g2_kit, g2_kit_inputs)
     assert lowest <= centre_z - wrap.od_m / 2 + 1e-9
 
 
-def test_wing_box_floor_sits_under_the_wrap(designs, g2_kit_inputs):
+def test_wing_box_floor_sits_under_the_wrap(kit_designs, g2_kit_inputs):
     layout, airfoil = g2_kit_inputs[0], g2_kit_inputs[1]
-    spar = kit_spar_plan(designs["g2"][0], layout, airfoil, SETTINGS)
+    spar = kit_spar_plan(kit_designs["g2"][0], layout, airfoil, SETTINGS)
     wrap = size_overwrap(spar.centre_moment_nm, spar.socket, WIDE_GAP_M, SETTINGS)
     wrap_bottom = socket_axis_m(layout, 0.0)[1] - wrap.od_m / 2
     assert wing_box_floor_m(layout, spar, SETTINGS, NO_PLATE_LOADS) <= wrap_bottom + 1e-9
 
 
 # -------------------------------------------------------------------------------------- torsion ---
-def test_hover_pitch_torque_checked_at_boom_station(designs, g2_kit_inputs):
-    sizing = designs["g2"][0]
+def test_hover_pitch_torque_checked_at_boom_station(kit_designs, g2_kit_inputs):
+    sizing = kit_designs["g2"][0]
     layout, airfoil = g2_kit_inputs[0], g2_kit_inputs[1]
     spar = kit_spar_plan(sizing, layout, airfoil, SETTINGS)
     torsion = kit_spar_torsion(sizing, layout, SETTINGS)
@@ -204,8 +204,8 @@ def test_hover_pitch_torque_checked_at_boom_station(designs, g2_kit_inputs):
 
 
 # ------------------------------------------------------------------------------------ tail boom ---
-def test_tail_boom_too_weak_falls_back(designs, g1_kit_inputs):
-    sizing, layout = designs["g1"][0], g1_kit_inputs[0]
+def test_tail_boom_too_weak_falls_back(kit_designs, g1_kit_inputs):
+    sizing, layout = kit_designs["g1"][0], g1_kit_inputs[0]
     scale = 10.0  # each tail surface's chords: ten times the area, and the load
     big = tuple(dataclasses.replace(t, planform=dataclasses.replace(
         t.planform, root_chord_m=scale * t.planform.root_chord_m, tip_chord_m=scale * t.planform.tip_chord_m))
@@ -217,17 +217,17 @@ def test_tail_boom_too_weak_falls_back(designs, g1_kit_inputs):
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_reference_tail_booms_pass(case, designs, request):
+def test_reference_tail_booms_pass(case, kit_designs, request):
     layout = request.getfixturevalue(f"{case}_kit_inputs")[0]
     tube = boom_tube(layout.tail_boom.diameter_m, SETTINGS)
-    tail_boom_check(tube, designs[case][0], layout, SETTINGS)
-    assert 0.0 < tail_boom_ratio(tube, designs[case][0], layout, SETTINGS) <= 1.0
+    tail_boom_check(tube, kit_designs[case][0], layout, SETTINGS)
+    assert 0.0 < tail_boom_ratio(tube, kit_designs[case][0], layout, SETTINGS) <= 1.0
 
 
-def test_no_tail_boom_needs_no_check(designs, g1_kit_inputs):
+def test_no_tail_boom_needs_no_check(kit_designs, g1_kit_inputs):
     layout = dataclasses.replace(g1_kit_inputs[0], tail_booms=())
-    tail_boom_check(boom_tube(0.0, SETTINGS), designs["g1"][0], layout, SETTINGS)
-    assert tail_boom_ratio(boom_tube(0.0, SETTINGS), designs["g1"][0], layout, SETTINGS) == 0.0
+    tail_boom_check(boom_tube(0.0, SETTINGS), kit_designs["g1"][0], layout, SETTINGS)
+    assert tail_boom_ratio(boom_tube(0.0, SETTINGS), kit_designs["g1"][0], layout, SETTINGS) == 0.0
 
 
 # -------------------------------------------------------------------------------------- bearing ---
@@ -287,8 +287,8 @@ def test_pod_sizing_checks_the_crutch_rails(g1_kit_inputs):
 
 # ------------------------------------------------------------------------------------ the kits ---
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_g1_g2_still_build_kits_with_positive_margin(case, designs, tmp_path):
-    sizing, bom = designs[case]
+def test_g1_g2_still_build_kits_with_positive_margin(case, kit_designs, tmp_path):
+    sizing, bom = kit_designs[case]
     layout = _fitted_layout(sizing, bom)
     result = cad_packer.pack_layout(sizing, bom, _synthetic_aero(layout), layout,
                                     _synthetic_oml(layout, tmp_path / "oml.step"))
@@ -329,8 +329,8 @@ def test_pin_beyond_bosses_is_unavailable():
         size_pin(5.0 * PIN_ALLOW * 0.005 * PLATE_T * 0.1, 0.1, SETTINGS)
 
 
-def test_kit_spar_plan_sizes_the_pin_for_the_root_torque(designs, g2_kit_inputs):
-    sizing, (layout, airfoil) = designs["g2"][0], g2_kit_inputs[:2]
+def test_kit_spar_plan_sizes_the_pin_for_the_root_torque(kit_designs, g2_kit_inputs):
+    sizing, (layout, airfoil) = kit_designs["g2"][0], g2_kit_inputs[:2]
     spar = kit_spar_plan(sizing, layout, airfoil, SETTINGS)
     torsion = kit_spar_torsion(sizing, layout, SETTINGS)
     torque = max(torsion.hover_torque_nm, torsion.flight_torque_at(spar.joint_y_m))
@@ -469,15 +469,15 @@ def test_wing_box_floor_counts_the_socket_bosses(g1_kit_inputs):
     assert wing_box_floor_m(layout, spar, settings, bossed) < wing_box_floor_m(layout, spar, settings, NO_PLATE_LOADS)
 
 
-def test_plate_loads_are_the_wing_shear_and_the_limit_lift(designs):
-    sizing = designs["g2"][0]
+def test_plate_loads_are_the_wing_shear_and_the_limit_lift(kit_designs):
+    sizing = kit_designs["g2"][0]
     loads = plate_loads(sizing, SETTINGS)
     assert loads.down_n == pytest.approx(SETTINGS.n_limit * sizing.mtow_kg * 9.80665 / 2)
     assert loads.shear_n == pytest.approx(max(loads.down_n, 2 * sizing.vtol_thrust_per_motor_n))
 
 
-def test_flight_dynamic_pressure_never_below_the_loiter_speed(designs):
-    sizing = designs["g1"][0]
+def test_flight_dynamic_pressure_never_below_the_loiter_speed(kit_designs):
+    sizing = kit_designs["g1"][0]
     slow_stall = sizing.model_copy(update={"v_stall_ms": 1.0})
     rho = air_properties(0.0)[0]
     assert flight_dynamic_pressure_pa(slow_stall, SETTINGS) == pytest.approx(0.5 * rho * sizing.v_loiter_ms**2)
@@ -485,19 +485,19 @@ def test_flight_dynamic_pressure_never_below_the_loiter_speed(designs):
         max(manoeuvre_dynamic_pressure_pa(sizing.v_stall_ms, SETTINGS), 0.5 * rho * sizing.v_loiter_ms**2))
 
 
-def _stiffened(designs, case):
-    sizing, bom = designs[case]
+def _stiffened(kit_designs, case):
+    sizing, bom = kit_designs[case]
     layout = _fitted_layout(sizing, bom)
     return stiffened_spar_plan(sizing, layout, load_airfoil(layout.airfoil), SETTINGS)
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_reference_kits_pass_both_stiffness_checks(case, designs):
-    assert _stiffened(designs, case).stiffness.passes
+def test_reference_kits_pass_both_stiffness_checks(case, kit_designs):
+    assert _stiffened(kit_designs, case).stiffness.passes
 
 
-def test_g2_needs_the_dbox(designs):
-    assert _stiffened(designs, "g2").dbox is True
+def test_g2_needs_the_dbox(kit_designs):
+    assert _stiffened(kit_designs, "g2").dbox is True
 
 
 # ------------------------------------------------------------------- V-tail boom-end motor (Task 8) ---

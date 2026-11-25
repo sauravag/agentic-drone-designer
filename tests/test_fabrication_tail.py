@@ -36,8 +36,8 @@ def _candidates() -> list[TubeStock]:
     return sorted([*SETTINGS.tubes, *rods], key=lambda t: (t.od_m, t.area_m2))
 
 
-def test_tail_surface_load_is_q_times_area_times_cl_max(designs):
-    sizing = designs["g2"][0]
+def test_tail_surface_load_is_q_times_area_times_cl_max(kit_designs):
+    sizing = kit_designs["g2"][0]
     q = flight_dynamic_pressure_pa(sizing, SETTINGS)
     assert tail_surface_load_n(sizing, 0.3, SETTINGS) == pytest.approx(q * 0.3 * TAIL_CL_MAX, rel=REL)
 
@@ -49,9 +49,9 @@ def test_elliptic_root_moment_matches_the_wing_formula():
     assert elliptic_root_moment_nm(half_lift, span, y) == pytest.approx(elliptic_moment_nm(mtow, n, span, y), rel=REL)
 
 
-def test_tail_boom_carries_no_load_factor(designs, g2_kit_inputs):
+def test_tail_boom_carries_no_load_factor(kit_designs, g2_kit_inputs):
     """R35 revises R26: M = q_A CL_max |(S_h, S_v)| arm, with no extra n_limit."""
-    sizing, layout = designs["g2"][0], g2_kit_inputs[0]
+    sizing, layout = kit_designs["g2"][0], g2_kit_inputs[0]
     q = flight_dynamic_pressure_pa(sizing, SETTINGS)
     arm = max(layout.htail.x_ac_m, layout.vtail.x_ac_m) - layout.tail_boom.x_start_m
     expected = q * TAIL_CL_MAX * math.hypot(sizing.horizontal_tail_area_m2, sizing.vertical_tail_area_m2) * arm
@@ -59,9 +59,9 @@ def test_tail_boom_carries_no_load_factor(designs, g2_kit_inputs):
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_each_tail_spar_passes_its_surface_load(case, designs, request):
+def test_each_tail_spar_passes_its_surface_load(case, kit_designs, request):
     """Regression (C1): every tail spar carries its surface's elliptic load at its root within the allowable."""
-    sizing, layout = designs[case][0], request.getfixturevalue(f"{case}_kit_inputs")[0]
+    sizing, layout = kit_designs[case][0], request.getfixturevalue(f"{case}_kit_inputs")[0]
     spars = tail_spar_tubes(sizing, layout, TAIL, SETTINGS)
     loads = tail_spar_loads(sizing, layout, SETTINGS)
     assert set(spars) == set(loads) == {"htail", "vtail"}
@@ -71,8 +71,8 @@ def test_each_tail_spar_passes_its_surface_load(case, designs, request):
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_each_tail_spar_is_the_smallest_stock_that_passes_and_fits(case, designs, request):
-    sizing, layout = designs[case][0], request.getfixturevalue(f"{case}_kit_inputs")[0]
+def test_each_tail_spar_is_the_smallest_stock_that_passes_and_fits(case, kit_designs, request):
+    sizing, layout = kit_designs[case][0], request.getfixturevalue(f"{case}_kit_inputs")[0]
     spars = tail_spar_tubes(sizing, layout, TAIL, SETTINGS)
     loads = tail_spar_loads(sizing, layout, SETTINGS)
     roots = ((layout.htail, tail_root_radius_m(layout), spars["htail"], loads["htail"]),
@@ -84,8 +84,8 @@ def test_each_tail_spar_is_the_smallest_stock_that_passes_and_fits(case, designs
         assert all(tube_ratio(t, ((moment, 0.0),), SETTINGS) > 1.0 for t in smaller)
 
 
-def test_tail_spar_moment_is_the_elliptic_root_moment(designs, g2_kit_inputs):
-    sizing, layout = designs["g2"][0], g2_kit_inputs[0]
+def test_tail_spar_moment_is_the_elliptic_root_moment(kit_designs, g2_kit_inputs):
+    sizing, layout = kit_designs["g2"][0], g2_kit_inputs[0]
     loads = tail_spar_loads(sizing, layout, SETTINGS)
     half_h = tail_surface_load_n(sizing, sizing.horizontal_tail_area_m2, SETTINGS) / 2.0
     fin = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, SETTINGS)
@@ -95,15 +95,15 @@ def test_tail_spar_moment_is_the_elliptic_root_moment(designs, g2_kit_inputs):
         elliptic_root_moment_nm(fin, layout.vtail.semi_span_m, fin_start_m(layout, SETTINGS)), rel=REL)
 
 
-def test_weak_stock_makes_the_tail_spar_unavailable_naming_surface_and_station(designs, g2_kit_inputs):
-    sizing, layout = designs["g2"][0], g2_kit_inputs[0]
+def test_weak_stock_makes_the_tail_spar_unavailable_naming_surface_and_station(kit_designs, g2_kit_inputs):
+    sizing, layout = kit_designs["g2"][0], g2_kit_inputs[0]
     weak = SETTINGS.model_copy(update={"tubes": (TubeStock(od_m=0.006, id_m=0.004),), "rods_m": (0.003,)})
     with pytest.raises(KitUnavailable, match=r"tail spar: .*horizontal tail.* at y = \d+\.\d{3} m"):
         tail_spar_tubes(sizing, layout, TAIL, weak)
 
 
-def test_a_tail_too_thin_for_any_stock_is_unavailable(designs, g1_kit_inputs):
-    sizing, layout = designs["g1"][0], g1_kit_inputs[0]
+def test_a_tail_too_thin_for_any_stock_is_unavailable(kit_designs, g1_kit_inputs):
+    sizing, layout = kit_designs["g1"][0], g1_kit_inputs[0]
     thick_only = SETTINGS.model_copy(update={"tubes": (SETTINGS.tubes[-1],), "rods_m": (0.030,)})
     with pytest.raises(KitUnavailable, match="tail spar"):
         tail_spar_tubes(sizing, layout, TAIL, thick_only)
@@ -145,9 +145,9 @@ def test_vtail_boom_loads_project_each_panel(vtail_g1, vtail_layout):
     assert torque == pytest.approx(2.0 * panel * surface.planform.y_mac_m, rel=REL)
 
 
-def test_tractor_boom_torque_is_the_fin_load_at_its_mac_height(designs, g2_kit_inputs):
+def test_tractor_boom_torque_is_the_fin_load_at_its_mac_height(kit_designs, g2_kit_inputs):
     """The fin (90 deg) twists the boom by its full load at its MAC height; the flat H-tail adds no torque."""
-    sizing, layout = designs["g2"][0], g2_kit_inputs[0]
+    sizing, layout = kit_designs["g2"][0], g2_kit_inputs[0]
     fin = tail_surface_load_n(sizing, sizing.vertical_tail_area_m2, SETTINGS)
     height = layout.vtail.z_root_m + layout.vtail.y_mac_m - layout.tail_boom.z_m
     assert tail_boom_loads(sizing, layout, SETTINGS)[1] == pytest.approx(fin * height, rel=REL)

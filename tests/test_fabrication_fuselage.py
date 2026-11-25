@@ -293,18 +293,18 @@ def test_boom_mounts_closer_than_30mm_are_unavailable(g1_kit_inputs):
         fuselage_parts(dataclasses.replace(layout, tail_booms=(late,)), spar, (), settings, loads=NO_PLATE_LOADS)
 
 
-def _real_components(designs, case: str, layout) -> tuple[PlacedComponent, ...]:
-    bom = designs[case][1]
+def _real_components(kit_designs, case: str, layout) -> tuple[PlacedComponent, ...]:
+    bom = kit_designs[case][1]
     battery = _test_battery(layout).at_x(socket_axis_m(layout, 0.0)[0])
     return components.payload(bom, layout), components.cruise_motor(bom, layout), battery
 
 
 @pytest.mark.parametrize("case", ["g1", "g2"])
-def test_real_components_never_intersect_a_fuselage_part(case, designs, request):
+def test_real_components_never_intersect_a_fuselage_part(case, kit_designs, request):
     """R15: every component gets an opening or notch in each part it crosses, external ones included."""
     kit_inputs = request.getfixturevalue(f"{case}_kit_inputs")
     layout, settings = kit_inputs[0], kit_inputs[3]
-    placed = _real_components(designs, case, layout)
+    placed = _real_components(kit_designs, case, layout)
     parts = _fuselage(kit_inputs, components=placed)
     for part in parts:
         solid = part_solid(part, settings)
@@ -313,10 +313,10 @@ def test_real_components_never_intersect_a_fuselage_part(case, designs, request)
             assert volume < 1e-12, f"{part.label} intersects {c.name}: {volume:.3e} m^3"
 
 
-def test_firewall_moves_ahead_of_the_foremost_component_in_the_pod(designs, g1_kit_inputs):
+def test_firewall_moves_ahead_of_the_foremost_component_in_the_pod(kit_designs, g1_kit_inputs):
     layout, settings = g1_kit_inputs[0], g1_kit_inputs[3]
-    payload = components.payload(designs["g1"][1], layout)
-    parts = ribs_by_label(_fuselage(g1_kit_inputs, components=_real_components(designs, "g1", layout)))
+    payload = components.payload(kit_designs["g1"][1], layout)
+    parts = ribs_by_label(_fuselage(g1_kit_inputs, components=_real_components(kit_designs, "g1", layout)))
     t = settings.sheet_for("bulkhead").thickness_m
     station = min(FIRST_FORMER_FRACTION * layout.fuselage_length_m, payload.x_min - COMPONENT_GAP_M - 2 * t)
     assert parts["FW-1a"].location.position.X == pytest.approx(station, abs=1e-9)
@@ -415,11 +415,11 @@ def _boom_solid(layout, settings) -> tuple[str, bd.Solid]:
 
 
 @pytest.mark.parametrize("inputs", ["g1_kit_inputs", "g2_kit_inputs"])
-def test_no_two_fuselage_parts_or_the_socket_intersect(inputs, request, designs):
+def test_no_two_fuselage_parts_or_the_socket_intersect(inputs, request, kit_designs):
     """With the real payload, motor and a battery: forked crutch, split formers and moved firewall included."""
     kit_inputs = request.getfixturevalue(inputs)
     layout, _, spar, settings = kit_inputs
-    parts = _fuselage(kit_inputs, components=_real_components(designs, inputs.split("_")[0], layout))
+    parts = _fuselage(kit_inputs, components=_real_components(kit_designs, inputs.split("_")[0], layout))
     extras = _socket_tubes(layout, spar) + _pin_rods(layout, spar, parts, settings) + [_boom_solid(layout, settings)]
     _assert_no_intersections([(p.label, part_solid(p, settings)) for p in parts] + extras)
     for part in parts:

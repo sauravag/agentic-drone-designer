@@ -75,8 +75,8 @@ def test_shell_structure_is_one_merged_part() -> None:
 
 
 @pytest.fixture(scope="module")
-def g1_kit(designs: dict, g1_kit_inputs: tuple) -> object:
-    return _build(designs, g1_kit_inputs, "g1")
+def g1_kit(kit_designs: dict, g1_kit_inputs: tuple) -> object:
+    return _build(kit_designs, g1_kit_inputs, "g1")
 
 
 def _bounds(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

@@ -41,9 +41,9 @@ CASES = ("g1", "g2")
 
 
 @pytest.fixture(scope="module")
-def kits(designs, g1_kit_inputs, g2_kit_inputs):
-    return {"g1": (_build(designs, g1_kit_inputs, "g1"), g1_kit_inputs),
-            "g2": (_build(designs, g2_kit_inputs, "g2"), g2_kit_inputs)}
+def kits(kit_designs, g1_kit_inputs, g2_kit_inputs):
+    return {"g1": (_build(kit_designs, g1_kit_inputs, "g1"), g1_kit_inputs),
+            "g2": (_build(kit_designs, g2_kit_inputs, "g2"), g2_kit_inputs)}
 
 
 def _round_holes(face: bd.Face) -> list[bd.Wire]:
