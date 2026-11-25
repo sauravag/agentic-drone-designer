@@ -124,7 +124,8 @@ avionics mass changes tangled) were rejected.
 - Inside one sizing pass the hardware set is frozen, so the root find stays smooth (the balance-search pattern from
   phase 2 of the layouts work).
 - If sets cycle (A → B → A), take the heavier set, which is feasible at both masses, and note it; no convergence
-  within `MAX_PROPULSION_PASSES` (6) is a readable sizing failure.
+  within `MAX_PROPULSION_PASSES` (12) is a readable sizing failure. Amended 2026-11-25: raised from 6 under 6.8
+  (a constant tuned for closure): G3 needs 6-8 passes to settle; the other reference designs settle in 2-3.
 - The cruise propeller diameter replaces sizing's calibrated diameter ratio from layouts phase 2; rotor diameter
   still comes from disk loading, and the lift rotor is matched to it.
 - The three efficiency assumptions leave the assumptions panel. Saved records that carry them still load

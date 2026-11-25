@@ -24,7 +24,8 @@ section 7 is a later plan).
   `docker run --rm -v "$PWD":/app -w /app isr-forge:latest python -m pytest -q -p no:cacheprovider`.
 - `PROP_TIP_MACH_MAX = 0.70`; `MAX_MATCH_THROTTLE = 0.85` (nominal voltage); throttle ≤ 1.0 at the sagged voltage.
 - `LI_ION_LOADED_MIN_V_CELL = 3.3`, `LIPO_LOADED_MIN_V_CELL = 3.5`; `ESC_CURRENT_MARGIN = 1.2`;
-  `MAX_PROPULSION_PASSES = 6`.
+  `MAX_PROPULSION_PASSES = 12` (raised from 6 under spec 6.8: G3 needs 6-8 passes to settle, the other reference
+  designs 2-3).
 - Validation gate: model peak efficiency and J at peak within ±10 %, CT0 within ±15 %, for ≥ 3 UIUC datasets.
 - No silent fallback to a fixed efficiency: every model or match failure raises a readable error naming the
   limiting constraint (`PropulsionMatchError`, a `SizingDivergenceError` subclass).

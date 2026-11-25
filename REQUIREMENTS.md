@@ -144,7 +144,7 @@ class DesignState(TypedDict):
    * If `propulsion_type == "auto"`: select `"electric"` if estimated $\text{MTOW} < 15\text{ kg}$ and `endurance_hours <= 3.0`; otherwise select `"series_hybrid"`.
 2. **Time-Stepped Mission Solver (`mission_solver.py` using `AeroSandbox`):**
    * Discretize the mission into 6 sequential phases:
-     1. `VTOL_Takeoff` (if QuadPlane: 60s hover/climb at $T/W = 1.45$, induced power calculated via momentum theory + figure of merit $FM = 0.72$, at the take-off site density).
+     1. `VTOL_Takeoff` (if QuadPlane: 60s hover/climb at $T/W = 1.45$, induced power from momentum theory over the matched lift rotor's figure of merit and motor/ESC efficiency (see *Propulsion matching* below), at the take-off site density).
      2. `Climb` (climb at best rate-of-climb speed from `takeoff_altitude_m` to `service_ceiling_m`).
      3. `Ingress` (`combat_radius_km` at `cruise_speed_ms` into the design headwind: duration $R / (V_{\text{cruise}} - w)$).
      4. `Loiter` (`endurance_hours` at maximum $L/D$ speed $V_{\text{loiter}}$).
@@ -152,8 +152,9 @@ class DesignState(TypedDict):
      6. `VTOL_Land` (if QuadPlane: 60s descent/hover, at the take-off site density).
    * **Design day:** every density is ISA shifted by `isa_temperature_offset_c` (temperature only, at the same pressure). Hover, the VTOL phases and the stall constraint use the take-off site density; the stall constraint holds `max_stall_speed_ms` as a true airspeed there, so hot-and-high sites grow the wing. `SizingOutput.v_stall_ms` stays the sea-level equivalent airspeed (ArduPilot's airspeed parameters are equivalent airspeeds) and `v_stall_takeoff_ms` records the true stall speed at the site.
    * **Electric Powertrain Model:**
-     * Pack-level specific energy: $E_{\text{spec}} = 200\text{ Wh/kg}$ (Li-Ion 21700), drivetrain efficiency $\eta_{\text{prop}} = 0.68$, minimum end-of-mission reserve $\text{SoC} \ge 20\%$.
+     * Pack-level specific energy: $E_{\text{spec}} = 200\text{ Wh/kg}$ (Li-Ion 21700), propulsive efficiency per flight point from the matched propulsion set (below; the first sizing pass seeds it at 0.68), minimum end-of-mission reserve $\text{SoC} \ge 20\%$.
      * Integrate total energy: $E_{\text{total}} = \sum (P_{\text{prop}, i} + P_{\text{payload}} + P_{\text{avionics}}) \cdot \Delta t_i$.
+   * **Propulsion matching:** after each converged sizing pass, the propeller, motor winding, ESC and pack series count are picked from the catalogue so they meet every flight point (throttle, current, power and tip-Mach limits) at the least propulsion plus energy-storage mass. Each point's efficiency comes from a blade-element propeller table and a motor model at that point's thrust, air density, viscosity and speed of sound; the design is re-sized with that set until the set repeats (at most 12 passes).
    * **Series Hybrid-Electric Powertrain Model:**
      * Size an Internal Combustion Engine (ICE) + starter-generator to deliver continuous power covering cruise propulsion + `payload_power_w` + battery recharge margin ($1.15 \times P_{\text{cruise, total}}$).
      * Size a high-discharge buffer LiPo battery ($E_{\text{spec}} = 155\text{ Wh/kg}$, $25\text{C}$ discharge) to cover the peak power deficit during VTOL hover and transition ($P_{\text{hover}} - P_{\text{gen}}$) for 180 seconds plus emergency abort reserve.

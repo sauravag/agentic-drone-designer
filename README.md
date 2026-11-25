@@ -25,7 +25,7 @@ reads `.env`; when running on the host, `export OPENROUTER_API_KEY=...` in your 
 
 The designer stays in charge of the numbers the agent would otherwise assume. Four pieces, all in the web form:
 
-**Design assumptions.** A panel above the forms holds the 20 technology constants the sizing chain uses; the
+**Design assumptions.** A panel above the forms holds the 18 technology constants the sizing chain uses; the
 defaults reproduce the historical values exactly.
 
 | Group | Values (default) |
@@ -33,8 +33,13 @@ defaults reproduce the historical values exactly.
 | Li-ion | specific energy 200 Wh/kg, energy density 250 Wh/L, max discharge 3 C |
 | LiPo | specific energy 155 Wh/kg, energy density 280 Wh/L, max discharge 25 C |
 | Reserves | battery reserve 0.20, fuel reserve (hybrid) 0.10 |
-| Propulsion and VTOL | generator BSFC 0.50 kg/kWh, drivetrain efficiency 0.68, hover figure of merit 0.72, lift motor efficiency 0.85 |
+| Propulsion | generator BSFC 0.50 kg/kWh, pusher installation factor (pusher layouts only) |
 | Avionics | allowance 0.227 kg + 0.01 kg per kg MTOW and 10 W + 0.4 W per kg MTOW (GPS, radios, wiring, the flight controller's own power); Cube Orange+ 0.073 kg; ARK PAB stack 0.166 kg; Jetson companion 0.2 kg; Jetson power 25 W |
+
+Propeller, motor and hover efficiencies are not assumptions any more: the sizing matches a real catalogue
+propeller, motor winding, ESC and pack (series count) to each flight point and takes the efficiency at that point
+from a blade-element propeller model and a motor model (see "Propeller tables" below). Settings files that still
+carry the old drivetrain efficiency, figure of merit or lift-motor efficiency load fine; those values are ignored.
 
 They apply to both description and form runs, and each has validated bounds. Changing a battery value makes the
 catalog battery packs *notional*: capacity and voltage stay catalog values, but pack mass and size are derived
@@ -311,6 +316,21 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[physics,agent,ui,dev,rep
 .venv/bin/python -m pytest -q                                                   # OpenVSP/SITL tests skip on the host
 docker run --rm -v "$PWD":/app -w /app isr-forge:latest python -m pytest -q -p no:cacheprovider   # full suite
 ```
+
+**Propeller tables.** The propulsion matching reads each catalogue propeller's thrust and power from a table
+built by the blade-element model (a few seconds per propeller, about six minutes for the whole catalogue). Tables
+are built on first use and cached as JSON in `.cache/prop_tables/` (or the folder named by `PROP_TABLE_CACHE_DIR`).
+They cover tip Mach up to 0.80 and air from 10 km on an ISA+40 day to a -30 C sea-level day. Warm the cache once,
+so the first design run is not slow:
+
+```bash
+.venv/bin/python -m src.tools.propulsion.prop_tables --warm
+```
+
+The Docker image runs the same command at build time and keeps its tables in `/opt/prop_tables`
+(`PROP_TABLE_CACHE_DIR` is set in the Dockerfile), outside the mounted `/app` folders, so they always match the
+image's code. A table built on demand logs one `[Tool] prop_tables: building ...` line. Changing the propeller
+model or its grid changes the cache key, so stale tables are rebuilt, never reused.
 
 The agent tests use a scripted LLM (no network, no cost); the OpenRouter adapter is tested through the real
 `openai` SDK against a mock HTTP transport. `ISR_FORGE_LIVE_LLM=1` plus an API key runs the end-to-end test
