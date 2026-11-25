@@ -161,7 +161,8 @@ def test_out_of_envelope_values_ask_for_revision(db: Path) -> None:
 
 # -------------------------------------------------------------------- critic ---
 def test_gates_on_a_balanced_design_pass() -> None:
-    req, sizing, bom, aero, cad = load_design("g2")
+    # the matched G1 V-tail: balanced, kit built (the matched G2 fixture has no kit and is over Group 2)
+    req, sizing, bom, aero, cad = load_design("g1_vtail")
     gates = critic.evaluate_gates(req, sizing, bom, aero, cad)
     assert [g.name for g in gates] == ["static_margin", "lift_to_drag", "collisions_and_group", "reserve"]
     assert all(g.passed for g in gates), gates
@@ -183,7 +184,8 @@ PIN_REASON = "anti-rotation pin: 300 N from the spar's root torque overloads eve
 
 
 def _group_gate(**cad_update: object) -> critic.GateResult:
-    req, sizing, bom, aero, cad = load_design("g2")
+    # a Group 2 quadplane within its limit (the pre-matching G2 record; the matched G2 has no kit and is over it)
+    req, sizing, bom, aero, cad = load_design("legacy_g2")
     gates = critic.evaluate_gates(req, sizing, bom, aero, cad.model_copy(update=cad_update))
     return next(g for g in gates if g.name == "collisions_and_group")
 
@@ -966,7 +968,7 @@ def test_report_lists_propulsion_estimates_as_assumptions(tmp_path: Path) -> Non
 def test_report_without_a_match_has_no_propulsion_section(tmp_path: Path) -> None:
     from tests.test_flight_control import load_design
 
-    req, sizing, bom, *_ = load_design("g1")
+    req, sizing, bom, *_ = load_design("legacy_g1")  # written before propulsion matching: no match record
     inputs = report.ReportInputs(run_id="r1", out_dir=tmp_path, requirements=req, sizing=sizing, bom=bom, aero=None,
                                  cad=None, fcs=None, converged=True, iterations=1)
     assert "## Propulsion match" not in report.render(inputs, report.fallback_narrative(inputs, "no LLM"))
