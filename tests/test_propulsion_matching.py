@@ -459,3 +459,11 @@ def test_a_matched_hybrid_bus_always_has_a_genset_the_bom_accepts(monkeypatch: p
     window = bus_window_v(_cell(tight), tight.series)
     need_w: float = _bom_generator_need_w(tight, context.hotel_w)
     assert any(generator_fits(g, need_w, window) for g in matching.catalog_rows("ice_generators"))
+
+
+def test_a_pack_over_the_part_limit_on_every_bus_names_the_limit() -> None:
+    """Energy no pack under the Battery part limit can hold: a PropulsionMatchError naming the limit, never a raw
+    pydantic ValidationError from building the pack."""
+    endless = tuple(replace(p, duration_s=p.duration_s * 2_000.0) for p in G1_POINTS)
+    with pytest.raises(PropulsionMatchError, match="battery pack over the 200 kg part limit"):
+        match_propulsion(_context(points=endless))

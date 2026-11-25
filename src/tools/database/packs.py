@@ -18,6 +18,13 @@ from src.units import WH_TO_J
 LI_ION_LOADED_MIN_V_CELL: Final[float] = 3.3
 LIPO_LOADED_MIN_V_CELL: Final[float] = 3.5
 LOADED_MIN_V_CELL: Final[dict[str, float]] = {"li_ion": LI_ION_LOADED_MIN_V_CELL, "lipo": LIPO_LOADED_MIN_V_CELL}
+# The Battery part schema's mass bound (read from the schema, so the two never drift apart).
+PACK_MASS_LIMIT_KG: Final[float] = next(m.le for m in Battery.model_fields["mass_kg"].metadata
+                                        if getattr(m, "le", None) is not None)
+
+
+class PackLimitError(ValueError):
+    """The pack for this energy and power would break the Battery part's mass limit (the message says so)."""
 # Relative slack on the parallel-count ceiling: an exact fit must not round up on float noise.
 _CEIL_SLACK: Final[float] = 1e-9
 
@@ -67,6 +74,9 @@ def build_pack(cell: Cell, series: int, energy_j: float, peak_power_w: float,
     mass, length, width, height = pack_envelope(
         capacity_wh, assumptions.specific_energy_wh_kg(chem), assumptions.energy_density_wh_l(chem)
     )
+    if mass > PACK_MASS_LIMIT_KG:
+        raise PackLimitError(f"battery pack over the {PACK_MASS_LIMIT_KG:g} kg part limit: {cell.name} "
+                             f"{series}S{parallel}P would weigh {mass:.1f} kg for {energy_wh:.0f} Wh")
     cell_capacity_ah: float = cell.capacity_wh / cell.nominal_voltage_v
     return Battery(
         name=f"{cell.name} {series}S{parallel}P", chemistry=chem, capacity_wh=capacity_wh,

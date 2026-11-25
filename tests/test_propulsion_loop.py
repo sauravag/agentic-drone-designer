@@ -10,6 +10,7 @@ from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.propulsion import OperatingPoint, PropulsionMatch
 from src.schemas.state import PhaseResult, SizingOutput
 from src.tools.database.matcher import select_bom
+from src.tools.database.packs import PACK_MASS_LIMIT_KG
 from src.tools.database.seed_data import catalog_rows, seed_database
 from src.tools.propulsion.match_types import MatchContext, PropulsionMatchError
 from src.tools.sizing import propulsion_loop as loop
@@ -443,3 +444,22 @@ def test_auto_propulsion_keeps_a_matching_failure_of_both_powertrains_a_propulsi
     message: str = str(failure.value)
     assert message.startswith("Neither powertrain closes the mission")
     assert "electric: diameter: no cruise propeller" in message and "series hybrid: diameter" in message
+
+
+# ------------------------------------------------------------------ battery part limit (review regression)
+HEAVY_PAYLOAD = G1_ELECTRIC_FW.model_copy(update={"payload_mass_kg": 150.0, "payload_power_w": 3000.0})
+
+
+def test_a_mission_whose_electric_pack_breaks_the_part_limit_falls_back_to_the_hybrid() -> None:
+    """Master sized this as a 260 kg series hybrid; the electric attempt's pack (> 200 kg) must be a readable
+    matching refusal so the auto fallback tries the hybrid, never a raw pydantic ValidationError."""
+    sized: SizingOutput = size_aircraft(HEAVY_PAYLOAD)
+    assert sized.propulsion_type == "series_hybrid"
+
+
+def test_forced_electric_skips_buses_whose_pack_breaks_the_part_limit() -> None:
+    """Forced electric: the bus whose pack came out at 229.5 kg is rejected and another bus with a pack inside the
+    part limit is matched, so the design sizes (Group 3) instead of raising a raw pydantic ValidationError. (Its
+    BOM stops earlier, on the payload catalogue: no 150 kg payload part.)"""
+    sized: SizingOutput = size_aircraft(HEAVY_PAYLOAD.model_copy(update={"propulsion_type": "electric"}))
+    assert sized.propulsion_type == "electric" and sized.battery_mass_kg <= PACK_MASS_LIMIT_KG

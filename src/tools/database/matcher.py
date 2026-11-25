@@ -32,7 +32,7 @@ from src.schemas.components import (
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.payload_catalog import payload_display_name, payload_spec
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS
-from src.tools.database.packs import build_pack, bus_window_v
+from src.tools.database.packs import PackLimitError, build_pack, bus_window_v
 from src.tools.database.seed_data import CATALOG_TABLES
 
 SAFETY_MARGIN: float = 1.15
@@ -130,8 +130,11 @@ def match_battery(db_path: Path, cell_name: str, series: int, required_energy_j:
     """The pack of the matched cell and series count with the fewest parallel strings for the sized energy and peak
     power (spec 6.3). No extra margin: sizing already holds the reserve, and rounding P up is the only step."""
     cell: Cell = part_by_name(db_path, "cells", cell_name, Cell)
-    return build_pack(cell, series, _require_positive(required_energy_j, "required_energy_j"),
-                      _require_positive(required_peak_power_w, "required_peak_power_w"), assumptions)
+    try:
+        return build_pack(cell, series, _require_positive(required_energy_j, "required_energy_j"),
+                          _require_positive(required_peak_power_w, "required_peak_power_w"), assumptions)
+    except PackLimitError as exc:  # a design error the pipeline reports, never a raw schema ValidationError
+        raise ComponentNotFoundError(str(exc)) from exc
 
 
 def match_payload(

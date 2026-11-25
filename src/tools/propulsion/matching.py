@@ -27,7 +27,7 @@ from src.schemas.components import Cell, Esc, IceGenerator, Propeller
 from src.schemas.propulsion import PropulsionMatch
 from src.tools.database.catalog_variants import VOLTAGE_EPS_V
 from src.tools.database.matcher import SAFETY_MARGIN, generator_fits
-from src.tools.database.packs import LOADED_MIN_V_CELL, bus_window_v
+from src.tools.database.packs import LOADED_MIN_V_CELL, PackLimitError, bus_window_v
 from src.tools.database.seed_data import catalog_rows
 from src.tools.propulsion.match_result import assemble_match
 from src.tools.propulsion.match_search import (
@@ -62,13 +62,19 @@ def match_propulsion(context: MatchContext) -> PropulsionMatch:
     buses: tuple[Bus, ...] = _buses(context, classes)
     cruise: _RoleResult = _role(context, False, buses)
     lift: Optional[_RoleResult] = _role(context, True, buses) if context.lift_rotor_count else None
-    chosen: Optional[tuple[Option, Optional[Option]]] = _best_set(context, buses, cruise, lift)
-    if chosen is None:
+    ranked: list[tuple[Option, Optional[Option]]] = _ranked_sets(context, buses, cruise, lift)
+    if not ranked:
         raise _failure(context, cruise, lift)
-    cruise_option, lift_option = chosen
-    cells = classes[cruise_option.bus.key[:3]]
-    return assemble_match(context, cruise_option, lift_option, cells, _hotel_kg(context, cruise_option.bus),
-                          _skipped_propellers(cruise, lift))
+    pack_limits: list[str] = []
+    for cruise_option, lift_option in ranked:  # best first; a bus whose pack breaks the part limit is rejected
+        cells = classes[cruise_option.bus.key[:3]]
+        try:
+            return assemble_match(context, cruise_option, lift_option, cells,
+                                  _hotel_kg(context, cruise_option.bus), _skipped_propellers(cruise, lift))
+        except PackLimitError as exc:
+            pack_limits.append(str(exc))
+    raise PropulsionMatchError(f"no propulsion set meets every matching rule; limiting constraints - "
+                               f"{pack_limits[0]} (every one of the {len(ranked)} feasible buses)")
 
 
 def _skipped_propellers(cruise: _RoleResult, lift: Optional[_RoleResult]) -> tuple[str, ...]:
@@ -264,8 +270,9 @@ def _hotel_kg(context: MatchContext, bus: Bus) -> float:
     return context.hotel_w * context.mission_duration_s * bus.storage_kg_per_j
 
 
-def _best_set(context: MatchContext, buses: tuple[Bus, ...], cruise: _RoleResult,
-              lift: Optional[_RoleResult]) -> Optional[tuple[Option, Optional[Option]]]:
+def _ranked_sets(context: MatchContext, buses: tuple[Bus, ...], cruise: _RoleResult,
+                 lift: Optional[_RoleResult]) -> list[tuple[Option, Optional[Option]]]:
+    """Every bus's (cruise, lift) set, best (least objective, then hardware, S, names) first."""
     choices: list[tuple[tuple[object, ...], Option, Optional[Option]]] = []
     for bus in buses:
         c: Optional[Option] = cruise.best.get(bus.key)
@@ -275,10 +282,7 @@ def _best_set(context: MatchContext, buses: tuple[Bus, ...], cruise: _RoleResult
         total: float = c.objective_kg + (lo.objective_kg if lo else 0.0) + _hotel_kg(context, bus)
         hardware: float = c.hardware_kg + (lo.hardware_kg if lo else 0.0)
         choices.append(((total, hardware, bus.series, c.names, lo.names if lo else ()), c, lo))
-    if not choices:
-        return None
-    _, c, lo = min(choices, key=lambda item: item[0])
-    return c, lo
+    return [(c, lo) for _, c, lo in sorted(choices, key=lambda item: item[0])]
 
 
 def _limits(rejections: tuple[Rejection, ...]) -> str:

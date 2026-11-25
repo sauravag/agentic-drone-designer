@@ -6,7 +6,7 @@ from typing import Final, Optional
 
 from src.schemas.components import Battery, Cell
 from src.schemas.propulsion import OperatingPoint, PropulsionMatch
-from src.tools.database.packs import build_pack
+from src.tools.database.packs import PackLimitError, build_pack
 from src.tools.propulsion.match_search import Option, ideal_power_w
 from src.tools.propulsion.match_types import FlightPoint, MatchContext, PropulsionMatchError
 from src.tools.propulsion.prop_tables import propeller_table
@@ -80,7 +80,15 @@ def _cell(context: MatchContext, options: tuple[Option, ...], cells: tuple[Cell,
     """The cell of the bus's voltage class whose pack for this energy and peak power is lightest (then by name)."""
     series: int = options[0].bus.series
     energy, peak = _pack_energy_j(context, options), _peak_power_w(context, options)
-    packs = [(build_pack(c, series, energy, peak, context.assumptions), c) for c in cells]
+    packs: list[tuple[Battery, Cell]] = []
+    refused: list[PackLimitError] = []
+    for c in cells:
+        try:
+            packs.append((build_pack(c, series, energy, peak, context.assumptions), c))
+        except PackLimitError as exc:  # this cell's pack breaks the part limit; another cell's may not
+            refused.append(exc)
+    if not packs:
+        raise refused[0]
     pack, cell = min(packs, key=lambda item: (item[0].mass_kg, item[1].name))
     return cell, pack
 

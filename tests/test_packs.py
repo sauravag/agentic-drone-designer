@@ -125,3 +125,17 @@ def test_pack_at_the_specific_energy_ceiling_still_validates() -> None:
         pack = build_pack(cell, 14, parallel_energy_wh * 3600.0, 1_000.0,
                           DesignAssumptions(liion_specific_energy_wh_kg=500.0))
         assert pack.specific_energy_wh_kg <= 500.0
+
+
+def test_a_pack_over_the_battery_part_limit_is_a_readable_refusal(tmp_path: Path) -> None:
+    from src.tools.database.matcher import ComponentNotFoundError, match_battery
+    from src.tools.database.packs import PACK_MASS_LIMIT_KG, PackLimitError
+
+
+    cell = catalog_rows("cells")[0]
+    huge_j: float = 100_000.0 * WH_TO_J  # 100 kWh: far above the part limit at any specific energy
+    with pytest.raises(PackLimitError, match=f"over the {PACK_MASS_LIMIT_KG:g} kg part limit"):
+        build_pack(cell, 12, huge_j, 1000.0, DEFAULT_ASSUMPTIONS)
+    db = seed_database(tmp_path / "c.db")
+    with pytest.raises(ComponentNotFoundError, match="part limit"):
+        match_battery(db, cell.name, 12, huge_j, 1000.0)
