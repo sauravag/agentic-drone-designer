@@ -26,6 +26,7 @@ from typing import Any, Callable, Final, Mapping, Optional, Sequence
 
 from pymavlink import mavutil
 
+from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import (AeroStabilityOutput, CADArtifacts, FCSArtifacts, PlantCaseResult,
@@ -336,9 +337,17 @@ def _shipped_attempt(flown: Sequence[FlownAttempt]) -> FlownAttempt:
     return min(flown, key=lambda f: (_attempt_severity(f[0]), f[0].gain_scale))
 
 
+def fcs_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
+                     cad: CADArtifacts, assumptions: DesignAssumptions) -> FlightModel:
+    """The flight model SITL flies, with the run's technology constants (the pusher installation factor)."""
+    return build_flight_model(req, sizing, bom, aero, cad,
+                              pusher_installation_factor=assumptions.pusher_efficiency_factor)
+
+
 def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
                             aero: AeroStabilityOutput, cad: CADArtifacts, out_dir: Path,
-                            config: SitlConfig = SitlConfig(), max_attempts: int = MAX_ATTEMPTS) -> FCSArtifacts:
+                            assumptions: DesignAssumptions, config: SitlConfig = SitlConfig(),
+                            max_attempts: int = MAX_ATTEMPTS) -> FCSArtifacts:
     """Generate ardupilot.param, fly it in SITL and retry with two-way gain steps (`next_gain_scale`).
 
     The loop ends when an attempt passes, a step would reverse or pass MAX_GAIN_SCALE, or attempts run out.
@@ -346,7 +355,7 @@ def generate_and_verify_fcs(req: OperationalRequirements, sizing: SizingOutput, 
     least severe attempt whose nominal flight completed (R42, `_shipped_attempt`)."""
     if not sitl_available(config.binary):
         raise SitlUnavailableError(f"{config.binary} not found: run inside the ISR-Forge Docker image")
-    model: FlightModel = build_flight_model(req, sizing, bom, aero, cad)
+    model: FlightModel = fcs_flight_model(req, sizing, bom, aero, cad, assumptions)
     attempts: list[AttemptResult] = []
     band: StaticMarginBand = layouts.static_margin_band(sizing.airframe_layout)
     flown: list[FlownAttempt] = []

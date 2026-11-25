@@ -16,6 +16,7 @@ from typing import Callable, Final, Optional
 
 from pydantic import BaseModel
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import DEFAULT_FABRICATION, FabricationSettings
 from src.schemas.requirements import OperationalRequirements
@@ -199,11 +200,12 @@ def run_aero_cad(sizing: SizingOutput, bom: SelectedBOM, req: OperationalRequire
 
 
 def run_sitl(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
-          cad: CADArtifacts, out_dir: Path, progress: Progress) -> FCSArtifacts:
+          cad: CADArtifacts, out_dir: Path, progress: Progress, assumptions: DesignAssumptions) -> FCSArtifacts:
+    """Fly SITL with the run's `assumptions` (the ones sizing used)."""
     from src.tools.flight_control.sitl_validator import generate_and_verify_fcs  # pymavlink + JSBSim
 
     progress("Generating ArduPilot parameters and flying the SITL take-off and doublet test")
-    return generate_and_verify_fcs(req, sizing, bom, aero, cad, out_dir)
+    return generate_and_verify_fcs(req, sizing, bom, aero, cad, out_dir, assumptions)
 
 
 def _summary(run_id: str, stages: dict[str, bool], status: str, **extra: object) -> dict[str, object]:
@@ -228,7 +230,7 @@ def _execute(req: OperationalRequirements, run_id: str, out_dir: Path, db_path: 
         _write_json(out_dir / "aero.json", aero)
         _write_json(out_dir / "cad.json", cad)
         if stages["sitl"]:
-            fcs = run_sitl(req, sizing, bom, aero, cad, out_dir, progress)
+            fcs = run_sitl(req, sizing, bom, aero, cad, out_dir, progress, DEFAULT_ASSUMPTIONS)  # sized with them
             _write_json(out_dir / "fcs.json", fcs)
     warnings = design_warnings(sizing, aero, cad, fcs) + payload_warnings(req, bom)
     viewer_error: Optional[str] = (viewer_warning(out_dir)

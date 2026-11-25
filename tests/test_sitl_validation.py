@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import pytest
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import FCSArtifacts
 from src.tools.flight_control import param_generator as pg
@@ -102,7 +103,7 @@ def test_retry_loop_stops_at_the_maximum_gain_scale(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
-    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS)
     assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3 + [1 / 0.75**2] * 3)
     assert not fcs.passed and fcs.attempts == 3
 
@@ -120,7 +121,7 @@ def test_retry_loop_raises_gains_after_a_settling_only_failure(monkeypatch: pyte
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
-    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS)
     assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3)
     assert fcs.passed and fcs.attempts == 2 and fcs.gain_scale == pytest.approx(1 / 0.75)
 
@@ -138,7 +139,7 @@ def test_retry_loop_stops_when_the_gain_step_would_reverse(monkeypatch: pytest.M
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
-    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS)
     assert scales == pytest.approx([1.0] * 3 + [1 / 0.75] * 3)  # settling up, then overshoot would reverse: stop
     assert not fcs.passed and fcs.attempts == 2
 
@@ -155,7 +156,7 @@ def test_a_failed_run_ships_the_least_severe_attempt(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
     inputs = load_design("g1")
-    fcs = sv.generate_and_verify_fcs(*inputs, tmp_path)
+    fcs = sv.generate_and_verify_fcs(*inputs, tmp_path, DEFAULT_ASSUMPTIONS)
     assert not fcs.passed and fcs.attempts == 2
     assert fcs.gain_scale == pytest.approx(1.0) and 3.0 <= fcs.roll_settling_s < 3.6 and fcs.roll_overshoot < 0.2
     assert json.loads((tmp_path / "sitl_report.json").read_text())["replay_attempt"] == 1
@@ -187,7 +188,7 @@ def test_retry_loop_scales_gains_by_0_75_until_it_passes(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
-    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS)
     assert scales == pytest.approx([1.0] * 3 + [0.75] * 3 + [0.5625] * 3)
     assert fcs.passed and fcs.attempts == 3 and fcs.gain_scale == pytest.approx(0.5625)
     report = json.loads((tmp_path / "sitl_report.json").read_text())
@@ -205,7 +206,7 @@ def test_validator_raises_when_no_flight_completes(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(sv, "_attempt", crash)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
     with pytest.raises(sv.SitlValidationError, match="crash"):
-        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
+        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS, max_attempts=2)
     report = json.loads((tmp_path / "sitl_report.json").read_text())
     assert report["passed"] is False and report["replay_attempt"] is None
 
@@ -224,7 +225,7 @@ def test_validator_says_no_nominal_flight_completed_when_only_perturbed_plants_f
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
     with pytest.raises(sv.SitlValidationError, match="no nominal SITL flight completed"):
-        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
+        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS, max_attempts=2)
 
 
 def test_worst_case_takes_each_metric_from_its_worst_case() -> None:
@@ -279,7 +280,7 @@ def test_every_attempt_flies_nominal_and_both_perturbed_plants(monkeypatch: pyte
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
-    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS)
     assert len(flights) == 6
     assert [f[0] for f in flights] == ["attempt_1", "hot", "sluggish", "attempt_2", "hot", "sluggish"]
     assert len({f[2] for f in flights[:3]}) == 1 and len({f[2] for f in flights[3:]}) == 1
@@ -325,7 +326,7 @@ def test_a_plant_that_always_crashes_fails_end_to_end(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(sv, "_attempt", fake_attempt)
     monkeypatch.setattr(sv, "sitl_available", lambda binary: True)
-    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, max_attempts=2)
+    fcs = sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS, max_attempts=2)
     assert fcs.passed is False and fcs.governing_case == "hot"
     hot = next(c for c in fcs.perturbation_cases if c.case == "hot")
     assert hot.error
@@ -345,7 +346,7 @@ def test_old_fcs_records_validate_with_nominal_governing() -> None:
 def test_validator_requires_arduplane(tmp_path: Path) -> None:
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     with pytest.raises(sv.SitlUnavailableError):
-        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, config=sv.SitlConfig(binary="no-such-arduplane"))
+        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS, config=sv.SitlConfig(binary="no-such-arduplane"))
 
 
 # ------------------------------------------------------------- SITL acceptance ---
@@ -358,7 +359,7 @@ def test_sitl_acceptance(case: str, tmp_path: Path) -> None:
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     if not sv.sitl_available():
         pytest.skip("arduplane not installed (run in the Docker image)")
-    fcs = sv.generate_and_verify_fcs(*load_design(case), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_design(case), tmp_path, DEFAULT_ASSUMPTIONS)
     assert fcs.passed, json.loads(Path(fcs.sitl_report_path).read_text())["attempts"]
     assert fcs.roll_overshoot < 0.20 and fcs.pitch_overshoot < 0.20
     assert fcs.roll_settling_s < 3.0 and fcs.pitch_settling_s < 3.0
@@ -429,7 +430,7 @@ def test_vtail_passes_the_full_robustness_check(tmp_path: Path) -> None:
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     if not sv.sitl_available():
         pytest.skip("arduplane not installed (run in the Docker image)")
-    fcs = sv.generate_and_verify_fcs(*load_vtail_design(), tmp_path)
+    fcs = sv.generate_and_verify_fcs(*load_vtail_design(), tmp_path, DEFAULT_ASSUMPTIONS)
     assert fcs.passed, fcs
     assert {c.case for c in fcs.perturbation_cases} == {"nominal", "hot", "sluggish"}
     for case in fcs.perturbation_cases:
@@ -647,7 +648,7 @@ def test_hand_launched_g1_passes_sitl(tmp_path: Path) -> None:
     sizing = size_aircraft(req)
     bom = select_bom(seed_database(tmp_path / "cots_catalog.db"), component_needs(sizing, req))
     aero, cad = build_aero_cad(sizing, bom, req.service_ceiling_m, tmp_path / "aero_cad")
-    fcs = sv.generate_and_verify_fcs(req, sizing, bom, aero, cad, tmp_path)
+    fcs = sv.generate_and_verify_fcs(req, sizing, bom, aero, cad, tmp_path, DEFAULT_ASSUMPTIONS)
     assert fcs.passed, json.loads(Path(fcs.sitl_report_path).read_text())["attempts"]
     params = pg.read_param_file(Path(fcs.param_path))
     assert not {name for name in params if name.startswith("TKOFF_")}

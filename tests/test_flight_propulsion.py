@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.components import SelectedBOM
 from src.tools.database.catalog_variants import ESC_EFFICIENCY_HV, ESC_EFFICIENCY_SMALL, motor_constants
 from src.tools.database.packs import LI_ION_LOADED_MIN_V_CELL, LIPO_LOADED_MIN_V_CELL
@@ -225,3 +226,37 @@ def test_transition_time_is_solved_once_per_model(matched_g2: Any, monkeypatch: 
     solved: int = len(calls)
     assert solved > 0 and fm.transition_time_s(model) == first and len(calls) == solved
     assert fm.transition_time_s(replace(model, mass_kg=2 * model.mass_kg)) > first  # a changed model re-solves
+
+
+# ------------------------------------------------------------- the run's assumptions reach SITL ---
+LOW_PUSHER_FACTOR: float = 0.85
+
+
+def test_sitl_flight_model_takes_the_runs_pusher_factor() -> None:
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    inputs = load_design("g1_vtail")
+    lossy = DEFAULT_ASSUMPTIONS.model_copy(update={"pusher_efficiency_factor": LOW_PUSHER_FACTOR})
+    default_model = sv.fcs_flight_model(*inputs, DEFAULT_ASSUMPTIONS)
+    lossy_model = sv.fcs_flight_model(*inputs, lossy)
+    assert lossy_model.cruise_propulsor.installation_factor == LOW_PUSHER_FACTOR
+    v: float = lossy_model.v_cruise_ms
+    assert lossy_model.cruise_thrust_n(0.5, v) == pytest.approx(
+        default_model.cruise_thrust_n(0.5, v) * LOW_PUSHER_FACTOR / DEFAULT_ASSUMPTIONS.pusher_efficiency_factor)
+    assert pg.envelope_params(lossy_model)["TRIM_THROTTLE"] > pg.envelope_params(default_model)["TRIM_THROTTLE"]
+
+
+def test_pipeline_and_agent_hand_the_assumptions_to_sitl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
+    from src import pipeline
+    from src.agent import nodes
+    seen: list[Any] = []
+    monkeypatch.setattr(sv, "generate_and_verify_fcs", lambda *args, **kwargs: seen.append(args[6]) or "fcs")
+    lossy = DEFAULT_ASSUMPTIONS.model_copy(update={"pusher_efficiency_factor": LOW_PUSHER_FACTOR})
+    req, sizing, bom, aero, cad = load_design("g1_vtail")
+    assert pipeline.run_sitl(req, sizing, bom, aero, cad, tmp_path, lambda _: None, lossy) == "fcs"
+    monkeypatch.setattr(nodes, "_write", lambda *args: None)
+    state = {"requirements": req, "sizing_results": sizing, "selected_bom": bom, "aero_stability": aero,
+             "cad_artifacts": cad, "out_dir": str(tmp_path), "design_assumptions": lossy}
+    ctx = type("Ctx", (), {"progress": staticmethod(lambda _: None)})()
+    assert nodes.generate_and_verify_fcs(state, ctx) == {"fcs_artifacts": "fcs"}
+    assert seen == [lossy, lossy]

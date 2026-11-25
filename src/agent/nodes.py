@@ -143,7 +143,7 @@ def generate_and_verify_fcs(state: DesignState, ctx: AgentContext) -> Update:
     req, sizing, bom, aero, cad, out_dir = _require(state, "requirements", "sizing_results", "selected_bom",
                                                     "aero_stability", "cad_artifacts", "out_dir")
     try:
-        fcs = pipeline.run_sitl(req, sizing, bom, aero, cad, Path(out_dir), ctx.progress)
+        fcs = pipeline.run_sitl(req, sizing, bom, aero, cad, Path(out_dir), ctx.progress, _assumptions(state))
     except pipeline.DESIGN_ERRORS as exc:
         return {"sitl_error": f"flight control / SITL could not complete: {exc}"}
     _write(state, "fcs.json", fcs)
