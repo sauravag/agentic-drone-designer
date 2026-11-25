@@ -4,13 +4,16 @@ mass.
 
 Rules: throttle <= MAX_MATCH_THROTTLE at the nominal bus, and <= 1.0 at the end-of-reserve loaded bus for
 check_sagged points; current <= the motor's max; shaft power within the motor's and the propeller's ratings; tip Mach
-<= PROP_TIP_MACH_MAX; cruise diameter <= the layout's limit; the lift rotor is the smallest catalogue diameter at or
-above the disk-loading minimum; the lightest ESC with continuous current >= ESC_CURRENT_MARGIN x the highest matched
-current and voltage >= the charged pack; series hybrid: only series counts with a generator voltage variant inside
-the bus window. Ranking uses electrical power only (never prop_efficiency at climb points).
+<= PROP_TIP_MACH_MAX; cruise diameter <= the layout's limit; lift rotors from the disk-loading minimum diameter up to
+LIFT_ROTOR_MAX_OVERSIZE x it (the next size up across a catalogue gap), the objective picks among them; the lightest
+ESC with continuous current >= ESC_CURRENT_MARGIN x the highest matched current and voltage >= the charged pack;
+series hybrid: only series counts with a generator voltage variant inside the bus window, and every sustained forward
+point within what the bus's largest genset carries after sizing's GENERATOR_MARGIN and the BOM's SAFETY_MARGIN.
+Ranking uses electrical power only (never prop_efficiency at climb points).
 
 Objective (controller's ruling 3): hardware mass + energy-storage mass for the mission energy at this set's electrical
-powers (+ hotel load): battery = energy / specific energy; hybrid fuel = energy x BSFC x (1 + FUEL_SYSTEM_FRACTION).
+powers (+ hotel load): battery = energy / specific energy. Hybrid: per point, the power up to the generator's share is
+priced as fuel (BSFC x (1 + FUEL_SYSTEM_FRACTION)) and the power above it as buffer battery (`priced_storage_kg`).
 Ties: lower hardware mass, then lower series count, then names (deterministic).
 """
 
@@ -19,8 +22,11 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Callable, Final, Optional, Union
 
+from src.schemas.assumptions import Chemistry
 from src.schemas.components import Cell, Esc, IceGenerator, Propeller
 from src.schemas.propulsion import PropulsionMatch
+from src.tools.database.catalog_variants import VOLTAGE_EPS_V
+from src.tools.database.matcher import SAFETY_MARGIN, generator_fits
 from src.tools.database.packs import LOADED_MIN_V_CELL, bus_window_v
 from src.tools.database.seed_data import catalog_rows
 from src.tools.propulsion.match_result import assemble_match
@@ -33,16 +39,15 @@ from src.tools.propulsion.match_types import (  # noqa: F401  (re-exported: the 
     PropulsionMatchError,
 )
 from src.tools.sizing.mass_model import FUEL_SYSTEM_FRACTION
-from src.tools.sizing.mission_profile import HYBRID_BUFFER_SOC_FLOOR
+from src.tools.sizing.mission_profile import GENERATOR_MARGIN, HYBRID_BUFFER_SOC_FLOOR
 from src.units import KWH_TO_J, WH_TO_J
 
 DIAMETER_TOL_M: Final[float] = 1e-9
 LIFT_ROTOR_MAX_OVERSIZE: Final[float] = 1.25  # largest lift rotor considered, x the disk-loading diameter (L2)
-SERIES_EPS: Final[float] = 1e-6  # floor(rated voltage / 4.2 V) must not lose a cell to float noise
 TOP_LIMITS_REPORTED: Final[int] = 3
 MOTOR_CONSTANTS: Final[tuple[str, ...]] = ("kv", "rm_ohm", "i0_a", "max_current_a")
-BusKey = tuple[str, float, float, int]
-VoltageClass = tuple[str, float, float]
+BusKey = tuple[Chemistry, float, float, int]
+VoltageClass = tuple[Chemistry, float, float]
 
 
 @dataclass(frozen=True)
@@ -76,18 +81,18 @@ def _skipped_propellers(cruise: _RoleResult, lift: Optional[_RoleResult]) -> tup
 # ---------------------------------------------------------------- buses
 
 
-def _storage_kg_per_j(context: MatchContext, chemistry: str) -> float:
+def _storage_kg_per_j(context: MatchContext, chemistry: Chemistry) -> float:
     a = context.assumptions
     if context.is_hybrid:
         return a.bsfc_kg_per_kwh / KWH_TO_J * (1.0 + FUEL_SYSTEM_FRACTION)
-    return 1.0 / (a.specific_energy_wh_kg(chemistry) * WH_TO_J)  # type: ignore[arg-type]
+    return 1.0 / (a.specific_energy_wh_kg(chemistry) * WH_TO_J)
 
 
-def _buffer_kg_per_j(context: MatchContext, chemistry: str) -> Optional[float]:
+def _buffer_kg_per_j(context: MatchContext, chemistry: Chemistry) -> Optional[float]:
     """Hybrid: the LiPo buffer's mass per joule above the generator (sizing keeps HYBRID_BUFFER_SOC_FLOOR unused)."""
     if not context.is_hybrid:
         return None
-    specific: float = context.assumptions.specific_energy_wh_kg(chemistry)  # type: ignore[arg-type]
+    specific: float = context.assumptions.specific_energy_wh_kg(chemistry)
     return 1.0 / (specific * WH_TO_J * (1.0 - HYBRID_BUFFER_SOC_FLOOR))
 
 
@@ -106,14 +111,21 @@ def _voltage_classes(context: MatchContext) -> dict[VoltageClass, tuple[Cell, ..
 
 def _max_series(max_cell_v: float) -> int:
     ratings: list[float] = [m.voltage_v for table in ("cruise_motors", "vtol_motors") for m in catalog_rows(table)]
-    return max(int(math.floor(v / max_cell_v + SERIES_EPS)) for v in ratings)
+    return max(int(math.floor((v + VOLTAGE_EPS_V) / max_cell_v)) for v in ratings)  # no cell lost to float noise
 
 
 def _generator_cap_w(cell: Cell, series: int, generators: tuple[IceGenerator, ...]) -> float:
-    """Most continuous power among generator variants whose output sits inside the bus window (0 when none)."""
-    low, high = bus_window_v(cell, series)
-    return max((g.continuous_power_w for g in generators
-                if g.output_voltage_v is not None and low <= g.output_voltage_v <= high), default=0.0)
+    """Most continuous power among generator variants whose output sits inside the bus window (0 when none), by
+    the BOM's own window rule."""
+    window: tuple[float, float] = bus_window_v(cell, series)
+    return max((g.continuous_power_w for g in generators if generator_fits(g, 0.0, window)), default=0.0)
+
+
+def _sustained_cap_w(bus: Bus, hotel_w: float) -> float:
+    """The most a sustained forward point may draw on this hybrid bus. Sizing asks the BOM for a genset of
+    GENERATOR_MARGIN x (cruise + hotel) and the BOM adds its SAFETY_MARGIN, so a bus whose largest genset covers
+    both margins is one select_bom can always fit."""
+    return bus.generator_cap_w / (SAFETY_MARGIN * GENERATOR_MARGIN) - hotel_w
 
 
 def _buses(context: MatchContext, classes: dict[VoltageClass, tuple[Cell, ...]]) -> tuple[Bus, ...]:
@@ -224,7 +236,7 @@ def _role(context: MatchContext, is_lift: bool, buses: tuple[Bus, ...]) -> _Role
     escs: tuple[Esc, ...] = tuple(sorted(catalog_rows("escs"), key=lambda e: (e.mass_kg, e.name)))
 
     def cap_w(bus: Bus) -> float:  # a hybrid's generator carries the cruise propulsor and the hotel load
-        return math.inf if is_lift else bus.generator_cap_w - context.hotel_w
+        return math.inf if is_lift else _sustained_cap_w(bus, context.hotel_w)
 
     def share_w(bus: Bus) -> float:  # what the generator gives this role at a point (the rest is buffer)
         if not context.is_hybrid:

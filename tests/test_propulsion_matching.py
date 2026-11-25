@@ -12,7 +12,8 @@ import pytest
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.components import Cell, CruiseMotor, Esc, Propeller, VtolMotor
 from src.schemas.propulsion import OperatingPoint, PropulsionMatch
-from src.tools.database.packs import charged_voltage_v
+from src.tools.database.matcher import generator_fits
+from src.tools.database.packs import bus_window_v, charged_voltage_v
 from src.tools.database.seed_data import catalog_rows
 from src.tools.propulsion import match_search, matching
 from src.tools.propulsion.matching import (
@@ -22,6 +23,7 @@ from src.tools.propulsion.matching import (
 from src.tools.propulsion.match_search import ESC_BURST_DURATION_S
 from src.tools.propulsion.prop_tables import propeller_table
 from src.tools.sizing.errors import SizingDivergenceError
+from src.tools.sizing.mission_profile import GENERATOR_MARGIN
 
 RHO, MU, SOUND = 1.225, 1.81e-5, 340.3
 G1_MAX_CRUISE_D_M: Final[float] = 0.26  # 8 and 10 inch props only: keeps the table builds few
@@ -422,3 +424,38 @@ def test_a_light_quadplane_still_gets_its_disk_loading_rotor_despite_a_high_rati
     match = match_propulsion(context)
     rotor: Propeller = _row("propellers", match.lift_rotor)  # type: ignore[assignment]
     assert rotor.diameter_m >= 0.471
+
+
+def test_air_off_the_density_axis_is_its_own_rule_not_tip_mach() -> None:
+    thin = tuple(replace(p, rho=0.25) for p in G1_POINTS)  # reference mu and a: equivalent density = rho
+    with pytest.raises(PropulsionMatchError) as failure:
+        match_propulsion(_context(points=thin))
+    message: str = str(failure.value)
+    assert "air outside the propeller tables (equivalent density 0.25 kg/m³ not in [" in message
+    assert match_search.RULE_TABLE not in message
+
+
+def _bom_generator_need_w(match: PropulsionMatch, hotel_w: float) -> float:
+    """What sizing hands the BOM: GENERATOR_MARGIN x (the highest sustained forward electrical power + hotel); the
+    sustained points are the ones the generator carries (not the check_sagged climb, which the buffer helps)."""
+    sustained_names = {p.name for p in G1_POINTS if not p.check_sagged}
+    sustained = [p.electrical_power_w for p in match.operating_points
+                 if p.propulsor == "cruise" and p.flight_point in sustained_names]
+    return GENERATOR_MARGIN * (max(sustained) + hotel_w)
+
+
+def test_a_matched_hybrid_bus_always_has_a_genset_the_bom_accepts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The matcher's generator cap uses the BOM's margins: a set that passes matching cannot fail select_bom."""
+    context = _context(is_hybrid=True, chemistry="lipo")
+    free: PropulsionMatch = match_propulsion(context)
+    # gensets just above the free match's cruise + hotel: enough without the margins, too small with them
+    rating_w: float = 1.1 * (_bom_generator_need_w(free, context.hotel_w) / GENERATOR_MARGIN)
+    _patched_rows(monkeypatch, "ice_generators",
+                  lambda rows: [g.model_copy(update={"continuous_power_w": rating_w}) for g in rows])
+    try:
+        tight: PropulsionMatch = match_propulsion(context)
+    except PropulsionMatchError:
+        return  # no set fits these gensets with the margins: refused at matching, not at select_bom
+    window = bus_window_v(_cell(tight), tight.series)
+    need_w: float = _bom_generator_need_w(tight, context.hotel_w)
+    assert any(generator_fits(g, need_w, window) for g in matching.catalog_rows("ice_generators"))

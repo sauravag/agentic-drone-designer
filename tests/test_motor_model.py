@@ -5,7 +5,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel
 
 from src.schemas.components import CruiseMotor, Esc, VtolMotor
 from src.tools.database.matcher import ComponentNotFoundError, part_by_name
@@ -136,7 +135,7 @@ def test_catalog_rows_match_seeded_database(tmp_path: Path) -> None:
         for table in ("cruise_motors", "vtol_motors", "propellers", "escs"):
             (count,) = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
             assert count == len(catalog_rows(table)), table
-    assert part_by_name(db, "escs", catalog_rows("escs")[0].name) == catalog_rows("escs")[0].model_copy(
+    assert part_by_name(db, "escs", catalog_rows("escs")[0].name, Esc) == catalog_rows("escs")[0].model_copy(
         update={"id": 1}
     )
 
@@ -157,13 +156,19 @@ def test_legacy_motor_row_without_constants_loads() -> None:
 def test_part_by_name_missing_raises(tmp_path: Path) -> None:
     db = seed_database(tmp_path / "c.db")
     with pytest.raises(ComponentNotFoundError, match="escs.*no-such-esc"):
-        part_by_name(db, "escs", "no-such-esc")
+        part_by_name(db, "escs", "no-such-esc", Esc)
 
 
 def test_part_by_name_returns_row(tmp_path: Path) -> None:
     db = seed_database(tmp_path / "c.db")
-    row: BaseModel = part_by_name(db, "cruise_motors", "Outrunner 2814-1009KV")
+    row: CruiseMotor = part_by_name(db, "cruise_motors", "Outrunner 2814-1009KV", CruiseMotor)
     assert row.kv == 1009.0
+
+
+def test_part_by_name_refuses_the_wrong_model(tmp_path: Path) -> None:
+    db = seed_database(tmp_path / "c.db")
+    with pytest.raises(TypeError, match="cruise_motors rows are CruiseMotor, not Esc"):
+        part_by_name(db, "cruise_motors", "Outrunner 2814-1009KV", Esc)
 
 
 def test_every_motor_has_an_esc_in_its_own_lowest_adequate_voltage_class() -> None:

@@ -426,3 +426,20 @@ def test_the_sized_record_stores_part_masses_and_chemistry(g1: SizingOutput) -> 
     assert match is not None and match.cruise_motor_kg is not None and match.cell_chemistry is not None
     cell = next(c for c in catalog_rows("cells") if c.name == match.cell_name)
     assert match.cell_chemistry == cell.chemistry
+
+
+def test_auto_propulsion_keeps_a_matching_failure_of_both_powertrains_a_propulsion_error(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under propulsion "auto" the hybrid fallback's matching failure must stay a PropulsionMatchError (the agent
+    routes it to the propulsion stage), carrying both powertrains' reasons. Real size_aircraft: only the catalogue
+    is cut down, to lift rotors alone, so neither powertrain has a cruise propeller."""
+    from src.tools.propulsion import matching
+
+    real_rows = matching.catalog_rows
+    monkeypatch.setattr(matching, "catalog_rows", lambda table: [
+        row for row in real_rows(table) if table != "propellers" or row.application == "vtol"])
+    with pytest.raises(PropulsionMatchError) as failure:
+        size_aircraft(G1_ELECTRIC_FW)
+    message: str = str(failure.value)
+    assert message.startswith("Neither powertrain closes the mission")
+    assert "electric: diameter: no cruise propeller" in message and "series hybrid: diameter" in message

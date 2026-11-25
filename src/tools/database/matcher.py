@@ -18,13 +18,16 @@ from src.schemas.components import (
     Battery,
     Cell,
     CompanionComputer,
+    CruiseMotor,
     ComponentNeeds,
     Esc,
     FlightController,
     IceGenerator,
     Payload,
+    Propeller,
     SelectedBOM,
     SensorType,
+    VtolMotor,
 )
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS, DesignAssumptions
 from src.schemas.payload_catalog import payload_display_name, payload_spec
@@ -74,10 +77,13 @@ def load_catalog(db_path: Path, table: str) -> list:
     return [model(**dict(row)) for row in rows]
 
 
-def part_by_name(db_path: Path, table: str, name: str) -> BaseModel:
-    """The catalog row called `name`; ComponentNotFoundError names the table and the part."""
+def part_by_name(db_path: Path, table: str, name: str, model: type[T]) -> T:
+    """The catalog row called `name`, as `model`; ComponentNotFoundError names the table and the part, TypeError
+    when the table holds another model."""
     for row in load_catalog(db_path, table):
         if row.name == name:
+            if not isinstance(row, model):
+                raise TypeError(f"{table} rows are {type(row).__name__}, not {model.__name__}")
             return row
     raise ComponentNotFoundError(f"No part in {table} named {name!r}")
 
@@ -89,6 +95,18 @@ def _lightest(db_path: Path, table: str, predicate: Callable[[T], bool], require
     return min(candidates, key=lambda item: item.mass_kg)
 
 
+def generator_fits(generator: IceGenerator, required_power_w: float,
+                   bus_window_v: Optional[tuple[float, float]] = None) -> bool:
+    """The BOM's genset rule: continuous power >= SAFETY_MARGIN x the required power and, with a bus window, a
+    regulated output inside it. The propulsion matcher applies the same rule, so a matched bus always has one."""
+    if generator.continuous_power_w < required_power_w * SAFETY_MARGIN:
+        return False
+    if bus_window_v is None:
+        return True
+    low, high = bus_window_v
+    return generator.output_voltage_v is not None and low <= generator.output_voltage_v <= high
+
+
 def match_ice_generator(
     db_path: Path, required_power_w: float, bus_window_v: Optional[tuple[float, float]] = None
 ) -> IceGenerator:
@@ -97,25 +115,21 @@ def match_ice_generator(
     (base rows first, and a voltage variant weighs the same as its base, so the tie keeps the base row)."""
     need: float = _require_positive(required_power_w, "required_power_w") * SAFETY_MARGIN
     requirement: str = f"continuous power >= {need:.0f} W (incl. margin)"
-    if bus_window_v is None:
-        return _lightest(db_path, "ice_generators", lambda g: g.continuous_power_w >= need, requirement)
-    low, high = bus_window_v
-    _require_positive(low, "bus window low")
-    if not math.isfinite(high) or high < low:
-        raise ValueError(f"bus window must be (low, high) with low <= high, got {bus_window_v!r}")
-    return _lightest(
-        db_path, "ice_generators",
-        lambda g: g.continuous_power_w >= need and g.output_voltage_v is not None
-        and low <= g.output_voltage_v <= high,
-        f"{requirement} and output voltage within {low:.1f}-{high:.1f} V",
-    )
+    if bus_window_v is not None:
+        low, high = bus_window_v
+        _require_positive(low, "bus window low")
+        if not math.isfinite(high) or high < low:
+            raise ValueError(f"bus window must be (low, high) with low <= high, got {bus_window_v!r}")
+        requirement += f" and output voltage within {low:.1f}-{high:.1f} V"
+    return _lightest(db_path, "ice_generators", lambda g: generator_fits(g, required_power_w, bus_window_v),
+                     requirement)
 
 
 def match_battery(db_path: Path, cell_name: str, series: int, required_energy_j: float,
                   required_peak_power_w: float, assumptions: DesignAssumptions = DEFAULT_ASSUMPTIONS) -> Battery:
     """The pack of the matched cell and series count with the fewest parallel strings for the sized energy and peak
     power (spec 6.3). No extra margin: sizing already holds the reserve, and rounding P up is the only step."""
-    cell: Cell = part_by_name(db_path, "cells", cell_name)  # type: ignore[assignment]
+    cell: Cell = part_by_name(db_path, "cells", cell_name, Cell)
     return build_pack(cell, series, _require_positive(required_energy_j, "required_energy_j"),
                       _require_positive(required_peak_power_w, "required_peak_power_w"), assumptions)
 
@@ -192,16 +206,16 @@ def _require_matched(needs: ComponentNeeds) -> None:
 def _lift_parts(db_path: Path, needs: ComponentNeeds) -> dict[str, object]:
     if needs.vtol_thrust_per_motor_n is None:
         return {}
-    return {"vtol_motor": part_by_name(db_path, "vtol_motors", str(needs.vtol_motor_name)),
-            "vtol_propeller": part_by_name(db_path, "propellers", str(needs.vtol_propeller_name)),
-            "vtol_esc": part_by_name(db_path, "escs", str(needs.vtol_esc_name)),
+    return {"vtol_motor": part_by_name(db_path, "vtol_motors", str(needs.vtol_motor_name), VtolMotor),
+            "vtol_propeller": part_by_name(db_path, "propellers", str(needs.vtol_propeller_name), Propeller),
+            "vtol_esc": part_by_name(db_path, "escs", str(needs.vtol_esc_name), Esc),
             "vtol_motor_count": needs.vtol_motor_count}
 
 
 def _battery_and_generator(db_path: Path, needs: ComponentNeeds,
                            assumptions: DesignAssumptions) -> tuple[Battery, Optional[IceGenerator]]:
     """The cell-built pack; for a hybrid, the lightest genset whose output sits in that pack's bus window."""
-    cell: Cell = part_by_name(db_path, "cells", str(needs.cell_name))  # type: ignore[assignment]
+    cell: Cell = part_by_name(db_path, "cells", str(needs.cell_name), Cell)
     if needs.battery_chemistry is not None and cell.chemistry != needs.battery_chemistry:
         raise ValueError(f"matched cell {cell.name} is {cell.chemistry}, the design needs {needs.battery_chemistry}")
     series: int = int(needs.battery_series or 0)
@@ -221,10 +235,10 @@ def select_bom(
     _require_matched(needs)
     battery, generator = _battery_and_generator(db_path, needs, assumptions)
     flight_controller, companion = avionics_parts(needs, assumptions)
-    cruise_esc: Esc = part_by_name(db_path, "escs", str(needs.cruise_esc_name))  # type: ignore[assignment]
+    cruise_esc: Esc = part_by_name(db_path, "escs", str(needs.cruise_esc_name), Esc)
     return SelectedBOM(
-        cruise_motor=part_by_name(db_path, "cruise_motors", str(needs.cruise_motor_name)),
-        cruise_propeller=part_by_name(db_path, "propellers", str(needs.cruise_propeller_name)),
+        cruise_motor=part_by_name(db_path, "cruise_motors", str(needs.cruise_motor_name), CruiseMotor),
+        cruise_propeller=part_by_name(db_path, "propellers", str(needs.cruise_propeller_name), Propeller),
         cruise_esc=cruise_esc,
         battery=battery,
         payload=payload_part(db_path, needs),

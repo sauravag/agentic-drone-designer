@@ -32,7 +32,7 @@ from src.tools.sizing.aero_model import (
     select_airfoil,
 )
 from src.tools.gear import GearGeometry
-from src.tools.propulsion.match_types import MatchContext
+from src.tools.propulsion.match_types import MatchContext, PropulsionMatchError
 from src.tools.sizing.errors import SizingDivergenceError  # re-exported: callers import it from here
 from src.tools.sizing.layouts import BoomSet, layout_spec
 from src.tools.sizing.mass_model import (
@@ -447,7 +447,17 @@ def size_aircraft(
     try:
         return _to_output(_size_powertrain(req, airframe, "series_hybrid", params, assumptions))
     except SizingDivergenceError as exc:
-        raise SizingDivergenceError(f"Neither powertrain closes the mission: {exc}") from (electric_failure or exc)
+        raise _neither_closes(electric_failure, exc) from (electric_failure or exc)
+
+
+def _neither_closes(electric: Optional[SizingDivergenceError],
+                    hybrid: SizingDivergenceError) -> SizingDivergenceError:
+    """The auto-propulsion failure. When the hybrid fallback failed on propulsion matching it stays a
+    PropulsionMatchError (so the critic can point at the propulsion stage), carrying both powertrains' reasons."""
+    if not isinstance(hybrid, PropulsionMatchError):
+        return SizingDivergenceError(f"Neither powertrain closes the mission: {hybrid}")
+    reasons: str = f"electric: {electric}; series hybrid: {hybrid}" if electric is not None else str(hybrid)
+    return PropulsionMatchError(f"Neither powertrain closes the mission: {reasons}")
 
 
 def component_needs(sizing: SizingOutput, req: OperationalRequirements) -> ComponentNeeds:
