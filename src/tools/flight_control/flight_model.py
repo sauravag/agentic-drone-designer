@@ -21,6 +21,7 @@ loop (rate/angle controllers, actuator lag, inertia coupling, transition), not t
 
 import math
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Final, Literal, Optional
 
 from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
@@ -153,6 +154,12 @@ class FlightModel:
         if self.gear.kind == "none":
             return channels
         return channels_with_steering(channels, self.is_quadplane)
+
+    @cached_property
+    def transition_s(self) -> float:
+        """`transition_time_s`, solved once per model: its Euler loop root-solves the propulsor at every step. A
+        `replace`d model is a new instance and solves again."""
+        return _solve_transition_s(self)
 
     @property
     def weight_n(self) -> float:
@@ -368,7 +375,12 @@ def _check_flyable(model: FlightModel) -> None:
 
 def transition_time_s(model: FlightModel) -> float:
     """Time for the cruise motor alone to accelerate 0 -> 1.2 Vs against parasite drag (rotors carry
-    the weight, so the wing is unloaded). Explicit Euler, deterministic step."""
+    the weight, so the wing is unloaded); cached on the model."""
+    return model.transition_s
+
+
+def _solve_transition_s(model: FlightModel) -> float:
+    """The transition_time_s integration: explicit Euler, deterministic step."""
     target: float = TRANSITION_SPEED_FACTOR * model.v_stall_ms
     speed, elapsed = 0.0, 0.0
     while speed < target:

@@ -208,3 +208,20 @@ def test_matched_parts_use_the_catalogue_esc(matched_g2: Any) -> None:
     assert model.cruise_propulsor == plant_propulsor(bom.cruise_motor, bom.cruise_propeller, bom.cruise_esc,
                                                      bom.battery)
     assert model.cruise_propulsor.esc_efficiency == bom.cruise_esc.efficiency
+
+
+def test_transition_time_is_solved_once_per_model(matched_g2: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, nominal = matched_g2
+    model = replace(nominal)  # a fresh model with nothing cached
+    calls: list[float] = []
+    original = FlightModel.cruise_thrust_n
+
+    def counting(self: FlightModel, throttle: float, speed_ms: float) -> float:
+        calls.append(speed_ms)
+        return original(self, throttle, speed_ms)
+
+    monkeypatch.setattr(FlightModel, "cruise_thrust_n", counting)
+    first: float = fm.transition_time_s(model)
+    solved: int = len(calls)
+    assert solved > 0 and fm.transition_time_s(model) == first and len(calls) == solved
+    assert fm.transition_time_s(replace(model, mass_kg=2 * model.mass_kg)) > first  # a changed model re-solves
