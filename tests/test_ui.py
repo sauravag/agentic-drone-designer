@@ -840,3 +840,15 @@ def test_report_requirements_list_avionics() -> None:
 def test_avionics_column_caption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     at = _llm_app(tmp_path, monkeypatch)
     assert any(c.value == "A description sets its own avionics." for c in at.caption)
+
+
+def test_assumptions_panel_has_no_efficiency_rows() -> None:
+    from src.schemas.assumptions import DesignAssumptions
+    from src.ui import assumptions_panel
+
+    # The propeller, motor and ESC efficiencies come from the matched hardware, not from assumptions.
+    panel_fields = {field for fields in assumptions_panel.GROUPS.values() for field, _ in fields}
+    assert {f for f in panel_fields if "efficiency" in f} == {"pusher_efficiency_factor"}
+    assert {f for f in DesignAssumptions.model_fields if "efficiency" in f} == {"pusher_efficiency_factor"}
+    assert not any("efficiency" in label.lower() and "pusher" not in label.lower()
+                   for fields in assumptions_panel.GROUPS.values() for _, label in fields)

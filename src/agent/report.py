@@ -40,6 +40,21 @@ NOTIONAL_BATTERY_NOTE: Final[str] = ("Battery specific energy or energy density 
                                      "battery packs are notional (their mass and size are derived from these assumptions).")
 
 
+# Every estimate behind the matched propulsion set, listed so none goes unflagged (spec section 4)
+PROPULSION_ESTIMATES: Final[tuple[str, ...]] = (
+    "Generic blade shape: one chord distribution and the NACA 4409 section stand in for every propeller; real "
+    "propellers of the same diameter and pitch differ by several percent in efficiency.",
+    "Motor constants (winding resistance, no-load current, maximum current) and the KV and ratings derived from "
+    "them are catalogue estimates; a lift motor's continuous power is taken as 70 % of its peak, and lift thrust "
+    "ratings are re-derived from that.",
+    "ESC efficiencies and current classes are estimates.",
+    "Cell data (capacity, current limit, voltages) are generic estimates, not a manufacturer's datasheet.",
+    "The hover figure of merit may be about 4-6 % optimistic against published large-rotor data (T-Motor 30-42 in).",
+    "Windmilling drag is not modelled: a propeller gives zero thrust beyond its zero-thrust advance ratio.",
+    "Propeller tables cover tip Mach up to 0.80 and air from 4 km on an ISA+20 day to a -30 C sea-level day.",
+)
+
+
 @dataclass(frozen=True)
 class ReportInputs:
     run_id: str
@@ -144,6 +159,16 @@ def design_assumptions_section(assumptions: DesignAssumptions) -> list[str]:
     return section
 
 
+def propulsion_section(sizing: SizingOutput) -> list[str]:
+    """The matched set's operating points and its flagged estimates (empty for a design sized before matching)."""
+    match = sizing.propulsion_match
+    if match is None:
+        return []
+    return ["## Propulsion match\n", table(presenters.propulsion_match_rows(match)),
+            "Hover efficiency is the figure of merit (FM); forward flight is thrust power over shaft power.\n",
+            "### Propulsion estimates\n", "\n".join(f"- {estimate}" for estimate in PROPULSION_ESTIMATES) + "\n"]
+
+
 def facts(inputs: ReportInputs) -> str:
     """Compact JSON of the computed results, given to the LLM as the only source of numbers."""
     data: dict[str, Any] = {"requirements": inputs.requirements.to_context_json(),
@@ -226,6 +251,7 @@ def _sections(inputs: ReportInputs) -> list[str]:
     if inputs.sizing:
         s += [f"## {SECTION_SIZING}\n", pairs(presenters.sizing_summary(inputs.sizing))]
         s += [f"## {SECTION_ENERGY}\n", table(presenters.phase_rows(inputs.sizing))]
+        s += propulsion_section(inputs.sizing)
     if inputs.bom:
         s += ["## Bill of materials\n", table(presenters.bom_rows(inputs.bom))]
     if inputs.aero and inputs.sizing:

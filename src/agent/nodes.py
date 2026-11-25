@@ -25,6 +25,7 @@ from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import DesignState
 from src.tools.database.matcher import select_bom
 from src.tools.database.seed_data import DEFAULT_DB_PATH
+from src.tools.propulsion.match_types import PropulsionMatchError
 from src.tools.sizing.mission_solver import component_needs, size_aircraft
 from src.viewer.build import viewer_warning
 
@@ -109,7 +110,8 @@ def run_sizing(state: DesignState, ctx: AgentContext) -> Update:
     try:
         sizing = size_aircraft(req, overrides, _assumptions(state))
     except pipeline.DESIGN_ERRORS as exc:
-        return cleared | {"sizing_results": None, "stage_error": {"stage": "sizing", "message": str(exc)}}
+        stage: str = critic.PROPULSION_STAGE if isinstance(exc, PropulsionMatchError) else "sizing"
+        return cleared | {"sizing_results": None, "stage_error": {"stage": stage, "message": str(exc)}}
     _write(state, "sizing.json", sizing)
     return cleared | {"sizing_results": sizing}
 

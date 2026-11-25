@@ -346,7 +346,8 @@ def test_old_fcs_records_validate_with_nominal_governing() -> None:
 def test_validator_requires_arduplane(tmp_path: Path) -> None:
     sv = pytest.importorskip("src.tools.flight_control.sitl_validator", exc_type=ImportError)
     with pytest.raises(sv.SitlUnavailableError):
-        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS, config=sv.SitlConfig(binary="no-such-arduplane"))
+        sv.generate_and_verify_fcs(*load_design("g1"), tmp_path, DEFAULT_ASSUMPTIONS,
+                                   config=sv.SitlConfig(binary="no-such-arduplane"))
 
 
 # ------------------------------------------------------------- SITL acceptance ---

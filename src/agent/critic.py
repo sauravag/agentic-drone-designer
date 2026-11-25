@@ -48,7 +48,8 @@ class GateResult:
     detail: str
     side: Literal["", "low", "high"] = ""  # which side of a two-sided band a failed value fell on
     # L/D gate, low side: whether VSPAERO's extra drag at the worst point is mostly zero-lift (parasite) or induced
-    driver: Literal["", "induced", "parasite"] = ""
+    # also "propulsion": no catalogue set matches, which no sizing knob can change
+    driver: Literal["", "induced", "parasite", "propulsion"] = ""
 
 
 @dataclass(frozen=True)
@@ -138,7 +139,13 @@ def evaluate_sizing_gates(req: OperationalRequirements, sizing: SizingOutput, bo
     ]
 
 
+PROPULSION_STAGE: Final[str] = "propulsion_match"  # the stage_error name of a PropulsionMatchError
+
+
 def pipeline_gate(stage: str, message: str) -> GateResult:
+    if stage == PROPULSION_STAGE:
+        return GateResult("pipeline", False, f"propulsion match failed: {message}; no sizing knob can fix a "
+                          "catalogue with no matching hardware", driver="propulsion")
     return GateResult("pipeline", False, f"{stage} failed: {message}")
 
 
@@ -220,8 +227,11 @@ def apply_adjustments(overrides: dict[str, float], propulsion: str, llm_choices:
 
 
 def _refused(adj: Adjustment, gates: list[GateResult]) -> bool:
-    """An LLM move the gates rule out: a higher aspect ratio against a parasite-driven L/D gap (it cannot close it
-    and walks the wing toward its stiffness limits)."""
+    """An LLM move the gates rule out: any knob against a propulsion no-match (no knob fixes the catalogue), and a
+    higher aspect ratio against a parasite-driven L/D gap (it cannot close it and walks the wing toward its
+    stiffness limits)."""
+    if any(g.name == "pipeline" and not g.passed and g.driver == "propulsion" for g in gates):
+        return True
     parasite_gap: bool = any(g.name == "lift_to_drag" and not g.passed and g.driver == "parasite" for g in gates)
     return parasite_gap and adj.knob == "aspect_ratio" and adj.direction == "increase"
 

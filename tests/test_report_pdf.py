@@ -159,3 +159,16 @@ def test_a_failed_pdf_leaves_the_markdown_report_and_says_why(inputs: report.Rep
     with caplog.at_level(logging.ERROR):
         assert report_pdf.write_pdf_report(inputs, markdown) is None
     assert markdown.is_file() and "disk full" in caplog.text
+
+
+def test_the_pdf_holds_the_propulsion_match_table(tmp_path: Path) -> None:
+    from tests.matched_design import matched_g1
+
+    sizing, bom = matched_g1()
+    req = load_design("g1")[0]
+    inputs = report.ReportInputs(run_id="r1", out_dir=tmp_path, requirements=req, sizing=sizing, bom=bom, aero=None,
+                                 cad=None, fcs=None, converged=True, iterations=1)
+    markdown = report.render(inputs, report.fallback_narrative(inputs, "no LLM"))
+    tables = [f for f in report_pdf.markdown_flowables(markdown, {}) if isinstance(f, Table)]
+    headers = [[cell.text for cell in table._cellvalues[0]] for table in tables]
+    assert any("<b>Tip Mach</b>" in header and "<b>Throttle</b>" in header for header in headers)

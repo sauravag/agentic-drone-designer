@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from src.schemas.assumptions import DesignAssumptions
 from src.schemas.components import SelectedBOM
 from src.schemas.fabrication import FabricationSettings
+from src.schemas.propulsion import OperatingPoint, PropulsionMatch
 from src.schemas.kit_files import KIT_DOWNLOADS, KIT_SUBDIR, SHEET_GLOB, SHEETS_DIR, stock_slug
 from src.schemas.payload_catalog import payload_display_name
 from src.schemas.requirements import ARK_JETSON_PAB, CUBE_ORANGE_PLUS, LAYOUT_LABELS, OperationalRequirements
@@ -167,7 +168,7 @@ def bom_rows(bom: SelectedBOM) -> list[dict[str, Any]]:
         ("Lift ESC", bom.vtol_esc, bom.vtol_motor_count),
     ]
     rows = [
-        {"Part": label, "Item": part.name, "Qty": qty, "Unit mass (kg)": round(part.mass_kg, 3),
+        {"Part": label, "Item": _item_name(label, part), "Qty": qty, "Unit mass (kg)": round(part.mass_kg, 3),
          "Mass (kg)": round(qty * part.mass_kg, 3), "Power (W)": None, "Ref. price": _part_price(label, part)}
         for label, part, qty in parts if part is not None
     ]
@@ -177,6 +178,28 @@ def bom_rows(bom: SelectedBOM) -> list[dict[str, Any]]:
     rows.append({"Part": "Total", "Item": "", "Qty": None, "Unit mass (kg)": None,
                  "Mass (kg)": round(bom.total_hardware_mass_kg, 3), "Power (W)": None, "Ref. price": ""})
     return rows
+
+
+def _item_name(label: str, part: Any) -> str:
+    """The part's name; a battery built from cells reads `<cell> <S>S<P>P`."""
+    if label == "Battery" and part.cell_name and part.series and part.parallel:
+        return f"{part.cell_name} {part.series}S{part.parallel}P"
+    return part.name
+
+
+def operating_point_row(op: OperatingPoint) -> dict[str, Any]:
+    """One row of the propulsion-match table. Lift rotors hover, so their efficiency is a figure of merit (FM)."""
+    efficiency: str = f"FM {op.prop_efficiency:.2f}" if op.propulsor == "lift" else f"{op.prop_efficiency:.2f}"
+    point: str = f"{op.flight_point} (end-of-reserve voltage)" if op.sagged else op.flight_point
+    return {"Flight point": point, "Propulsor": op.propulsor, "RPM": f"{op.rpm:.0f}",
+            "Current (A)": f"{op.current_a:.1f}", "Throttle": f"{op.throttle:.0%}",
+            "Propeller efficiency": efficiency, "Motor efficiency": f"{op.motor_efficiency:.2f}",
+            "Tip Mach": f"{op.tip_mach:.2f}"}
+
+
+def propulsion_match_rows(match: PropulsionMatch) -> list[dict[str, Any]]:
+    """The matched propulsion set's operating points, one row per flight point and propulsor."""
+    return [operating_point_row(op) for op in match.operating_points]
 
 
 def _part_price(label: str, part: Any) -> str:
