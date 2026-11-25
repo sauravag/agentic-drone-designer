@@ -54,7 +54,7 @@ Group 3 ("laser-cut construction covers Group 1-2 designs only"); for the other 
 |---|---|---|---|---|---|---|---|---|
 | g1 | 4.158 -> 4.446 | 1.814 -> 1.930 | 1.344 -> 1.516 | 21700 6S4P -> 18650 energy 2S13P | 2814-900KV + 11x7 -> 2212-1713KV + 10x8 + ESC 60A 2S | - | built 0.905 kg -> **no kit** | converged, SITL pass -> converged, SITL pass |
 | g2 | 19.879 -> 24.826 | 8.262 -> 10.937 | 8.617 -> 10.889 | 21700 12S10P -> 18650 high-drain 12S21P | 4325-400KV + 16x10 -> 5025-203KV + 18x12.6 + ESC 60A 12S | 4 x 6215-180KV + 22x7 -> 4 x 6215-111KV + 28x9 + ESC 30A 12S | built 4.271 kg -> **no kit** | converged, SITL pass -> **not converged** (see Gate status); saved-fixture SITL passes |
-| g3 | 136.565 -> 273.649 (fuel 34.8 -> 71.2) | 59.202 -> 137.046 | 22.572 -> 45.442 | LiPo HV 6 kWh -> LiPo pouch 50S30P | AX-15 + 32x16 -> AX-40-25KV + 50x35 + ESC 200A 250V; genset 8 kW -> 15 kW | 4 x 12030-60KV + 36x12 -> 4 x 18050-16KV + 62x24.8 + ESC 120A 250V | no kit -> no kit | not converged, L/D gate +18 % -> not converged, L/D gate +21 %; no SITL either side |
+| g3 | 136.565 -> 273.649 (fuel 34.8 -> 71.2) | 59.202 -> 137.046 | 22.572 -> 45.442 | LiPo HV 6 kWh -> LiPo pouch 50S30P | AX-15 + 32x16 -> AX-40-25KV + 50x35 + ESC 200A 250V; genset 8 kW -> 15 kW | 4 x 12030-60KV + 36x12 -> 4 x 18050-16KV + 62x24.8 + ESC 120A 250V | no kit -> no kit | not converged -> not converged, both on the L/D gate (see Gate status); no SITL either side |
 | g1_vtail | 4.681 -> 5.074 | 2.173 -> 2.343 | 1.509 -> 1.731 | 21700 6S4P -> 18650 high-drain 4S10P | 2814-900KV + 11x7 -> 2212-966KV + 10x7 + ESC 40A 4S | - | built 1.058 -> built 1.129 kg | converged, SITL pass -> converged, SITL pass |
 | g2_vtail | 21.545 -> 26.498 (Group 2 -> 3) | 8.915 -> 11.426 | 9.631 -> 12.072 | 21700 14S12P -> 18650 high-drain 12S23P | 4325-400KV + 16x10 -> 5025-203KV + 18x12.6 + ESC 60A 12S | 4 x 6215-180KV + 22x7 -> 4 x 6215-111KV + 28x11.2 + ESC 40A 12S | no kit (anti-rotation pin, 300 N) -> no kit | not converged (shell mass 27.41 kg > Group 2) -> converged (sized as Group 3), SITL pass |
 | g1_hand | 5.861 -> 7.104 | 3.338 -> 4.019 | 1.523 -> 2.085 | 21700 6S4P -> 18650 energy 3S12P | 2814-900KV + 11x7 -> 2814-1342KV + 11x7 folding + ESC 80A 3S | - | built 2.482 kg -> **no kit** | converged, SITL pass -> converged, SITL pass |
@@ -109,7 +109,8 @@ No SITL harness change was needed. The Task 7 G1 failure came from the legacy 4S
 The reversed-elevator test used to require the reversed flight to crash or time out. The matched G1, flown reversed,
 completes the sequence while tumbling (pitch -87 to +79 deg, pitch step -14.5 deg against the +20 deg target), so it
 fails on the score, not with a flight error. The test now accepts either outcome. It still requires that the flight
-does not pass, and on the scored path that the pitch step goes against the demand. The pass criteria are unchanged.
+does not pass, and on the scored path that the validator's own pitch criterion (overshoot / settling limits) fails.
+The pass criteria are unchanged.
 
 In the Docker `--spec` runs, SITL passed for g1, g1_vtail, g2_vtail and g1_hand. It was not reached for g2 and g3,
 which stop at the critic.
@@ -131,6 +132,10 @@ Reference designs through the full Docker `--spec` pipeline:
 - **g2** stops converging. Without a kit, the shell mass model puts its as-built mass at 25.28 kg, 0.33 kg over the
   Group 2 limit of 24.95 kg, so the collisions_and_group gate fails with no rule fix. This is the same mechanism
   that kept g2_vtail from converging on master.
-- **g3** fails the VSPAERO L/D gate both before and after: the L/D is high and the critic cannot fix it.
+- **g3** fails the VSPAERO L/D gate both before and after: the L/D is high and the critic cannot fix it. On master,
+  G3 passed the L/D gate at default settings and went out of band (+18 %) only after the critic raised the reserve to 0.15. The
+  matched G3 fails it from the first iteration at default settings (VSPAERO L/D +24 % at defaults, +21-22 % after
+  the reserve raise). The likely cause is the parked-rotor drag scaled into the sizing CD0 (kept, user decision 2),
+  which VSPAERO does not see.
 
 Both follow from the accepted kit regression or pre-date this branch. They are left for the kit-fix branch.

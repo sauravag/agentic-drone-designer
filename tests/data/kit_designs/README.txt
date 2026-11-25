@@ -15,5 +15,9 @@ exclude=set(type(r).model_computed_fields)), indent=2) + '\n') for n, r in (('re
 ('bom', select_bom(db, component_needs(s, q))))] for c in ('g1', 'g2', 'g2_vtail', 'g1_hand') \
 if Path(c).mkdir(exist_ok=True) is None for q in [CASES[c]] for s in [size_aircraft(q)]]"
 
+Non-kit consumer: tests/test_sizing.py::test_stopped_rotor_term_calibrated_on_g2 reads saved_kit_design("g2") as
+the G2 geometry the stopped-rotor term was calibrated on (0.603 m rotors). Before deleting this folder, keep that
+record elsewhere (e.g. a calibration fixture) or that test breaks.
+
 When the kit-fix branch makes the matched reference designs build kits again, point the tests back at the
 reference designs and delete this folder.

@@ -402,8 +402,8 @@ def test_reversed_elevator_fails_sitl(tmp_path: Path) -> None:
     if reversed_.error is not None:  # diverged or crashed: the error names a flight failure, not a setup problem
         assert "SitlFlightError" in reversed_.error
         assert "Floating point exception" in reversed_.error or "timed out" in reversed_.error  # divergence / no climb
-    else:  # flew the sequence tumbling (matched G1, 2026-11-25): the pitch step went against the demand
-        assert reversed_.pitch is not None and reversed_.pitch.step_deg * reversed_.pitch.target_deg < 0
+    else:  # flew the sequence tumbling (matched G1, 2026-11-25): the validator's pitch criterion fails it
+        assert reversed_.pitch is not None and not reversed_.pitch.passes(sv.MAX_OVERSHOOT, sv.MAX_SETTLING_S)
 
 
 @pytest.mark.docker
