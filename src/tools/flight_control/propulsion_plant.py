@@ -13,6 +13,8 @@ constants nor ESCs nor a cell build, and still have to fly. Their LEGACY PATH, p
   voltage (`pack_series`).
 
 No fixed propulsive efficiency is used on either path: thrust always comes from the propeller tables.
+Simplification (ruled in scope): past zero-thrust advance ratio the propulsor gives 0 N, not the negative thrust
+of a windmilling propeller, so the plant has no windmilling drag at low throttle and high airspeed.
 """
 
 from typing import Final, Optional
@@ -36,7 +38,11 @@ def pack_series(battery: Battery) -> int:
     """Cells in series: the cell build's count, or (legacy pack) the voltage over the nominal cell voltage."""
     if battery.series is not None:
         return battery.series
-    return max(1, round(battery.voltage_v / LEGACY_NOMINAL_V_CELL[battery.chemistry]))
+    nominal_v: float | None = LEGACY_NOMINAL_V_CELL.get(battery.chemistry)
+    if nominal_v is None:
+        raise ValueError(f"pack {battery.name!r} has no cell build and no nominal cell voltage is known for chemistry "
+                         f"{battery.chemistry!r} (known: {', '.join(sorted(LEGACY_NOMINAL_V_CELL))})")
+    return max(1, round(battery.voltage_v / nominal_v))
 
 
 def is_legacy_motor(motor: CruiseMotor | VtolMotor) -> bool:

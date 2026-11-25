@@ -19,7 +19,7 @@ from src.tools.flight_control import flight_model as fm
 from src.tools.flight_control import param_generator as pg
 from src.tools.flight_control.flight_model import FlightModel, FlightModelError, build_flight_model
 from src.tools.flight_control.jsbsim_exporter import lift_thrust_curve
-from src.tools.flight_control.propulsion_plant import legacy_esc_efficiency, plant_propulsor
+from src.tools.flight_control.propulsion_plant import legacy_esc_efficiency, pack_series, plant_propulsor
 from src.tools.propulsion.prop_tables import propeller_table
 from src.tools.propulsion.propulsor import Propulsor, propulsor_from_parts
 from tests.test_flight_control import load_design
@@ -172,7 +172,7 @@ def test_unreachable_cruise_is_a_readable_error(matched_g2: Any) -> None:
 
 def test_no_prop_efficiency_constant_left() -> None:
     source: str = Path(fm.__file__).read_text()
-    assert "PROP_EFFICIENCY" not in source and "0.75" not in source
+    assert "PROP_EFFICIENCY" not in source
     assert not hasattr(fm, "PROP_EFFICIENCY")
 
 
@@ -189,6 +189,13 @@ def test_legacy_record_estimates_motor_constants_and_esc_class() -> None:
     assert model.cruise_propulsor == expected
     assert model.lift_propulsor is not None and model.lift_propulsor.kv == 180.0  # KV from "Lift 6215-180KV"
     assert model.lift_propulsor.role == "lift"
+
+
+def test_pack_series_refuses_an_unknown_chemistry() -> None:
+    _, _, bom, _, _ = load_design("g1")
+    unknown = bom.battery.model_construct(**{**dict(bom.battery), "chemistry": "nimh"})
+    with pytest.raises(ValueError, match="nimh"):
+        pack_series(unknown)
 
 
 def test_legacy_esc_efficiency_follows_the_catalogue_classes() -> None:

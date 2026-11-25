@@ -476,7 +476,7 @@ def test_arduplane_vtail_mixer_matches_the_modelled_mix(tmp_path: Path, monkeypa
     from src.tools.flight_control import sitl_bridge
     from src.tools.flight_control.flight_test import SitlPilot
     from src.tools.flight_control.jsbsim_exporter import export_jsbsim
-    from tests.test_flight_control import _ardupilot_vtail_mix
+    from tests.test_flight_control_surfaces import _ardupilot_vtail_mix
 
     req, sizing, bom, aero, cad = load_vtail_design()
     model = build_flight_model(req, sizing, bom, aero, cad)
