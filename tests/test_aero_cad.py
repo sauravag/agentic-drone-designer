@@ -586,8 +586,8 @@ def test_group_3_fallback_is_logged_at_info_not_warning(designs: dict, tmp_path:
     assert r.kit is None and no_kit and all(rec.levelname == "INFO" for rec in no_kit)
 
 
-def test_kit_design_exports_assembly_and_viewer(designs: dict, tmp_path: Path) -> None:
-    sizing, bom = designs["g1"]
+def test_matched_g1_without_a_kit_still_exports_assembly_and_viewer(designs: dict, tmp_path: Path) -> None:
+    sizing, bom = designs["g1"]  # the matched g1 builds no kit; the assembly and viewer exports do not need one
     lay = _fitted_layout(sizing, bom)
     oml = _synthetic_oml(lay, tmp_path / "oml.step")
     art = cad_packer.pack_aircraft(sizing, bom, _synthetic_aero(lay), lay, tmp_path / "oml.vsp3", oml, tmp_path)

@@ -30,7 +30,8 @@ from src.units import G0
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-MAX_PROPULSION_PASSES: Final[int] = 12  # fix round 2: G3 settles in 8
+# Raised from 6 under spec 6.8 (tuned for closure): G3 needs 6-8 passes to settle, the other references 2-3.
+MAX_PROPULSION_PASSES: Final[int] = 12
 # Largest cruise propeller the layout's clearance allows, as a multiple of the sized fuselage diameter (controller's
 # call D3; tunable per spec 6.8). The matched diameter then drives the gear, pusher gap and clearance checks.
 PROP_MAX_TO_FUSELAGE_DIAMETER_RATIO: Final[float] = 3.0

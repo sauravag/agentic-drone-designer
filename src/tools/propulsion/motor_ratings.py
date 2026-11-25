@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Final, Optional
 
 from src.schemas.components import Propeller
+from src.tools.database.catalog_variants import NOMINAL_CELL_V
 from src.tools.database.seed_data import frame_key  # noqa: F401  (re-exported: one definition)
 from src.tools.propulsion.match_types import MAX_MATCH_THROTTLE
 from src.tools.propulsion.motor import MotorPoint, motor_point
@@ -36,7 +37,6 @@ RATING_SPEED_OF_SOUND: Final[float] = speed_of_sound_ms(0.0)
 RATING_ROTOR_COUNT: Final[int] = 4  # quadplane lift rotors (mission_solver.VTOL_ROTOR_COUNT)
 KV_BRACKET: Final[tuple[float, float]] = (1.0, 20_000.0)
 BISECT_STEPS: Final[int] = 80
-CELL_NOMINAL_V: Final[float] = 3.7
 CURRENT_STEPS: Final[float] = 10.0  # max current stored to 0.1 A
 THRUST_RTOL: Final[float] = 1e-6
 
@@ -57,7 +57,7 @@ class FrameRating:
 
 def nominal_voltage_v(listed_v: float) -> float:
     """The frame's nominal voltage: its rated cell count (listed / 3.7 V, as the catalogue rounds it) x 3.7 V."""
-    return max(1, round(listed_v / CELL_NOMINAL_V)) * CELL_NOMINAL_V
+    return max(1, round(listed_v / NOMINAL_CELL_V)) * NOMINAL_CELL_V
 
 
 def lift_rotor_for(max_thrust_n: float, rotors: Sequence[Propeller]) -> Propeller:

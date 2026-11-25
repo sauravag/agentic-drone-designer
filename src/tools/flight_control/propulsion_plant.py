@@ -17,7 +17,7 @@ Simplification (ruled in scope): past zero-thrust advance ratio the propulsor gi
 of a windmilling propeller, so the plant has no windmilling drag at low throttle and high airspeed.
 """
 
-from typing import Final, Optional
+from typing import Optional
 
 from src.schemas.components import Battery, CruiseMotor, Esc, Propeller, VtolMotor
 from src.tools.database.catalog_variants import (ESC_EFFICIENCY_HV, ESC_EFFICIENCY_SMALL, ESC_HV_THRESHOLD_V,
@@ -26,8 +26,17 @@ from src.tools.database.seed_data import catalog_rows
 from src.tools.propulsion.prop_tables import propeller_table
 from src.tools.propulsion.propulsor import MOTOR_PARAMS, Propulsor, propulsor_from_parts
 
-# Nominal cell voltage per chemistry (the catalogue cells: Li-ion 3.6 V, LiPo 3.7 V); legacy packs only.
-LEGACY_NOMINAL_V_CELL: Final[dict[str, float]] = {"li_ion": 3.6, "lipo": 3.7}
+
+def legacy_nominal_cell_v() -> dict[str, float]:
+    """Nominal cell voltage per chemistry, from the cell catalogue (legacy packs only). ValueError if one chemistry
+    has cells of different nominal voltages (a legacy pack's cell count would then be ambiguous)."""
+    voltages: dict[str, set[float]] = {}
+    for cell in catalog_rows("cells"):
+        voltages = {**voltages, cell.chemistry: voltages.get(cell.chemistry, set()) | {cell.nominal_voltage_v}}
+    mixed: list[str] = sorted(chem for chem, values in voltages.items() if len(values) > 1)
+    if mixed:
+        raise ValueError(f"cells of {', '.join(mixed)} have several nominal voltages; a legacy pack is ambiguous")
+    return {chem: next(iter(values)) for chem, values in voltages.items()}
 
 
 def legacy_esc_efficiency(bus_voltage_v: float) -> float:
@@ -39,10 +48,11 @@ def pack_series(battery: Battery) -> int:
     """Cells in series: the cell build's count, or (legacy pack) the voltage over the nominal cell voltage."""
     if battery.series is not None:
         return battery.series
-    nominal_v: float | None = LEGACY_NOMINAL_V_CELL.get(battery.chemistry)
+    known: dict[str, float] = legacy_nominal_cell_v()
+    nominal_v: float | None = known.get(battery.chemistry)
     if nominal_v is None:
         raise ValueError(f"pack {battery.name!r} has no cell build and no nominal cell voltage is known for chemistry "
-                         f"{battery.chemistry!r} (known: {', '.join(sorted(LEGACY_NOMINAL_V_CELL))})")
+                         f"{battery.chemistry!r} (known: {', '.join(sorted(known))})")
     return max(1, round(battery.voltage_v / nominal_v))
 
 

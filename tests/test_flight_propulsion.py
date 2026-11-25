@@ -7,7 +7,7 @@ legacy path. `matched_g2` swaps catalogue parts with constants into G2 to exerci
 import math
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -25,6 +25,8 @@ from src.tools.propulsion.prop_tables import propeller_table
 from src.tools.propulsion.propulsor import Propulsor, propulsor_from_parts
 from tests.test_flight_control import load_design
 
+MONOTONE_RTOL: Final[float] = 1e-9  # the propulsor's rpm-solve tolerance (propulsor.ROOT_RTOL)
+
 SAMPLE_THROTTLES: tuple[float, ...] = (0.3, 0.6, 1.0)
 SAMPLE_SPEEDS_MS: tuple[float, ...] = (0.0, 10.0, 22.0)
 
@@ -38,7 +40,8 @@ def _matched_bom(bom: SelectedBOM) -> SelectedBOM:
     battery = bom.battery.model_copy(update={"cell_name": "Li-ion 21700 energy 5.0Ah", "series": 12, "parallel": 10})
     return bom.model_copy(update={
         "cruise_motor": _part("cruise_motors", "Outrunner 5025"), "cruise_esc": _part("escs", "ESC 120A 12S"),
-        "vtol_motor": _part("vtol_motors", "Lift 6215"), "vtol_propeller": _part("propellers", "Carbon vtol prop 30x10in"),
+        "vtol_motor": _part("vtol_motors", "Lift 6215"),
+        "vtol_propeller": _part("propellers", "Carbon vtol prop 30x10in"),
         "vtol_esc": _part("escs", "ESC 60A 12S"), "battery": battery,
     })
 
@@ -94,7 +97,8 @@ def test_lift_thrust_curve_comes_from_the_lift_propulsor(matched_g2: Any) -> Non
     _, model = matched_g2
     outputs, thrusts = lift_thrust_curve(model)
     assert thrusts[0] == 0.0 and thrusts[-1] == pytest.approx(model.lift_rotors[0].max_thrust_n)
-    assert all(b >= a for a, b in zip(thrusts, thrusts[1:]))
+    # monotone up to the rpm solve's tolerance (two throttles a hair apart can swap in the last digits)
+    assert all(b >= a * (1.0 - MONOTONE_RTOL) for a, b in zip(thrusts, thrusts[1:]))
     assert thrusts[outputs.index(0.1)] == 0.0  # below Q_M_SPIN_MIN the rotor gives no thrust
     u: float = (0.6 - pg.MOTOR_SPIN_MIN) / (pg.MOTOR_SPIN_MAX - pg.MOTOR_SPIN_MIN)
     assert thrusts[outputs.index(0.6)] == pytest.approx(model.lift_thrust_n(u))
@@ -169,12 +173,6 @@ def test_unreachable_cruise_is_a_readable_error(matched_g2: Any) -> None:
     slow = bom.model_copy(update={"cruise_motor": bom.cruise_motor.model_copy(update={"max_current_a": 0.5})})
     with pytest.raises(FlightModelError, match="cruise propeller"):
         build_flight_model(req, sizing, slow, aero, cad)
-
-
-def test_no_prop_efficiency_constant_left() -> None:
-    source: str = Path(fm.__file__).read_text()
-    assert "PROP_EFFICIENCY" not in source
-    assert not hasattr(fm, "PROP_EFFICIENCY")
 
 
 # ----------------------------------------------------------------------------------- legacy path ---

@@ -6,7 +6,8 @@ import math
 import pytest
 
 from src.schemas.components import CruiseMotor, VtolMotor
-from src.tools.database.seed_data import CRUISE_MOTORS, DERIVED_MOTOR_RATINGS, VTOL_MOTORS, base_propellers, catalog_rows
+from src.tools.database.seed_data import (CRUISE_MOTORS, DERIVED_MOTOR_RATINGS, VTOL_MOTORS, base_propellers,
+                                         catalog_rows)
 from src.tools.propulsion import motor_ratings as mr
 from src.tools.propulsion.match_types import MAX_MATCH_THROTTLE
 from src.tools.propulsion.motor import motor_point

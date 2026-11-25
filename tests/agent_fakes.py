@@ -1,5 +1,6 @@
 """Scripted StructuredLLM for agent tests: deterministic stand-in for Claude (no network, no cost)."""
 
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from pydantic import BaseModel
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from src.agent.agent_schemas import (CriticDecision, DesignerTurn, Distance, Duration, Mass, OptionsExplanation,
                                      ReportNarrative, RequirementsDraft)
 from src.agent.llm import LLMError
+from src.agent.nodes import AgentContext
+from src.tools.database.seed_data import seed_database
 
 SRS_PROMPT: str = ("Design a runway-independent Group 2 VTOL ISR drone with a 3.5 kg EO/IR gimbal, 6-hour "
                    "endurance, and 80 km datalink radius")
@@ -51,3 +54,16 @@ class ScriptedLLM:
             assert self.designer_turns, "no scripted DesignerTurn left"
             return self.designer_turns.pop(0)
         raise AssertionError(f"unexpected schema {schema}")
+
+
+def agent_context(tmp_path: Path, db: Path, llm: Any, **kw: Any) -> AgentContext:
+    """An agent context for host tests: aero/CAD and SITL off, outputs under tmp_path."""
+    return AgentContext(llm=llm, outputs_root=tmp_path / "outputs", db_path=db, with_aero_cad=False,
+                        with_sitl=False, **kw)
+
+
+def seeded_catalog(directory: Path) -> Path:
+    """A freshly seeded catalogue database in `directory`."""
+    path: Path = directory / "catalog.db"
+    seed_database(path)
+    return path

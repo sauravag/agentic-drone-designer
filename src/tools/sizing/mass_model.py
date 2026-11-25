@@ -1,7 +1,9 @@
 """Geometry sizing and semi-empirical empty-mass build-up for Group 1-3 UAVs (SI).
 
 Empty mass = structure + propulsion hardware + systems; it excludes payload, battery and fuel.
-Propulsion hardware carries the matcher's 15% margin so sized MTOW tracks the discrete COTS BOM.
+Propulsion hardware is the matched set's real parts (spec 6.5); before a set is matched (pass 0) the scaled
+estimates, and the genset on every pass, carry MATCH_MARGIN (the COTS matcher's 15 % margin) so sized MTOW
+tracks the discrete BOM.
 """
 
 import math

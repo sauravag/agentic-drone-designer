@@ -1,8 +1,9 @@
-"""Write the saved flight-control fixtures under tests/data/flight_control/<case>/ (requirements, sizing, bom, aero,
+r"""Write the saved flight-control fixtures under tests/data/flight_control/<case>/ (requirements, sizing, bom, aero,
 cad JSON, as `tests.test_flight_control.load_design` reads them), each from one sizing + BOM + aero/CAD run of the
 current code. Needs the Docker toolchain (OpenVSP/VSPAERO):
 
-    docker run --rm -v "$PWD":/app -w /app isr-forge:latest python scripts/generate_flight_control_fixtures.py [case ...]
+    docker run --rm -v "$PWD":/app -w /app isr-forge:latest \
+        python scripts/generate_flight_control_fixtures.py [case ...]
 
 Cases: g1 and g2 (the reference missions) and g1_vtail (the G1 mission, with its original mission name, on the
 single-boom V-tail pusher). No case named: all three. Last regenerated 2026-11-25 on the matched propulsion.

@@ -446,7 +446,8 @@ def _speed_pass(blade: BladeGeometry, stations: _Stations, cond: _Conditions, sp
     count: int = len(failures.reasons)
     reynolds: np.ndarray = cond.rho * speed * stations.chord_m / cond.mu
     mach: np.ndarray = speed / cond.sound
-    in_grid: np.ndarray = (np.all(reynolds >= POLAR_RE_NODES[0], axis=1) & np.all(reynolds <= POLAR_RE_NODES[-1], axis=1)
+    in_grid: np.ndarray = (np.all(reynolds >= POLAR_RE_NODES[0], axis=1)
+                           & np.all(reynolds <= POLAR_RE_NODES[-1], axis=1)
                            & np.all(mach <= POLAR_MACH_NODES[-1], axis=1))
     failures.flag(_scatter(count, rows, ~in_grid), lambda p: _grid_reason(reynolds[_at(rows, p)], mach[_at(rows, p)]))
     safe_re: np.ndarray = np.clip(np.nan_to_num(reynolds, nan=POLAR_RE_NODES[0]), POLAR_RE_NODES[0], POLAR_RE_NODES[-1])
