@@ -72,11 +72,11 @@ def test_cruise_trims_with_zero_elevator(design: Any) -> None:
     assert a.cm0 + a.cm_alpha * alpha == pytest.approx(0.0, abs=1e-12)
 
 
-def test_cruise_thrust_falls_with_speed_and_scales_with_throttle(design: Any) -> None:
+def test_cruise_thrust_falls_with_speed_and_rises_with_throttle(design: Any) -> None:
     _, _, m = design
-    assert m.cruise_thrust_n(1.0, 0.0) == pytest.approx(m.cruise_static_thrust_n, rel=1e-6)
-    assert m.cruise_thrust_n(1.0, m.v_cruise_ms) < m.cruise_thrust_n(1.0, 5.0)
-    assert m.cruise_thrust_n(0.5, 10.0) == pytest.approx(0.5 * m.cruise_thrust_n(1.0, 10.0))
+    assert m.cruise_thrust_n(1.0, m.v_cruise_ms) < m.cruise_thrust_n(1.0, 5.0) < m.cruise_thrust_n(1.0, 0.0)
+    thrusts = [m.cruise_thrust_n(i / 10, 10.0) for i in range(11)]
+    assert all(b >= a for a, b in zip(thrusts, thrusts[1:])) and thrusts[0] == 0.0 < thrusts[-1]
     assert m.cruise_thrust_n(2.0, 10.0) == m.cruise_thrust_n(1.0, 10.0)
 
 
@@ -92,10 +92,11 @@ def test_quadplane_rotors_follow_ardupilot_quad_x_numbering(g2: Any) -> None:
 
 def test_underpowered_design_is_rejected(g2: Any) -> None:
     (req, sizing, bom, aero, cad), _ = g2
-    weak = bom.model_copy(update={"vtol_motor": bom.vtol_motor.model_copy(update={"max_thrust_n": 10.0})})
+    weak = bom.model_copy(update={"vtol_motor": bom.vtol_motor.model_copy(update={"max_power_w": 100.0})})
     with pytest.raises(FlightModelError, match="lift rotors"):
         build_flight_model(req, sizing, weak, aero, cad)
-    slow = bom.model_copy(update={"cruise_motor": bom.cruise_motor.model_copy(update={"max_power_w": 1.0})})
+    slow = bom.model_copy(update={"cruise_motor": bom.cruise_motor.model_copy(
+        update={"max_power_w": 10.0, "continuous_power_w": 10.0})})
     with pytest.raises(FlightModelError, match="cruise propeller"):
         build_flight_model(req, sizing, slow, aero, cad)
 
@@ -197,7 +198,8 @@ def test_quadplane_parameters(g2: Any) -> None:
     assert (params["Q_ENABLE"], params["Q_FRAME_CLASS"], params["Q_FRAME_TYPE"]) == (1, 1, 1)
     assert params["Q_ASSIST_SPEED"] == round(1.15 * sizing.v_stall_ms, 1)
     assert params["Q_TRANSITION_MS"] == round(1000 * transition_time_s(model))
-    assert params["Q_M_THST_HOVER"] == pytest.approx(model.weight_n / (4 * bom.vtol_motor.max_thrust_n), abs=1e-4)
+    assert params["Q_M_THST_HOVER"] == pytest.approx(model.weight_n / (4 * model.lift_rotors[0].max_thrust_n),
+                                                     abs=1e-4)
     assert [params[f"SERVO{5 + i}_FUNCTION"] for i in range(4)] == [33, 34, 35, 36]
 
 
@@ -284,12 +286,16 @@ def test_gear_meets_the_tip_back_rule_and_clears_the_propeller(design: Any) -> N
     assert -left.z_m > model.cruise_prop_diameter_m / 2
 
 
-def test_lift_table_peaks_at_cl_max_and_thrust_curve_matches_ardupilot(design: Any) -> None:
+def test_lift_table_peaks_at_cl_max(design: Any) -> None:
     _, _, model = design
     alphas, cls = lift_table(model)
     assert alphas == sorted(alphas) and max(cls) == model.aero.cl_max
-    outputs, thrusts = lift_thrust_curve(100.0)
-    assert thrusts[0] == 0.0 and thrusts[-1] == pytest.approx(100.0)
+
+
+def test_lift_thrust_curve_spans_the_spin_range(g2: Any) -> None:
+    _, model = g2
+    outputs, thrusts = lift_thrust_curve(model)
+    assert thrusts[0] == 0.0 and thrusts[-1] == pytest.approx(model.lift_rotors[0].max_thrust_n)
     assert all(b >= a for a, b in zip(thrusts, thrusts[1:]))
     assert thrusts[outputs.index(0.1)] == 0.0  # below Q_M_SPIN_MIN the rotor gives no thrust
 

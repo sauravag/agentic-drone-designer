@@ -25,18 +25,27 @@ Gain design (all at the cruise speed, which becomes SCALING_SPEED so ArduPilot's
   writes no yaw rate gains for any layout here (its yaw damper stays at the defaults, as on the tractor), so the mixed
   yaw power MIXING_GAIN x |Cn_L - Cn_R| has no gain to set. Each panel's SERVOn_REVERSED is chosen from its own
   measured pitch sign so a nose-up demand gives a nose-up moment through the bridge sign.
+* Propulsion (spec 6.6): Q_M_THST_EXPO is the least-squares fit of ArduPilot's curve T/Tmax = (1-e) u + e u^2 to the
+  lift propulsor's static thrust curve, and Q_M_THST_HOVER = W / sum(Tmax) with Tmax that propulsor at full throttle.
+  TRIM_THROTTLE is the lowest throttle at which the cruise propulsor's thrust meets the cruise drag.
+* Battery failsafes: BATT_CRT_VOLT = the chemistry's loaded minimum cell voltage x the series count (the
+  end-of-reserve voltage the matching checked the sagged points at), BATT_LOW_VOLT = BATT_LOW_VOLT_MARGIN x that.
+  ArduPilot compares them against the raw (loaded) voltage (BATT_FS_VOLTSRC 0). They belong in the hardware file;
+  SITL keeps BATT_MONITOR 0 (the JSON backend reports no battery), so they never trigger there.
 """
 
 import math
 from pathlib import Path
-from typing import Final, Mapping, Optional
+from typing import Final, Mapping, Optional, Sequence
 
 from src.schemas.components import SelectedBOM
 from src.schemas.state import SizingOutput
 from src.tools.flight_control.control_channels import (ELEVATOR_SURFACE, LIFT_MOTOR_SERVOS, RUDDERVATOR_SURFACES,
                                                        THROTTLE_SERVO, THROTTLE_SERVO_FUNCTION, ControlChannel)
+from src.tools.database.packs import loaded_min_voltage_v
 from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
-                                                   THRUST_EXPO, FlightModel, transition_time_s)
+                                                   FlightModel, transition_time_s)
+from src.tools.flight_control.propulsion_plant import pack_series
 
 ParamSet = dict[str, float]
 
@@ -76,6 +85,10 @@ ELECTRIC_CRITICAL_TO_LOW: Final[float] = 0.5  # BATT_CRT_MAH = half the low-batt
 HYBRID_BUFFER_LOW_FRACTION: Final[float] = 0.30  # hybrid: keep enough buffer for a VTOL landing
 HYBRID_BUFFER_CRITICAL_FRACTION: Final[float] = 0.15
 MAH_PER_AH: Final[float] = 1000.0
+BATT_LOW_VOLT_MARGIN: Final[float] = 1.05  # low-voltage failsafe 5 % above the end-of-reserve loaded voltage
+BATT_FS_VOLTSRC_RAW: Final[int] = 0  # failsafe on the raw (loaded) voltage, which the loaded minimum describes
+VOLT_DIGITS: Final[int] = 2
+EXPO_DIGITS: Final[int] = 3
 SITL_TAKEOFF_ALT_M: Final[float] = 60.0
 QUAD_SERVO_NUMBERS: Final[tuple[int, ...]] = LIFT_MOTOR_SERVOS  # outputs reserved for lift motors 1-4
 QUAD_MOTOR_FIRST_FUNCTION: Final[int] = 33
@@ -168,6 +181,24 @@ def ruddervator_params(model: FlightModel) -> ParamSet:
     return params
 
 
+def fit_thrust_expo(throttles: Sequence[float], thrust_fraction: Sequence[float]) -> float:
+    """Least-squares e in ArduPilot's T/Tmax = (1-e) u + e u^2 over the samples, clamped to [0, 1]. The model is
+    linear in e: y - u = e (u^2 - u)."""
+    if len(throttles) != len(thrust_fraction):
+        raise ValueError(f"{len(throttles)} throttles but {len(thrust_fraction)} thrust fractions")
+    basis: list[float] = [u * u - u for u in throttles]
+    denominator: float = sum(b * b for b in basis)
+    if denominator <= 0.0:
+        raise ValueError("the thrust expo needs at least one throttle strictly between 0 and 1")
+    expo: float = sum(b * (y - u) for b, u, y in zip(basis, throttles, thrust_fraction)) / denominator
+    return min(max(expo, 0.0), 1.0)
+
+
+def lift_thrust_expo(model: FlightModel) -> float:
+    """Q_M_THST_EXPO fitted to the lift propulsor's static thrust curve."""
+    return round(fit_thrust_expo(*model.lift_thrust_fractions()), EXPO_DIGITS)
+
+
 def hover_throttle(model: FlightModel) -> float:
     """Q_M_THST_HOVER is in ArduPilot's linearised-thrust units (MOT_THST_EXPO is applied afterwards),
     so it is simply the hover thrust fraction W / sum(T_max)."""
@@ -199,7 +230,7 @@ def quadplane_params(model: FlightModel, gain_scale: float = 1.0) -> ParamSet:
         "Q_ENABLE": 1, "Q_FRAME_CLASS": 1, "Q_FRAME_TYPE": 1,
         "Q_ASSIST_SPEED": round(ASSIST_TO_STALL * model.v_stall_ms, 1),
         "Q_TRANSITION_MS": int(round(1000 * transition_time_s(model))),
-        "Q_M_THST_EXPO": THRUST_EXPO, "Q_M_THST_HOVER": round(hover_throttle(model), 4),
+        "Q_M_THST_EXPO": lift_thrust_expo(model), "Q_M_THST_HOVER": round(hover_throttle(model), 4),
         "Q_M_SPIN_MIN": MOTOR_SPIN_MIN, "Q_M_SPIN_MAX": MOTOR_SPIN_MAX, **QUAD_SERVO_FUNCTIONS,
     }
     params |= _q_axis("RLL", model.ixx_kgm2, 2 * arm_roll * t_max, bandwidth, gain_scale)
@@ -213,8 +244,7 @@ def envelope_params(model: FlightModel) -> ParamSet:
     a_max: float = round(NE_TO_MAX_AIRSPEED * model.v_ne_ms, 1)
     if not a_min < model.v_cruise_ms < a_max:
         raise ParamGenerationError(f"cruise {model.v_cruise_ms} m/s outside [{a_min}, {a_max}] (1.25 Vs, 0.85 VNE)")
-    drag: float = model.drag_n(model.v_cruise_ms, model.cruise_lift_coefficient(model.v_cruise_ms))
-    trim_pct: float = 100 * drag / model.cruise_thrust_n(1.0, model.v_cruise_ms)
+    trim_pct: float = 100 * trim_throttle(model)
     lo, hi = TRIM_THROTTLE_BOUNDS
     params: ParamSet = {
         "AIRSPEED_MIN": a_min, "AIRSPEED_MAX": a_max, "AIRSPEED_CRUISE": round(model.v_cruise_ms, 1),
@@ -226,6 +256,17 @@ def envelope_params(model: FlightModel) -> ParamSet:
     if model.launch != "hand":  # a hand-launched aircraft has no take-off roll to configure
         params |= {"TKOFF_ROTATE_SPD": round(ROTATE_TO_STALL * model.v_stall_ms, 1), "TKOFF_THR_MAX": 100}
     return params
+
+
+def trim_throttle(model: FlightModel) -> float:
+    """The lowest cruise throttle (0..1) whose thrust meets the drag at the cruise speed."""
+    speed: float = model.v_cruise_ms
+    drag: float = model.drag_n(speed, model.cruise_lift_coefficient(speed))
+    throttle: Optional[float] = model.cruise_throttle_for(drag, speed)
+    if throttle is None:
+        raise ParamGenerationError(f"the cruise propeller cannot reach the {speed} m/s cruise: {drag:.1f} N drag, "
+                                   f"{model.cruise_thrust_n(1.0, speed):.1f} N at full throttle")
+    return throttle
 
 
 def fw_servo_functions(model: FlightModel) -> ParamSet:
@@ -248,8 +289,11 @@ def battery_params(sizing: SizingOutput, bom: SelectedBOM, is_quadplane: bool) -
         low, critical = HYBRID_BUFFER_LOW_FRACTION, HYBRID_BUFFER_CRITICAL_FRACTION
     else:
         low, critical = sizing.energy_reserve_fraction, ELECTRIC_CRITICAL_TO_LOW * sizing.energy_reserve_fraction
+    critical_v: float = loaded_min_voltage_v(bom.battery.chemistry, pack_series(bom.battery))
     return {"BATT_MONITOR": 4, "BATT_CAPACITY": int(round(capacity_mah)),
             "BATT_LOW_MAH": int(round(low * capacity_mah)), "BATT_CRT_MAH": int(round(critical * capacity_mah)),
+            "BATT_LOW_VOLT": round(BATT_LOW_VOLT_MARGIN * critical_v, VOLT_DIGITS),
+            "BATT_CRT_VOLT": round(critical_v, VOLT_DIGITS), "BATT_FS_VOLTSRC": BATT_FS_VOLTSRC_RAW,
             "BATT_FS_LOW_ACT": 1,  # RTL
             "BATT_FS_CRT_ACT": 4 if is_quadplane else 2}  # QLand / Land
 

@@ -10,9 +10,10 @@ the M3 VSPAERO derivatives and the as-built CAD mass properties, in SI units:
   with standard strip-theory / tail-volume (DATCOM-style) formulas from the sized geometry, with the tail volumes
   from the tail surfaces' projected (effective) areas, so a V-tail damps like its horizontal and vertical shares.
 * The cruise thrust acts at the propeller hub the CAD stage placed (nose tractor or boom-end pusher), pointing forward.
-* Propulsion: momentum-theory static thrust with a power-limited roll-off for the cruise propeller;
-  lift rotors use the catalog max thrust and ArduPilot's own thrust-curve shape (MOT_THST_EXPO), so the
-  autopilot's linearisation matches the simulated plant.
+* Propulsion (spec 6.6): every propeller is a `Propulsor` (propeller tables + motor winding + ESC on the pack bus,
+  `propulsion_plant`), so thrust follows throttle -> voltage -> rpm at the simulated airspeed, saturating at the
+  tip-Mach-0.80 rpm. A lift rotor's max thrust is its propulsor at full throttle, static, in the model's air (not the
+  catalogue rating), and ArduPilot's Q_M_THST_EXPO / Q_M_THST_HOVER are fitted to that same curve.
 
 Because the autopilot gains and the SITL plant both read this model, the SITL test checks the closed
 loop (rate/angle controllers, actuator lag, inertia coupling, transition), not the derivative estimates.
@@ -20,8 +21,9 @@ loop (rate/angle controllers, actuator lag, inertia coupling, transition), not t
 
 import math
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, Optional
 
+from src.schemas.assumptions import DEFAULT_ASSUMPTIONS
 from src.schemas.components import SelectedBOM
 from src.schemas.requirements import OperationalRequirements
 from src.schemas.state import (AeroStabilityOutput, CADArtifacts, ControlSurfaceDerivatives, SizingOutput,
@@ -31,8 +33,10 @@ from src.tools.aero_cad.stability import cruise_lift_coefficient
 from src.tools.flight_control.control_channels import (AILERON_MAX_RAD, ELEVATOR_MAX_RAD,  # noqa: F401 (re-exported)
                                                        RUDDER_MAX_RAD, ControlChannel, channels_with_steering,
                                                        control_channels)
+from src.tools.flight_control.propulsion_plant import plant_propulsor
 from src.tools.gear import GearGeometry, PropellerDisc
-from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor
+from src.tools.propulsion.propulsor import Propulsor
+from src.tools.sizing.aero_model import VNE_TO_CRUISE, air_properties, induced_drag_factor, speed_of_sound_ms
 from src.tools.sizing.layouts import layout_spec
 from src.tools.sizing.mass_model import as_built_gear
 from src.units import G0
@@ -46,12 +50,11 @@ ROLL_YAW_CL_FACTOR_CLR: Final[float] = 0.25  # Clr ~ CL/4 (strip theory)
 ROLL_YAW_CL_FACTOR_CNP: Final[float] = -0.125  # Cnp ~ -CL/8 (strip theory)
 ADVERSE_YAW_FACTOR: Final[float] = -0.2  # Cn_delta_a ~ -0.2 CL Cl_delta_a
 SERVO_TIME_CONSTANT_S: Final[float] = 0.05
-PROP_FIGURE_OF_MERIT: Final[float] = 0.6  # static figure of merit, cruise propeller
-PROP_EFFICIENCY: Final[float] = 0.75  # in-flight propulsive efficiency
 MOTOR_LAG_BASE_S: Final[float] = 0.03  # first-order spin-up time constant = base + slope * diameter
 MOTOR_LAG_PER_DIAMETER_S_M: Final[float] = 0.06
 ROTOR_TORQUE_PER_THRUST_DIAMETER: Final[float] = 0.05  # Q / (T D) ~ C_Q / C_T
-THRUST_EXPO: Final[float] = 0.65  # ArduPilot Q_M_THST_EXPO default; the plant uses the same curve
+THROTTLE_SOLVE_TOL: Final[float] = 1e-4  # throttle bracket at which the thrust -> throttle bisection stops
+LIFT_CURVE_POINTS: Final[int] = 21  # lift-rotor throttle samples the Q_M_THST_EXPO fit uses
 TRANSITION_SPEED_FACTOR: Final[float] = 1.2  # SRS: accelerate 0 -> 1.2 Vs
 TRANSITION_DT_S: Final[float] = 0.01
 MAX_TRANSITION_S: Final[float] = 60.0
@@ -97,7 +100,7 @@ class LiftRotor:
     y_m: float
     z_m: float
     spin: Literal[1, -1]  # +1: CCW seen from above -> reaction torque yaws the nose right
-    max_thrust_n: float
+    max_thrust_n: float  # the lift propulsor at full throttle, static, in the model's air
     diameter_m: float
 
 
@@ -121,11 +124,13 @@ class FlightModel:
     v_cruise_ms: float
     v_ne_ms: float
     rho_kgm3: float
-    cruise_static_thrust_n: float
-    cruise_shaft_power_w: float
+    mu_pa_s: float
+    speed_of_sound_ms: float
+    cruise_propulsor: Propulsor
     cruise_prop_diameter_m: float
     cruise_motor_lag_s: float
     lift_rotors: tuple[LiftRotor, ...]
+    lift_propulsor: Optional[Propulsor]  # one per rotor, all alike; None without lift rotors
     lift_motor_lag_s: float
     gear: GearGeometry  # the one landing-gear rule; kind "none" for a hand launch
     launch: Literal["runway", "hand", "vertical"]
@@ -157,10 +162,34 @@ class FlightModel:
         return 0.5 * self.rho_kgm3 * speed_ms**2
 
     def cruise_thrust_n(self, throttle: float, speed_ms: float) -> float:
-        """Available thrust: static (momentum theory) blending into the power limit eta*P/V."""
-        power_limited: float = PROP_EFFICIENCY * self.cruise_shaft_power_w / max(speed_ms, 1e-6)
-        full: float = 1.0 / math.sqrt(self.cruise_static_thrust_n**-2 + power_limited**-2)
-        return min(max(throttle, 0.0), 1.0) * full
+        """Delivered cruise thrust at `throttle` (clamped to [0, 1], the ESC duty) and airspeed, in the model's air.
+        Non-decreasing in throttle and flat once the rpm reaches tip Mach 0.80."""
+        return self.cruise_propulsor.thrust_n(min(max(throttle, 0.0), 1.0), max(speed_ms, 0.0), self.rho_kgm3,
+                                              self.mu_pa_s, self.speed_of_sound_ms)
+
+    def cruise_throttle_for(self, thrust_n: float, speed_ms: float) -> Optional[float]:
+        """The lowest throttle (within THROTTLE_SOLVE_TOL) giving `thrust_n` at `speed_ms`, or None when full throttle
+        cannot. Bisection, so a flat (saturated) top resolves to where the saturation starts."""
+        if self.cruise_thrust_n(1.0, speed_ms) < thrust_n:
+            return None
+        lo, hi = 0.0, 1.0
+        while hi - lo > THROTTLE_SOLVE_TOL:
+            mid: float = 0.5 * (lo + hi)
+            lo, hi = (lo, mid) if self.cruise_thrust_n(mid, speed_ms) >= thrust_n else (mid, hi)
+        return hi
+
+    def lift_thrust_n(self, throttle: float) -> float:
+        """Static thrust of one lift rotor at `throttle` (clamped to [0, 1]) in the model's air."""
+        if self.lift_propulsor is None:
+            raise FlightModelError("this flight model has no lift rotors")
+        return self.lift_propulsor.thrust_n(min(max(throttle, 0.0), 1.0), 0.0, self.rho_kgm3, self.mu_pa_s,
+                                            self.speed_of_sound_ms)
+
+    def lift_thrust_fractions(self) -> tuple[list[float], list[float]]:
+        """(throttles, thrust / full-throttle thrust) of one lift rotor on LIFT_CURVE_POINTS evenly spaced points."""
+        throttles: list[float] = [i / (LIFT_CURVE_POINTS - 1) for i in range(LIFT_CURVE_POINTS)]
+        full: float = self.lift_thrust_n(1.0)
+        return throttles, [self.lift_thrust_n(u) / full for u in throttles]
 
     def cruise_lift_coefficient(self, speed_ms: float) -> float:
         return cruise_lift_coefficient(self.mass_kg, self.rho_kgm3, speed_ms, self.wing_area_m2)
@@ -226,14 +255,8 @@ def motor_lag_s(diameter_m: float) -> float:
     return MOTOR_LAG_BASE_S + MOTOR_LAG_PER_DIAMETER_S_M * diameter_m
 
 
-def _static_thrust_n(shaft_power_w: float, diameter_m: float, rho: float) -> float:
-    """Momentum theory: T = (FM * P)^(2/3) * (2 rho A)^(1/3)."""
-    area: float = math.pi * diameter_m**2 / 4
-    return (PROP_FIGURE_OF_MERIT * shaft_power_w) ** (2 / 3) * (2 * rho * area) ** (1 / 3)
-
-
-def _lift_rotors(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput,
-                 cad: CADArtifacts) -> tuple[LiftRotor, ...]:
+def _lift_rotors(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutput, cad: CADArtifacts,
+                 max_thrust_n: float) -> tuple[LiftRotor, ...]:
     """Rotor hubs from the M3 layout, re-based on the as-built wing AC (VSPAERO moment reference)."""
     if bom.vtol_motor is None or bom.vtol_propeller is None:
         return ()
@@ -246,7 +269,7 @@ def _lift_rotors(sizing: SizingOutput, bom: SelectedBOM, aero: AeroStabilityOutp
         right: bool = y > 0
         number: int = {(True, True): 1, (False, False): 2, (True, False): 3, (False, True): 4}[(front, right)]
         rotors.append(LiftRotor(motor_number=number, x_m=x + shift, y_m=y, z_m=z, spin=1 if number <= 2 else -1,
-                                max_thrust_n=bom.vtol_motor.max_thrust_n, diameter_m=bom.vtol_propeller.diameter_m))
+                                max_thrust_n=max_thrust_n, diameter_m=bom.vtol_propeller.diameter_m))
     if sorted(r.motor_number for r in rotors) != [1, 2, 3, 4]:
         raise FlightModelError(f"lift rotors do not form a QUAD/X layout: {[(r.x_m, r.y_m) for r in rotors]}")
     return tuple(sorted(rotors, key=lambda r: r.motor_number))
@@ -280,12 +303,28 @@ def _propeller_disc(sizing: SizingOutput, bom: SelectedBOM, cad: CADArtifacts) -
     return PropellerDisc(0.0, 0.0, diameter)
 
 
+def _propulsors(sizing: SizingOutput, bom: SelectedBOM,
+                pusher_installation_factor: float) -> tuple[Propulsor, Optional[Propulsor]]:
+    """(cruise, lift) propulsors; the pusher installation loss applies to any layout whose propeller is not a nose
+    tractor (the propulsion matching's rule)."""
+    is_tractor: bool = layout_spec(sizing.airframe_layout).propeller == "tractor_nose"
+    cruise: Propulsor = plant_propulsor(bom.cruise_motor, bom.cruise_propeller, bom.cruise_esc, bom.battery,
+                                        1.0 if is_tractor else pusher_installation_factor)
+    if bom.vtol_motor is None or bom.vtol_propeller is None:
+        return cruise, None
+    return cruise, plant_propulsor(bom.vtol_motor, bom.vtol_propeller, bom.vtol_esc, bom.battery)
+
+
 def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: SelectedBOM,
-                       aero: AeroStabilityOutput, cad: CADArtifacts) -> FlightModel:
-    """Assemble the flight model; raises FlightModelError if the design cannot hover/accelerate."""
-    rho, _ = air_properties(SITL_ALTITUDE_M)
+                       aero: AeroStabilityOutput, cad: CADArtifacts,
+                       pusher_installation_factor: float = DEFAULT_ASSUMPTIONS.pusher_efficiency_factor) -> FlightModel:
+    """Assemble the flight model; raises FlightModelError if the design cannot hover/accelerate.
+    `pusher_installation_factor` is the run's DesignAssumptions.pusher_efficiency_factor (default: the default)."""
+    rho, mu = air_properties(SITL_ALTITUDE_M)
+    sound: float = speed_of_sound_ms(SITL_ALTITUDE_M)
     cl_cruise: float = cruise_lift_coefficient(cad.as_built_mass_kg, rho, req.cruise_speed_ms, sizing.wing_area_m2)
-    shaft_w: float = min(bom.cruise_motor.max_power_w, bom.cruise_propeller.max_power_w)
+    cruise, lift = _propulsors(sizing, bom, pusher_installation_factor)
+    lift_max_n: float = 0.0 if lift is None else lift.thrust_n(1.0, 0.0, rho, mu, sound)
     propeller: PropellerDisc = _propeller_disc(sizing, bom, cad)
     gear: GearGeometry = as_built_gear(sizing, cad.x_cg_m, propeller)
     model = FlightModel(
@@ -296,10 +335,10 @@ def build_flight_model(req: OperationalRequirements, sizing: SizingOutput, bom: 
         fuselage_diameter_m=sizing.fuselage_diameter_m, tail_arm_m=sizing.tail_arm_m,
         aero=_coefficients(sizing, aero, cad, cl_cruise),
         v_stall_ms=sizing.v_stall_ms, v_cruise_ms=req.cruise_speed_ms, v_ne_ms=VNE_TO_CRUISE * req.cruise_speed_ms,
-        rho_kgm3=rho, cruise_static_thrust_n=_static_thrust_n(shaft_w, bom.cruise_propeller.diameter_m, rho),
-        cruise_shaft_power_w=shaft_w, cruise_prop_diameter_m=bom.cruise_propeller.diameter_m,
+        rho_kgm3=rho, mu_pa_s=mu, speed_of_sound_ms=sound, cruise_propulsor=cruise,
+        cruise_prop_diameter_m=bom.cruise_propeller.diameter_m,
         cruise_motor_lag_s=motor_lag_s(bom.cruise_propeller.diameter_m),
-        lift_rotors=_lift_rotors(sizing, bom, aero, cad),
+        lift_rotors=_lift_rotors(sizing, bom, aero, cad, lift_max_n), lift_propulsor=lift,
         lift_motor_lag_s=motor_lag_s(bom.vtol_propeller.diameter_m) if bom.vtol_propeller else 0.0,
         gear=gear, launch=sizing.launch_method, wing_tip_z_m=_wing_tip_z_m(sizing), surfaces=_model_surfaces(aero),
         propeller_x_m=propeller.x_m, propeller_z_m=propeller.z_m,
@@ -312,15 +351,19 @@ def _check_flyable(model: FlightModel) -> None:
     a = model.aero
     positive = {"mass": model.mass_kg, "Ixx": model.ixx_kgm2, "Iyy": model.iyy_kgm2, "Izz": model.izz_kgm2,
                 "CL_alpha": a.cl_alpha, "Cl_delta_a": a.cl_delta_a, "-Cm_delta_e": -a.cm_delta_e,
-                "-Cl_p": -a.cl_p, "-Cm_q": -a.cm_q, "shaft power": model.cruise_shaft_power_w}
+                "-Cl_p": -a.cl_p, "-Cm_q": -a.cm_q}
     bad = {name: value for name, value in positive.items() if not (math.isfinite(value) and value > 0)}
     if bad:
         raise FlightModelError(f"flight model has non-physical values (expected finite and correctly signed): {bad}")
     cruise_drag: float = model.drag_n(model.v_cruise_ms, model.cruise_lift_coefficient(model.v_cruise_ms))
-    if model.cruise_thrust_n(1.0, model.v_cruise_ms) <= cruise_drag:
-        raise FlightModelError(f"cruise propeller cannot overcome {cruise_drag:.1f} N drag at {model.v_cruise_ms} m/s")
-    if model.is_quadplane and sum(r.max_thrust_n for r in model.lift_rotors) <= model.weight_n:
-        raise FlightModelError("lift rotors cannot lift the as-built aircraft")
+    full_n: float = model.cruise_thrust_n(1.0, model.v_cruise_ms)
+    if full_n <= cruise_drag:
+        raise FlightModelError(f"cruise propeller cannot overcome {cruise_drag:.1f} N drag at {model.v_cruise_ms} m/s "
+                               f"(full-throttle thrust {full_n:.1f} N)")
+    lift_n: float = sum(r.max_thrust_n for r in model.lift_rotors)
+    if model.is_quadplane and lift_n <= model.weight_n:
+        raise FlightModelError(f"lift rotors cannot lift the as-built aircraft ({lift_n:.1f} N full-throttle static "
+                               f"thrust for {model.weight_n:.1f} N weight)")
 
 
 def transition_time_s(model: FlightModel) -> float:

@@ -113,9 +113,13 @@ def _launch(config: SitlConfig, work_dir: Path) -> "subprocess.Popen[bytes]":
 
 
 def climb_throttle_pct(model: FlightModel) -> float:
-    """Extra throttle to climb at +PITCH_STEP_DEG at cruise speed: dT = W sin(step) / T_available(V)."""
+    """Extra throttle (percentage points) to climb at +PITCH_STEP_DEG at cruise speed: the throttle for drag +
+    W sin(step) minus the trim throttle on the cruise thrust curve, capped at full throttle."""
+    speed: float = model.v_cruise_ms
+    drag: float = model.drag_n(speed, model.cruise_lift_coefficient(speed))
     extra_n: float = model.weight_n * math.sin(math.radians(PITCH_STEP_DEG))
-    return 100.0 * extra_n / model.cruise_thrust_n(1.0, model.v_cruise_ms)
+    climb: Optional[float] = model.cruise_throttle_for(drag + extra_n, speed)
+    return 100.0 * ((1.0 if climb is None else climb) - pg.trim_throttle(model))
 
 
 def _stop(proc: "subprocess.Popen[bytes]") -> None:

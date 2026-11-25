@@ -5,9 +5,11 @@ Writes <root>/aircraft/<name>/<name>.xml with:
 * mass_balance from the Build123d inertia tensor;
 * the model's landing gear (3-point with a steerable nose wheel, or two belly contacts for a hand launch);
 * actuators: first-order servo and motor lags (servo time constant, motor lags from the BOM);
-* propulsion thrust tables: cruise thrust vs (throttle, airspeed) and lift-rotor thrust vs motor
-  output using ArduPilot's spin-range/expo mapping, applied as external forces plus rotor torques; the cruise thrust
-  acts at the propeller hub (nose tractor or boom-end pusher) and points forward either way;
+* propulsion thrust tables from the flight model's propulsors (propeller tables + motor + ESC, spec 6.6): cruise
+  thrust vs (throttle, airspeed) and static lift-rotor thrust vs motor output, the output mapped through ArduPilot's
+  spin range onto the ESC throttle, applied as external forces plus rotor torques (JSBSim's own propeller element is
+  not used: the force tables carry the same propulsor curves); the cruise thrust acts at the propeller hub (nose
+  tractor or boom-end pusher) and points forward either way;
 * the aerodynamic build-up (lift with a stall break, drag polar, side force, roll/pitch/yaw moments).
 
 Inputs the SITL bridge drives: fcs/<surface>-cmd-norm for each channel (+-1; aileron, elevator, rudder positive =
@@ -24,8 +26,7 @@ from pathlib import Path
 from typing import Final, Literal, Sequence
 
 from src.tools.flight_control.control_channels import ControlChannel, jsbsim_stem
-from src.tools.flight_control.flight_model import (ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S,
-                                                   THRUST_EXPO, FlightModel)
+from src.tools.flight_control.flight_model import ROTOR_TORQUE_PER_THRUST_DIAMETER, SERVO_TIME_CONSTANT_S, FlightModel
 from src.tools.flight_control.param_generator import MOTOR_SPIN_MAX, MOTOR_SPIN_MIN
 from src.tools.gear import GearContact
 
@@ -142,14 +143,12 @@ def _actuator(channel: ET.Element, name: str, cmd: str, time_constant: float, ga
     _sub(pure, "gain", gain)
 
 
-def lift_thrust_curve(max_thrust_n: float) -> tuple[list[float], list[float]]:
-    """Thrust (N) vs ArduPilot motor output: spin range [MIN, MAX] -> 0..1, then (1-e) u + e u^2."""
+def lift_thrust_curve(model: FlightModel) -> tuple[list[float], list[float]]:
+    """One rotor's static thrust (N) vs ArduPilot motor output: the spin range [MIN, MAX] maps onto ESC throttle
+    0..1 of the lift propulsor (zero thrust at and below MIN, full-throttle thrust at and above MAX)."""
     outputs = [i / (LIFT_THROTTLE_BREAKPOINTS - 1) for i in range(LIFT_THROTTLE_BREAKPOINTS)]
-    thrusts: list[float] = []
-    for out in outputs:
-        u: float = min(max((out - MOTOR_SPIN_MIN) / (MOTOR_SPIN_MAX - MOTOR_SPIN_MIN), 0.0), 1.0)
-        thrusts.append(max_thrust_n * ((1 - THRUST_EXPO) * u + THRUST_EXPO * u * u))
-    return outputs, thrusts
+    throttles = [min(max((out - MOTOR_SPIN_MIN) / (MOTOR_SPIN_MAX - MOTOR_SPIN_MIN), 0.0), 1.0) for out in outputs]
+    return outputs, [model.lift_thrust_n(u) if u > 0.0 else 0.0 for u in throttles]
 
 
 def _cruise_propulsion(channel: ET.Element, model: FlightModel) -> None:
@@ -164,10 +163,12 @@ def _cruise_propulsion(channel: ET.Element, model: FlightModel) -> None:
 
 
 def _lift_propulsion(channel: ET.Element, model: FlightModel) -> None:
+    if not model.lift_rotors:
+        return
+    outputs, thrusts = lift_thrust_curve(model)  # all rotors alike
     for rotor in model.lift_rotors:
         n: int = rotor.motor_number
         _actuator(channel, f"lift{n}", f"fcs/lift{n}-cmd", model.lift_motor_lag_s, 1.0)
-        outputs, thrusts = lift_thrust_curve(rotor.max_thrust_n)
         fn = _sub(channel, "fcs_function", name=f"propulsion/lift{n}-thrust-lbs")
         _table(_sub(fn, "function"), f"fcs/lift{n}", outputs, [t * N_TO_LBF for t in thrusts])
         _sub(fn, "output", f"external_reactions/lift{n}/magnitude")

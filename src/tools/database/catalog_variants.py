@@ -86,7 +86,7 @@ def _winding_name(name: str, kv: int) -> str:
     return _KV_SUFFIX.sub(f"-{kv}KV", name) if _KV_SUFFIX.search(name) else f"{name}-{kv}KV"
 
 
-def _kv_from_name(name: str) -> float:
+def kv_from_name(name: str) -> float:
     match = _KV_SUFFIX.search(name)
     if match is None:
         raise ValueError(f"cannot derive KV from motor name {name!r}")
@@ -130,7 +130,7 @@ def vtol_motor_rows(raw: list[tuple]) -> list[VtolMotor]:
     variants: list[VtolMotor] = []
     for name, mass, thrust, max_w, volts, dia, length, *derived in raw:
         imax: Optional[float] = derived[0] if derived else None
-        for i, (w_name, w_kv, w_v) in enumerate(_windings(name, _kv_from_name(name), volts)):
+        for i, (w_name, w_kv, w_v) in enumerate(_windings(name, kv_from_name(name), volts)):
             row = VtolMotor(
                 name=w_name, mass_kg=mass, max_thrust_n=thrust, max_power_w=max_w,
                 voltage_v=rated_max_voltage(w_v), diameter_m=dia, length_m=length, kv=w_kv,
